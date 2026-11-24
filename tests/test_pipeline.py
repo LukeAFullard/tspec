@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import matplotlib
+import importlib.util
+
 import numpy as np
 import pytest
-
-matplotlib.use("Agg")
 
 from tspec import CensoredConfig, allssa, analyze_series, just_decompose, just_jumps, lssa, stpd
 
@@ -38,11 +37,15 @@ def test_analyze_series_recovers_seasonality_jump_and_turning_point(
     assert "Stage 1 (JUST)" in res.explain()
     assert "Stage 2 (STPD" in res.explain()
 
-    df = res.to_dataframe()
-    assert {"time", "value", "adjusted_value", "combined_trend", "seasonal"}.issubset(df.columns)
+    if importlib.util.find_spec("pandas") is not None:
+        df = res.to_dataframe()
+        assert {"time", "value", "adjusted_value", "combined_trend", "seasonal"}.issubset(df.columns)
 
 
 def test_analyze_series_with_censored_strings_and_plots(rng: np.random.Generator) -> None:
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     t = np.arange("2016-01-01", "2023-01-01", 20, dtype="datetime64[D]")
