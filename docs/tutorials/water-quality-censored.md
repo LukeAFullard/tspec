@@ -7,6 +7,8 @@ In this tutorial you will analyze an irregular 8-year river nitrate series conta
 - ~25% left-censored `<DL` lab reports
 - A true management-driven concentration drop in 2019
 
+![Censored water-quality change detection with ndimpute ROS and DL-shift defense](../assets/figures/tutorial_water_quality_censored.png)
+
 ## Step 1: Simulate a Realistic Water-Quality Record
 
 ```python

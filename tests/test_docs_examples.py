@@ -14,6 +14,7 @@ TUTORIAL_FILES = [
     DOCS_DIR / "tutorials" / "water-quality-censored.md",
     DOCS_DIR / "tutorials" / "vegetation-ndvi-wildfire.md",
     DOCS_DIR / "tutorials" / "subsidence-turning-point.md",
+    DOCS_DIR / "tutorials" / "near-real-time-monitoring.md",
     DOCS_DIR / "tutorials" / "combined-workflow.md",
 ]
 

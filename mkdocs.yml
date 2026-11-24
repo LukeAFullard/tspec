@@ -5,6 +5,8 @@ repo_name: LukeAFullard/tspec
 
 theme:
   name: material
+  logo: assets/tspec-icon.png
+  favicon: assets/tspec-icon.png
   features:
     - navigation.tabs
     - navigation.sections
@@ -69,6 +71,7 @@ nav:
       - Water Quality with <DL & Lab Upgrades: tutorials/water-quality-censored.md
       - Satellite Vegetation (NDVI) & Wildfire: tutorials/vegetation-ndvi-wildfire.md
       - Ground Subsidence Turning Points (STPD): tutorials/subsidence-turning-point.md
+      - Near-Real-Time Monitoring (JUSTmonitor): tutorials/near-real-time-monitoring.md
       - Combined JUST -> STPD Workflow: tutorials/combined-workflow.md
   - Reference:
       - API Reference: reference/api.md

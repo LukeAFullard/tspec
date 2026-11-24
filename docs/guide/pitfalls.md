@@ -1,6 +1,6 @@
 # Common Mistakes & Pitfalls
 
-Avoid these six classic traps when analyzing irregular or environmental time series:
+Avoid these seven classic traps when analyzing irregular or environmental time series:
 
 ---
 
@@ -27,3 +27,7 @@ Avoid these six classic traps when analyzing irregular or environmental time ser
 ## 6. Ignoring Red-Noise (Autocorrelation) Warnings
 - **What goes wrong:** Daily streamflow, high-frequency groundwater, or closely spaced sensor readings are strongly correlated from one point to the next. Standard white-noise $p$-values treat 100 correlated points as 100 independent draws, inflating false positives dramatically.
 - **What to do instead:** Check `result.diagnostics.red_noise` in `.explain()`. When lag-1 autocorrelation exceeds `0.3–0.6`, either tighten `alpha`, supply an inverse-covariance weight matrix `weights = C_f^{-1}` to `lssa`/`allssa`/`just_jumps`, or aggregate redundant sub-daily noise before screening.
+
+## 7. Repeated Peeking in Near-Real-Time Monitoring Without Multiplicity Control
+- **What goes wrong:** Running unadjusted `LSSA` across 35 frequencies on every incoming observation causes cumulative false alarms to skyrocket (in our Monte Carlo benchmark `M1`, unadjusted repeated testing over 25 steps at $\alpha = 0.05$ triggers false alarms in **72.5%** of stable series).
+- **What to do instead:** Keep `just_monitor()`'s default `freq_correction="sidak"` and `sequential_control="pocock"` (or `"obrien_fleming"` / `"consecutive_k"` for open-ended streams), which brings empirical false alarms down to `0.0%` while retaining `100%` disturbance recall.

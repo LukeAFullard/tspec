@@ -1,6 +1,6 @@
 # Tier 2 Synthetic Ground-Truth & Monte Carlo Benchmarks Report
 
-- **Summary:** **17 / 17 benchmark gates PASSED** in 66.9s
+- **Summary:** **19 / 19 benchmark gates PASSED** in 73.1s
 
 | ID | Benchmark Scenario | Status | Measured Metrics |
 | :--- | :--- | :---: | :--- |
@@ -21,3 +21,5 @@
 | **C5** | Imputed Down-Weighting Trade-Off Sweep (30% censored) | **PASS** | Mag MAE vs oracle: γ=1.0:0.606, γ=0.5:0.359, γ=0.25:0.206 |
 | **R1** | AR(1) Red-Noise Sweep & P=C_f^{-1} Calibration Restoration (alpha=0.05) | **PASS** | Unweighted FPR: φ=0.0:8%, φ=0.3:22%, φ=0.6:52%, φ=0.8:40% | Weighted P=C_f^{-1} FPR: φ=0.0:8%, φ=0.3:10%, φ=0.6:5%, φ=0.8:5% |
 | **P1** | End-to-End Pipeline (seasonality + jump + TP + gaps + 20% censored) | **PASS** | Jump recovery=100.0%; Turning-point recovery=100.0% |
+| **M1** | JUSTmonitor Sequential-Peeking Null FPR (25 steps, alpha=0.05) | **PASS** | Unadjusted parity FPR=72.5% vs Sidak+Pocock=0.0%, Sidak+OBF=0.0%, Sidak+Consec2=7.5% |
+| **M2** | JUSTmonitor NRT Disturbance Recall (Abrupt & Phenological, Sidak+Pocock) | **PASS** | Abrupt recall=100.0% (median delay=0.160 yr); Phenological recall=100.0% |

@@ -2,7 +2,9 @@
 
 Environmental and analytical time series frequently contain **censored values** — measurements below a laboratory Limit of Detection (e.g., `"<0.05"` mg/L), above an upper reporting limit (`">100"`), or known only to lie within an interval (`[0.2, 0.5]`).
 
-`tspec` integrates [`ndimpute`](https://github.com/LukeAFullard/ndimpute) directly into `just_jumps()`, `just_decompose()`, `detect_turning_points()`, and `analyze_series()` while adding time-series-specific safeguards.
+`tspec` integrates [`ndimpute`](https://github.com/LukeAFullard/ndimpute) directly into `just_jumps()`, `just_decompose()`, `just_monitor()`, `detect_turning_points()`, and `analyze_series()` while adding time-series-specific safeguards.
+
+![Censored water-quality change detection with ndimpute ROS and DL-shift defense](../assets/figures/tutorial_water_quality_censored.png)
 
 ---
 

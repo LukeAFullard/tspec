@@ -5,19 +5,20 @@
 ## Tier 1: Numerical Parity Against `Ghaderpour/LSWAVE-SignalProcessing`
 
 - **Oracle commit:** `bd15923b1d4880b799b14fe016de4c1252259013` (cloned locally into gitignored `validation/upstream_ref/`, never committed or packaged).
-- **Result:** **33 / 33 checks PASSED** (`rtol=1e-6, atol=1e-8` on continuous values; exact `==` on discrete indices and frequencies).
+- **Result:** **41 / 41 checks PASSED** (`rtol=1e-6, atol=1e-8` on continuous values; exact `==` on discrete indices and frequencies).
 - **Headline accuracy:**
   - `LSSA` spectrum on `Sim_Geophysics.dat`: max absolute difference `7.91e-16`
   - `ALLSSA(decimal=4)` on `Sim_Geophysics.dat`: exact frequencies `[4.0744, 20.3718, 22.2818]`, residual max diff `4.53e-14`
-  - `JUSTjumps` + `JUSTdecompose` on `EVIA_CA.dat` (Ghaderpour & Vujadinovic, 2020 Fig. 14): exact jump indices `[13, 111, 144]`, trend max diff `4.71e-14`
+  - `JUSTjumps` + `JUSTdecompose` on `EVIA_CA.dat` (Ghaderpour & Vujadinovic, 2020a Fig. 14): exact jump indices `[13, 111, 144]`, trend max diff `4.71e-14`
+  - `JUSTmonitor` (`parity_mode=True`, both `ALLSSA` & `OLS`) on `EVIA_AB.dat`, `EVIB_AB.dat`, `EVIC_AB.dat`, and `EVIA_CA.dat` (Ghaderpour & Vujadinovic, 2020b): exact `Type`, `Loc`, `Mag`, and `Dir` match across all 8 cases
   - `STPD` + `TPTR` on `DESC-PSInSAR-MonthlyResampled.csv` (Ghaderpour et al., 2024 Fig. 10-D): exact turning points `[32, 55]`, trend max diff `8.88e-15`
   - 1D diagonal and full 2D SPD correlated weight matrices (`P = C_f^{-1}`): max diff `1.44e-15`
 
-See `validation/reports/parity_report.md` in the repository for the full 33-row parity matrix and documented intentional bug fixes.
+See `validation/reports/parity_report.md` in the repository for the full 41-row parity matrix and documented intentional bug fixes.
 
 ## Tier 2: Synthetic Ground-Truth & Monte Carlo Benchmarks
 
-- **Result:** **17 / 17 benchmark gates PASSED** (66.9 s total runtime).
+- **Result:** **19 / 19 benchmark gates PASSED** (73.1 s total runtime).
 - **Headline results:**
   - **JUST (`J1–J5`):**
     - Null calibration (`J1`): single-frequency `lssa` FPR = `5.0%` ($\alpha=0.05$), `allssa` scan FPR = `7.5%` (default $\alpha=0.01$), Bonferroni `just_jumps` FPR = `2.5%` ($\alpha=0.05$).
@@ -39,12 +40,15 @@ See `validation/reports/parity_report.md` in the repository for the full 33-row 
   - **Red noise & combined pipeline (`R1`, `P1`):**
     - AR(1) sweep (`R1`, $\alpha=0.05$): unweighted FPR climbs from `8%` ($\phi=0$) to `52%` ($\phi=0.6$) and `40%` ($\phi=0.8$); supplying $P = C_f^{-1}$ restores calibration to `8% / 10% / 5% / 5%`.
     - End-to-end `analyze_series()` (`P1`, seasonality + jump + TP + gaps + 20% censoring): **`100.0%` jump recovery** and **`100.0%` turning-point recovery**.
+  - **Near-Real-Time Monitoring (`M1–M2`, v1.1):**
+    - Sequential-peeking null calibration (`M1`, 25 steps, $\alpha=0.05$): unadjusted `parity_mode=True` FPR = **`72.5%`** vs. Šidák+Pocock **`0.0%`**, Šidák+O'Brien–Fleming **`0.0%`**, and Šidák+Consecutive-2 **`7.5%`**.
+    - Disturbance recovery (`M2`, default Šidák+Pocock, $\alpha=0.01$): **`100.0%` abrupt recall** (median delay `0.160 yr`) and **`100.0%` phenological recall**.
 
 Full quantitative tables are published in `validation/reports/benchmarks_report.md`.
 
 ## Tier 3: Unit, Invariance, Edge-Case & Property-Based Tests
 
-- 46 automated `pytest` tests (40 unit/property tests + 6 end-to-end documentation tutorial smoke tests) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), degenerate/constant/rank-deficient inputs, and headless plotting smoke tests.
+- 53 automated `pytest` tests (46 unit/property tests including `test_monitor.py` + 7 end-to-end documentation tutorial smoke tests) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), degenerate/constant/rank-deficient inputs, and headless plotting smoke tests.
 - Dedicated lite-environment CI job verifying zero `ndimpute`/`pandas` imports for core numerical functions (`pip install --no-deps tspec` with `numpy` + `scipy` only).
 
 ## Tier 4: Speed & $O(n)$ Memory Profiling

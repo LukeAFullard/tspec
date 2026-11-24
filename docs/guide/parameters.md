@@ -39,3 +39,15 @@ A plain-English translation of every key parameter in `tspec`, its default value
 | `scope` | Whether one distribution is fitted globally (`"global"`), per window (`"windowed"`), or per season (`"seasonal_stratified"`). | `"global"` | Switch to `"windowed"` if a huge jump shifts censoring from >50% to <5%, or `"seasonal_stratified"` for intense seasonal censoring. |
 | `n_stability_draws` | How many extra imputation realizations are run to measure breakpoint stability. | `20` in `analyze_series()`<br>`0` in single calls | Set `>= 20` when censoring exceeds 20%; use `stability_mode="bootstrap"` for full parameter-uncertainty propagation. |
 | `detect_dl_shifts` / `recensor_check` | Guard against fake jumps from laboratory detection-limit upgrades. | `True` / `False` | Keep `detect_dl_shifts=True`; turn on `recensor_check=True` whenever a `DL_SHIFT_COINCIDENCE` warning appears. |
+
+## Near-Real-Time Monitoring (`just_monitor`, v1.1)
+
+| Parameter | Plain-English Meaning | Default | Guidance |
+| :--- | :--- | :--- | :--- |
+| `start` | Where active monitoring begins (0-based index OR timestamp/year). | `n - 2` | Set to the date after which you want to detect new disturbances (e.g., `start="2022-01-01"` or `start=2022.0`). |
+| `history` | Where the stable historical baseline begins (index OR timestamp/year). | `0` | If an earlier historical jump occurred, set `history` right after it (or find it first with `just_jumps()`). |
+| `h` | Fraction of the historical period kept immediately before `start` as context during monitoring. | `0.25` | `0.25` (25% of history) balances responsiveness to new changes against baseline stability. |
+| `freq_correction` | Per-step adjustment across the 35 scanned monitoring frequencies. | `"sidak"` | Keep `"sidak"` (or `"bonferroni"`). Use `"none"` only via `parity_mode=True`. |
+| `sequential_control` | Repeated-testing control across incoming monitoring steps. | `"pocock"` | `"pocock"` for fixed horizon; `"obrien_fleming"` to guard early peeks; `"consecutive_k"` (`k=2`) for open-ended live streams. |
+| `horizon` | Planned number of monitoring steps $D_{\max}$ for alpha-spending rules. | `n - start` | Set explicitly (e.g., `horizon=24` for 2 years of monthly updates) when running live sequential updates. |
+| `window_mode` | Whether the residual monitoring window grows (`"expanding"`) or slides (`"sliding"`). | `"expanding"` | `"expanding"` matches Ghaderpour & Vujadinovic (2020b); `"sliding"` keeps memory bounded over multi-year monitoring. |

@@ -22,6 +22,7 @@ from .just import (
     just_decompose,
     just_jumps,
 )
+from .monitor import MonitorResult, MonitorStep, just_monitor
 from .pipeline import PipelineResult, analyze_series
 from .spectral import AllssaResult, LssaResult, allssa, lssa
 from .stpd import (
@@ -43,6 +44,7 @@ __all__ = [
     "allssa",
     "just_jumps",
     "just_decompose",
+    "just_monitor",
     "detect_turning_points",
     "stpd",
     "fit_piecewise_trend",
@@ -60,6 +62,8 @@ __all__ = [
     "WindowCandidate",
     "JustJumpResult",
     "JustDecomposeResult",
+    "MonitorStep",
+    "MonitorResult",
     "TurningPointEvent",
     "FlaggedJumpCandidate",
     "PiecewiseTrendResult",

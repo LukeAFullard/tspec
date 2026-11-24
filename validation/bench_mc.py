@@ -31,6 +31,7 @@ from tspec import (
     analyze_series,
     detect_turning_points,
     just_jumps,
+    just_monitor,
     lssa,
 )
 from tspec.censored import prepare_series_with_censoring
@@ -581,6 +582,78 @@ def run_rednoise_and_pipeline(n_rep: int = 40) -> list[dict[str, Any]]:
     return rows
 
 
+def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    # M1: Sequential-peeking null false-alarm rate across 25 monitoring steps (alpha=0.05)
+    rng = np.random.default_rng(601)
+    fp_unadj = 0
+    fp_poc = 0
+    fp_obf = 0
+    fp_con = 0
+    for _ in range(n_rep):
+        t = np.linspace(2016.0, 2022.0, 145)
+        y = 1.0 + 0.05 * (t - 2016.0) + 0.3 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.08, size=t.size)
+        if just_monitor(t, y, start=120, season="ols", alpha=0.05, parity_mode=True).detected:
+            fp_unadj += 1
+        if just_monitor(
+            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="pocock"
+        ).detected:
+            fp_poc += 1
+        if just_monitor(
+            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="obrien_fleming"
+        ).detected:
+            fp_obf += 1
+        if just_monitor(
+            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="consecutive_k", consecutive_k=2
+        ).detected:
+            fp_con += 1
+
+    rows.append(
+        {
+            "id": "M1",
+            "scenario": "JUSTmonitor Sequential-Peeking Null FPR (25 steps, alpha=0.05)",
+            "pass": (fp_poc / n_rep <= 0.10) and (fp_obf / n_rep <= 0.10) and (fp_con / n_rep <= 0.10) and (fp_poc < fp_unadj),
+            "summary": (
+                f"Unadjusted parity FPR={fp_unadj/n_rep:.1%} vs "
+                f"Sidak+Pocock={fp_poc/n_rep:.1%}, Sidak+OBF={fp_obf/n_rep:.1%}, Sidak+Consec2={fp_con/n_rep:.1%}"
+            ),
+        }
+    )
+
+    # M2: Abrupt & phenological NRT disturbance recovery and detection delay under default control
+    rng = np.random.default_rng(602)
+    abrupt_hits = 0
+    abrupt_delays: list[float] = []
+    pheno_hits = 0
+    for _ in range(n_rep):
+        t = np.linspace(2016.0, 2022.5, 160)
+        base = 1.0 + 0.02 * (t - 2016.0) + 0.25 * np.cos(2 * np.pi * t)
+        y_ab = base + np.where(t >= 2021.4, -0.45, 0.0) + rng.normal(0.0, 0.04, size=t.size)
+        r_ab = just_monitor(t, y_ab, start=2021.0, season="ols", alpha=0.01)
+        if r_ab.detected and r_ab.disturbance_type == "abrupt" and r_ab.disturbance_time_year is not None:
+            delay = r_ab.disturbance_time_year - 2021.4
+            if -0.05 <= delay <= 0.45:
+                abrupt_hits += 1
+                abrupt_delays.append(max(0.0, delay))
+
+        y_ph = base + np.where(t >= 2021.2, 0.22 * np.sin(2 * np.pi * 3.0 * t), 0.0) + rng.normal(0.0, 0.03, size=t.size)
+        r_ph = just_monitor(t, y_ph, start=2021.0, season="ols", alpha=0.01)
+        if r_ph.detected and r_ph.disturbance_type == "phenological":
+            pheno_hits += 1
+
+    med_delay = float(np.median(abrupt_delays)) if abrupt_delays else float("inf")
+    rows.append(
+        {
+            "id": "M2",
+            "scenario": "JUSTmonitor NRT Disturbance Recall (Abrupt & Phenological, Sidak+Pocock)",
+            "pass": (abrupt_hits / n_rep >= 0.90) and (pheno_hits / n_rep >= 0.85) and (med_delay <= 0.20),
+            "summary": f"Abrupt recall={abrupt_hits/n_rep:.1%} (median delay={med_delay:.3f} yr); Phenological recall={pheno_hits/n_rep:.1%}",
+        }
+    )
+    return rows
+
+
 def main() -> int:
     t0 = time.perf_counter()
     all_rows: list[dict[str, Any]] = []
@@ -588,6 +661,7 @@ def main() -> int:
     all_rows.extend(run_stpd_matrix())
     all_rows.extend(run_censored_matrix())
     all_rows.extend(run_rednoise_and_pipeline())
+    all_rows.extend(run_monitor_matrix())
     elapsed = time.perf_counter() - t0
 
     n_pass = sum(1 for r in all_rows if r["pass"])

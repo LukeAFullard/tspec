@@ -2,6 +2,8 @@
 
 Ground deformation and geotechnical monitoring records (e.g., InSAR, extensometers, piezometers) often shift smoothly from slow creep to rapid subsidence with **no sudden vertical offset**.
 
+![Ground subsidence acceleration detected by STPD + TPTR](../assets/figures/tutorial_subsidence_stpd.png)
+
 ## Step 1: Detect Smooth Slope Acceleration with STPD
 
 ```python

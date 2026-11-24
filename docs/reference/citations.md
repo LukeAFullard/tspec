@@ -30,3 +30,6 @@
    - Helsel, D. R. (2012). *Statistics for Censored Environmental Data Using Minitab and R* (2nd ed.). Wiley.
    - Turnbull, B. W. (1976). The empirical distribution function with arbitrarily grouped, censored and truncated data. *Journal of the Royal Statistical Society: Series B*, 38(3), 290–295.
    - Fullard, L. A. (2026). *ndimpute: Unbiased statistical imputation for censored data*. MIT License. https://github.com/LukeAFullard/ndimpute
+
+9. **Sequential Alpha-Spending Boundaries (`just_monitor`):**  
+   - Lan, K. K. G., & DeMets, D. L. (1983). Discrete sequential boundaries for clinical trials. *Biometrika*, 70(3), 659–663. https://doi.org/10.1093/biomet/70.3.659
