@@ -413,6 +413,8 @@ def plot_monitor(result: MonitorResult, ax: Any = None, **kwargs: Any) -> tuple[
 
         c = result.censoring
         sl = slice(len(c.is_censored) - n_act, len(c.is_censored))
+        t0_act = float(result.time_years[0]) if n_act > 0 else float("-inf")
+        active_shifts = tuple(sh for sh in c.dl_shifts if sh.time_year >= t0_act)
         cen_slice = replace(
             c,
             is_censored=c.is_censored[sl],
@@ -421,6 +423,7 @@ def plot_monitor(result: MonitorResult, ax: Any = None, **kwargs: Any) -> tuple[
             original_left=c.original_left[sl] if c.original_left is not None else None,
             original_right=c.original_right[sl] if c.original_right is not None else None,
             imputed_values=c.imputed_values[sl],
+            dl_shifts=active_shifts,
         )
 
     # Shade monitoring zone on both panels

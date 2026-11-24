@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
+from scipy import linalg
 from scipy.stats import norm
 
 from ._diagnostics import (
@@ -27,7 +28,7 @@ from ._diagnostics import (
     WarningItem,
     compute_red_noise_diagnostics,
 )
-from ._linalg import prepare_weights
+from ._linalg import PreparedWeights, prepare_weights, whiten_matrix
 from ._time import TimeSeriesInput, convert_eval_times
 from ._types import ArrayLike, FloatArray, TimeLike, ValueLike, WeightLike
 from .censored import (
@@ -359,10 +360,13 @@ def _step_alpha_budget(
         return float(1.0 - np.power(1.0 - alpha, 1.0 / h))
     if sequential_control == "obrien_fleming":
         # Lan-DeMets (1983) O'Brien-Fleming alpha-spending function
-        # alpha*(u) = 2 * (1 - Phi(z_{alpha/2} / sqrt(u))), u in (0, 1]
+        # alpha*(u) = 2 * (1 - Phi(z_{alpha/2} / sqrt(u))), u in (0, 1].
+        # Past the planned horizon (step_d > h), retain the final planned step's
+        # budget rather than collapsing to 1e-15 (a HORIZON_EXCEEDED warning is emitted).
         z_half = float(norm.isf(0.5 * alpha))
-        u_curr = min(1.0, step_d / h)
-        u_prev = min(1.0, (step_d - 1) / h)
+        d_eff = min(step_d, h)
+        u_curr = d_eff / h
+        u_prev = (d_eff - 1) / h
         spend_curr = float(2.0 * norm.sf(z_half / np.sqrt(u_curr))) if u_curr > 0.0 else 0.0
         spend_prev = float(2.0 * norm.sf(z_half / np.sqrt(u_prev))) if u_prev > 0.0 else 0.0
         inc_alpha = max(1e-15, spend_curr - spend_prev)
@@ -388,6 +392,66 @@ def _adjust_alpha_for_frequencies(
     raise ValueError("freq_correction must be 'sidak', 'bonferroni', or 'none'.")
 
 
+def _build_predictive_window_weights(
+    pw_w: PreparedWeights,
+    n_in: int,
+    v_out: FloatArray,
+) -> PreparedWeights:
+    """Build exact predictive precision weights accounting for historical parameter uncertainty.
+
+    For monitoring residuals ``e_out = y_out - D_out beta_hat``, orthogonality of
+    historical OLS residuals implies ``Cov(e_in, e_out) = 0`` identically under
+    independent errors, while
+    ``Cov(e_out) = sigma^2 (P_out^{-1} + V_out V_out^T)``
+    where ``V_out = D_out (D_his^T P_his D_his)^{-1/2}``.
+    """
+    n_out = int(v_out.shape[0])
+    n_w = n_in + n_out
+    if n_out == 0:
+        return pw_w
+
+    cov_extra = v_out @ v_out.T
+    if pw_w.kind == "matrix":
+        assert pw_w.matrix is not None and pw_w.cholesky_lower is not None
+        sigma_w = linalg.cho_solve((pw_w.cholesky_lower, True), np.eye(n_w, dtype=np.float64))
+        sigma_w[n_in:, n_in:] += cov_extra
+        sigma_w = 0.5 * (sigma_w + sigma_w.T)
+        l_sig = linalg.cholesky(sigma_w, lower=True)
+        p_win = linalg.cho_solve((l_sig, True), np.eye(n_w, dtype=np.float64))
+        p_win = 0.5 * (p_win + p_win.T)
+        l_win = linalg.cholesky(p_win, lower=True)
+        return PreparedWeights(kind="matrix", matrix=p_win, cholesky_lower=l_win)
+
+    if pw_w.kind == "none":
+        inv_w_out = np.ones(n_out, dtype=np.float64)
+        w_in_diag = np.ones(n_in, dtype=np.float64)
+    elif pw_w.kind == "scalar":
+        inv_w_out = np.full(n_out, 1.0 / pw_w.scalar, dtype=np.float64)
+        w_in_diag = np.full(n_in, pw_w.scalar, dtype=np.float64)
+    else:
+        assert pw_w.vector is not None
+        inv_w_out = 1.0 / pw_w.vector[n_in:]
+        w_in_diag = pw_w.vector[:n_in]
+
+    sigma_out = cov_extra.copy()
+    sigma_out[np.diag_indices(n_out)] += inv_w_out
+    sigma_out = 0.5 * (sigma_out + sigma_out.T)
+    l_sig_out = linalg.cholesky(sigma_out, lower=True)
+    p_out = linalg.cho_solve((l_sig_out, True), np.eye(n_out, dtype=np.float64))
+    p_out = 0.5 * (p_out + p_out.T)
+    l_out = linalg.cholesky(p_out, lower=True)
+
+    p_win = np.zeros((n_w, n_w), dtype=np.float64)
+    l_win = np.zeros((n_w, n_w), dtype=np.float64)
+    if n_in > 0:
+        idx_in = np.arange(n_in)
+        p_win[idx_in, idx_in] = w_in_diag
+        l_win[idx_in, idx_in] = np.sqrt(w_in_diag)
+    p_win[n_in:, n_in:] = p_out
+    l_win[n_in:, n_in:] = l_out
+    return PreparedWeights(kind="matrix", matrix=p_win, cholesky_lower=l_win)
+
+
 def just_monitor(
     t: TimeLike,
     y: ValueLike,
@@ -407,6 +471,7 @@ def just_monitor(
     horizon: int | None = None,
     window_mode: MonitorWindowMode = "expanding",
     stop_on_first: bool = True,
+    account_for_forecast_uncertainty: bool = True,
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
@@ -426,11 +491,14 @@ def just_monitor(
 
     Unlike unadjusted repeated testing—where scanning 35 frequencies at every
     new observation inflates cumulative false alarms rapidly—``tspec`` enables
-    multi-frequency Šidák correction (``freq_correction="sidak"``) and Pocock
-    sequential alpha-spending (``sequential_control="pocock"``) by default so
-    the familywise false-alarm rate over the monitoring horizon stays bounded
-    by ``alpha``. Set ``parity_mode=True`` for exact numerical parity with
-    Ghaderpour & Vujadinovic (2020b).
+    multi-frequency Šidák correction (``freq_correction="sidak"``), Pocock
+    sequential alpha-spending (``sequential_control="pocock"``), and exact
+    out-of-sample predictive covariance weighting
+    (``account_for_forecast_uncertainty=True``) by default so the familywise
+    false-alarm rate over the monitoring horizon stays bounded by ``alpha``
+    even when forecasting beyond a finite historical record. Set
+    ``parity_mode=True`` for exact numerical parity with Ghaderpour &
+    Vujadinovic (2020b).
 
     Parameters
     ----------
@@ -490,14 +558,25 @@ def just_monitor(
         If ``True``, halt monitoring on the first confirmed disturbance (standard
         online NRT behavior). If ``False``, continue recording ``steps`` through
         the end of the series while retaining the first confirmed alarm.
+    account_for_forecast_uncertainty : bool, default True
+        If ``True`` (default), weights each monitoring window using the exact
+        predictive residual covariance
+        ``Cov(e_out) = sigma^2 (P_out^{-1} + D_out (D_his^T P_his D_his)^{-1} D_out^T)``,
+        preventing finite-sample historical slope/seasonal estimation errors
+        from triggering false alarms when forecasting far past ``start``.
+        Forced to ``False`` when ``parity_mode=True``.
     censor_status : array-like, optional
         Optional censoring indicators (``-1`` left, ``0`` detected, ``+1`` right).
     censoring : CensoredConfig, optional
-        Configuration for ``ndimpute`` censored-data handling.
+        Configuration for ``ndimpute`` censored-data handling. Fitted strictly
+        causally on ``t[history:start]`` so future monitoring observations never
+        leak into historical imputation.
     parity_mode : bool, default False
         If ``True``, disables multiplicity controls (``freq_correction="none"``,
-        ``sequential_control="none"``) and forces ``window_mode="expanding"``
-        for exact numerical parity with Ghaderpour & Vujadinovic (2020b).
+        ``sequential_control="none"``), disables predictive covariance weighting
+        (``account_for_forecast_uncertainty=False``), and forces
+        ``window_mode="expanding"`` for exact numerical parity with Ghaderpour &
+        Vujadinovic (2020b).
 
     Returns
     -------
@@ -525,9 +604,28 @@ def just_monitor(
     eff_freq_corr: FreqCorrection = "none" if parity_mode else freq_correction
     eff_seq_ctrl: SequentialControl = "none" if parity_mode else sequential_control
     eff_win_mode: MonitorWindowMode = "expanding" if parity_mode else window_mode
+    eff_forecast_cov = False if parity_mode else bool(account_for_forecast_uncertainty)
+
+    def _causal_split(pre_series: TimeSeriesInput) -> tuple[int, int]:
+        n_pre = pre_series.n_valid
+        if n_pre < 5:
+            raise InsufficientDataError(
+                f"just_monitor requires at least 5 observations, got n={n_pre}."
+            )
+        h_i = _resolve_boundary_index(history, pre_series, name="history", default_valid_idx=0)
+        s_i = _resolve_boundary_index(start, pre_series, name="start", default_valid_idx=n_pre - 2)
+        if s_i >= n_pre:
+            raise ValueError("Monitoring start index must be strictly less than series length.")
+        if h_i >= s_i:
+            raise ValueError("history start must precede monitoring start.")
+        return h_i, s_i
 
     prepared = prepare_series_with_censoring(
-        t, y, censor_status=censor_status, censoring=censoring
+        t,
+        y,
+        censor_status=censor_status,
+        censoring=censoring,
+        causal_split_fn=_causal_split,
     )
     series = prepared.series
     t0_full = series.times_numeric - series.times_numeric[0]
@@ -554,7 +652,12 @@ def just_monitor(
 
     n_his = start_idx - hist_idx
     total_span = float(t0_full[-1] - t0_full[0])
-    min_his = n / total_span if total_span > 0.0 else 4.0
+    if parity_mode:
+        min_his = n / total_span if total_span > 0.0 else 4.0
+    elif series.is_datetime and season_norm != "none" and total_span >= 1.0:
+        min_his = n / total_span
+    else:
+        min_his = 4.0
     if n_his < min_his or n_his < 4:
         raise InsufficientDataError(
             f"Insufficient stable historical period (n_history={n_his}, need at least "
@@ -655,6 +758,17 @@ def just_monitor(
     forecast = np.asarray((D_act / col_scales_act) @ his_coeff, dtype=np.float64)
     residuals_act = np.asarray(y_act - forecast, dtype=np.float64)
 
+    # Precompute out-of-sample predictive covariance factor V_all = D_out (D_his^T P_his D_his)^{-1/2}
+    v_out_all: FloatArray | None = None
+    if eff_forecast_cov:
+        d_his_s = D_act[:n_his]
+        w_his_mat = whiten_matrix(d_his_s, pw_his)
+        _, s_h, vt_h = linalg.svd(w_his_mat, full_matrices=False)
+        if s_h.size > 0 and s_h[0] > 0.0:
+            inv_s = np.where(s_h > 1e-12 * s_h[0], 1.0 / s_h, 0.0)
+            f_his = vt_h.T * inv_s[None, :]
+            v_out_all = np.asarray(D_act[n_his:] @ f_his, dtype=np.float64)
+
     # Historical residual red-noise diagnostics
     rn, rn_warns = compute_red_noise_diagnostics(t_his, his_residuals)
     warnings_list.extend(rn_warns)
@@ -663,6 +777,42 @@ def just_monitor(
     eff_horizon = int(horizon) if horizon is not None else n_mon
     if eff_horizon < 1:
         raise ValueError(f"horizon must be >= 1, got {eff_horizon}.")
+
+    if (not parity_mode) and eff_seq_ctrl in ("pocock", "obrien_fleming") and n_mon > eff_horizon:
+        warnings_list.append(
+            WarningItem(
+                code="HORIZON_EXCEEDED",
+                severity="warning",
+                message=(
+                    f"Monitoring length ({n_mon} steps) exceeds planned horizon ({eff_horizon}); "
+                    f"familywise Type I error control under sequential_control={eff_seq_ctrl!r} "
+                    "is not guaranteed beyond the planned horizon."
+                ),
+                suggestion=(
+                    "Increase `horizon` to cover the monitoring period or switch to "
+                    "`sequential_control='consecutive_k'` for open-ended streams."
+                ),
+            )
+        )
+
+    his_span = float(t_act[n_his - 1] - t_act[0])
+    mon_span = float(t_act[-1] - t_act[n_his]) if n_mon > 1 else 0.0
+    if (not parity_mode) and his_span > 0.0 and mon_span > his_span:
+        warnings_list.append(
+            WarningItem(
+                code="LONG_MONITORING_HORIZON",
+                severity="caution",
+                message=(
+                    f"Monitoring span ({mon_span:.3g}) exceeds the stable historical span "
+                    f"({his_span:.3g}); extrapolated trend uncertainty grows quadratically "
+                    "with forecast distance."
+                ),
+                suggestion=(
+                    "Keep `account_for_forecast_uncertainty=True` (default) or periodically "
+                    "re-baseline the stable historical model."
+                ),
+            )
+        )
 
     if (not parity_mode) and eff_freq_corr == "none" and eff_seq_ctrl == "none" and n_mon > 1:
         warnings_list.append(
@@ -684,6 +834,7 @@ def just_monitor(
     elif lh == -1:
         lh += 1
     lh = max(0, lh)
+    slide_width = max(5, n_his - lh + 1)
 
     low_mask = om_mon < 1.0 - 1e-12
     high_mask = ~low_mask
@@ -698,14 +849,17 @@ def just_monitor(
     consec_count = 0
 
     for d in range(1, n_mon + 1):
-        win_start = lh if eff_win_mode == "expanding" else min(n_his - 3, lh + d - 1)
-        win_start = max(0, win_start)
         win_end = n_his + d
+        win_start = lh if eff_win_mode == "expanding" else max(0, win_end - slide_width)
         win_idx = np.arange(win_start, win_end, dtype=np.intp)
 
         t_w = t_act[win_idx]
         r_w = residuals_act[win_idx]
         pw_w = pw_act.subset(win_idx)
+        if v_out_all is not None:
+            n_in_w = max(0, n_his - win_start)
+            out_start = max(0, win_start - n_his)
+            pw_w = _build_predictive_window_weights(pw_w, n_in_w, v_out_all[out_start:d])
 
         alpha_step = _step_alpha_budget(d, eff_horizon, alpha, eff_seq_ctrl)
         alpha_adj = _adjust_alpha_for_frequencies(alpha_step, int(om_mon.size), eff_freq_corr)
@@ -780,10 +934,11 @@ def just_monitor(
 
         if triggered_now and not detected:
             detected = True
-            dist_type = cand_type
-            type_code = 1 if cand_type == "abrupt" else 2
-            # For consecutive_k, report the onset index (first exceedance of the streak)
+            # For consecutive_k, report onset index, type, and frequency consistently
+            # from the first exceedance of the confirming streak.
             onset_step = steps[d - consecutive_k] if eff_seq_ctrl == "consecutive_k" else steps[-1]
+            dist_type = onset_step.candidate_type
+            type_code = 1 if dist_type == "abrupt" else 2
             dist_local_idx = n_his + onset_step.step - 1
             dist_valid_idx = start_idx + onset_step.step - 1
             dom_freq = onset_step.peak_freq

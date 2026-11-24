@@ -192,6 +192,28 @@ class WeightedOLSResult:
     rank_deficient: bool
 
 
+def _detect_intercept_partition_cols(D: FloatArray) -> int:
+    """Return k >= 1 if D[:, :k] is a 0/1 partition of unity (constant/piecewise intercepts), else 0."""
+    nc = D.shape[1]
+    if nc == 0:
+        return 0
+    # Fast path: single constant column D[:, 0] == 1
+    if np.all(D[:, 0] == 1.0):
+        return 1
+    # Piecewise constant intercepts: binary indicator columns summing to 1 on every row
+    row_sum = np.zeros(D.shape[0], dtype=np.float64)
+    for k in range(nc):
+        col = D[:, k]
+        if not np.all((col == 0.0) | (col == 1.0)):
+            return 0
+        row_sum += col
+        if np.all(row_sum == 1.0):
+            return k + 1
+        if np.any(row_sum > 1.0):
+            return 0
+    return 0
+
+
 def solve_weighted_ols(
     D: FloatArray,
     y: FloatArray,
@@ -225,7 +247,19 @@ def solve_weighted_ols(
         ALLSSA/JUST inner loops where only residuals and ``Q`` are needed).
     """
     n, nc = D.shape
-    y_w = whiten_vector(y, pw)
+
+    # Exact shift-invariant mean-centering when D spans the constant vector 1_n
+    # (prevents catastrophic cancellation on large baselines such as y + 1e13).
+    k_int = _detect_intercept_partition_cols(D)
+    if k_int > 0 and (col_scales is None or np.all(col_scales[:k_int] == 1.0)):
+        y_shift = float(np.mean(y))
+        y_work = y - y_shift
+    else:
+        k_int = 0
+        y_shift = 0.0
+        y_work = y
+
+    y_w = whiten_vector(y_work, pw)
     y_w_norm_sq = float(np.dot(y_w, y_w))
 
     if nc == 0:
@@ -314,7 +348,11 @@ def solve_weighted_ols(
                 cov_scaled = np.empty((0, 0), dtype=np.float64)
             Q_basis = Uk
 
-    residuals = y - D @ coeff_scaled
+    residuals = y_work - D @ coeff_scaled
+    if k_int > 0 and y_shift != 0.0:
+        coeff_scaled = coeff_scaled.copy()
+        coeff_scaled[:k_int] += y_shift
+
     if col_scales is not None:
         coeff = coeff_scaled * col_scales
         cov = (
@@ -348,19 +386,20 @@ def compute_lss_vectorized(
     *,
     known_freqs: FloatArray | None = None,
     freq_tol: float = 1e-12,
-    chunk_size: int = 1024,
+    chunk_size: int = 512,
 ) -> tuple[FloatArray, FloatArray]:
     """Evaluate normalized LSS and out-of-context (cos, sin) coefficients across ``omega``.
 
     Uses exact QR orthogonal projection ``Phi_perp = (I - Q Q^T) W Phi`` and
     analytical 2x2 Schur-complement inversion, vectorized in frequency chunks
-    for O(n) weight memory and high throughput.
+    for O(n) weight memory, numerical stability near collinear subspaces, and
+    high throughput.
     """
     k_total = int(omega.size)
     spectrum = np.zeros(k_total, dtype=np.float64)
     cs_coeffs = np.zeros((k_total, 2), dtype=np.float64)
 
-    if k_total == 0 or ols.norm_res <= 1e-24 * max(1.0, ols.y_w_norm_sq):
+    if k_total == 0 or ols.norm_res <= 0.0 or ols.norm_res <= 1e-28 * ols.y_w_norm_sq:
         return spectrum, cs_coeffs
 
     known = known_freqs if known_freqs is not None else np.empty(0, dtype=np.float64)
@@ -382,26 +421,40 @@ def compute_lss_vectorized(
         Cw = whiten_matrix(C, pw)
         Sw = whiten_matrix(S, pw)
 
-        if has_q:
-            qt_c = Q.T @ Cw
-            qt_s = Q.T @ Sw
-            # Use identity ||(I - QQ^T)X||^2 = ||X||^2 - ||Q^T X||^2 to avoid
-            # allocating full projected (n, m) matrices when computing Schur entries!
-            a = np.sum(Cw * Cw, axis=0) - np.sum(qt_c * qt_c, axis=0)
-            d = np.sum(Sw * Sw, axis=0) - np.sum(qt_s * qt_s, axis=0)
-            b = np.sum(Cw * Sw, axis=0) - np.sum(qt_c * qt_s, axis=0)
-        else:
-            a = np.sum(Cw * Cw, axis=0)
-            d = np.sum(Sw * Sw, axis=0)
-            b = np.sum(Cw * Sw, axis=0)
-
-        # Since Q^T r_w = 0, (Phi_perp)^T r_w == Phi_w^T r_w directly!
+        a = np.sum(Cw * Cw, axis=0)
+        d = np.sum(Sw * Sw, axis=0)
+        b = np.sum(Cw * Sw, axis=0)
         g1 = Cw.T @ r_w
         g2 = Sw.T @ r_w
 
+        if has_q:
+            cw_norm2 = a
+            sw_norm2 = d
+            qtc = Q.T @ Cw
+            qts = Q.T @ Sw
+            a = cw_norm2 - np.sum(qtc * qtc, axis=0)
+            d = sw_norm2 - np.sum(qts * qts, axis=0)
+            b = b - np.sum(qtc * qts, axis=0)
+
+            # Fallback to explicit orthogonal projection whenever >=3 digits of
+            # cancellation occur (e.g., near known frequencies or low-freq trends).
+            cancel = (
+                (a < 1e-3 * cw_norm2)
+                | (d < 1e-3 * sw_norm2)
+                | ((a * d - b * b) < 1e-6 * cw_norm2 * sw_norm2)
+            )
+            if np.any(cancel):
+                Cw_p = Cw[:, cancel] - Q @ qtc[:, cancel]
+                Sw_p = Sw[:, cancel] - Q @ qts[:, cancel]
+                a[cancel] = np.sum(Cw_p * Cw_p, axis=0)
+                d[cancel] = np.sum(Sw_p * Sw_p, axis=0)
+                b[cancel] = np.sum(Cw_p * Sw_p, axis=0)
+                g1[cancel] = Cw_p.T @ r_w
+                g2[cancel] = Sw_p.T @ r_w
+
         det = a * d - b * b
         scale_sq = (a + d) ** 2
-        good = (det > 1e-24 * np.maximum(scale_sq, 1.0)) & (np.abs(om_chunk) > 0.0)
+        good = (scale_sq > 0.0) & (det > 1e-28 * scale_sq) & (np.abs(om_chunk) > 0.0)
 
         if known.size > 0:
             # Exclude frequencies already included in the known-constituents matrix D

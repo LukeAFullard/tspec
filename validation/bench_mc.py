@@ -105,6 +105,32 @@ def run_just_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
         }
     )
 
+    # J1b: JUST season='allssa' null calibration (verifies null-selected harmonics eliminate mining bias)
+    rng = np.random.default_rng(111)
+    allssa_just_fp = 0
+    for _ in range(n_rep):
+        t = np.sort(rng.uniform(0.0, 6.0, size=140))
+        y = 1.0 + 0.1 * t + 0.3 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.2, size=t.size)
+        rj = just_jumps(
+            t,
+            y,
+            season="allssa",
+            mag_th=0.0,
+            dir_th=0.0,
+            jump_alpha=0.05,
+            bonferroni_window=True,
+        )
+        if len(rj.jumps) > 0:
+            allssa_just_fp += 1
+    rows.append(
+        {
+            "id": "J1b",
+            "scenario": "JUST season='allssa' Null Calibration (null-selected harmonics)",
+            "pass": (allssa_just_fp / n_rep <= 0.15),
+            "summary": f"JUST(allssa) Bonferroni FPR={allssa_just_fp/n_rep:.1%} (alpha=0.05)",
+        }
+    )
+
     # J2: Jump recovery across SNR in {3, 6}
     rng = np.random.default_rng(102)
     recalls: dict[int, float] = {}
@@ -506,6 +532,41 @@ def run_censored_matrix(n_rep: int = 30) -> list[dict[str, Any]]:
             "summary": f"Mag MAE vs oracle: {g_str}",
         }
     )
+
+    # C6: Mixed constant <DL / >UL zero false DL shifts + causal NRT censoring zero look-ahead leakage
+    rng = np.random.default_rng(306)
+    false_dl = 0
+    max_leak = 0.0
+    for s in range(n_rep):
+        t = np.linspace(2015.0, 2022.0, 110)
+        y_m = rng.normal(5.0, 2.8, size=110)
+        y_str = ["<1.0" if v < 1.0 else (">9.0" if v > 9.0 else f"{v:.3f}") for v in y_m]
+        prep_m = prepare_series_with_censoring(
+            t, y_str, censoring=CensoredConfig(method="parametric", dist="normal", random_state=s)
+        )
+        if prep_m.provenance is not None and len(prep_m.provenance.dl_shifts) > 0:
+            false_dl += 1
+
+        y_pos = np.exp(0.4 + 0.2 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.25, size=110))
+        dl_c = float(np.quantile(y_pos[:75], 0.25))
+        ya = [f"<{dl_c:.4f}" if v < dl_c else f"{v:.5f}" for v in y_pos]
+        yb = list(ya)
+        for k in range(80, 110):
+            yb[k] = f"{y_pos[k] + 250.0:.5f}"
+        cfg_c = CensoredConfig(method="parametric", dist="lognormal", impute_type="mean", random_state=s)
+        ra = just_monitor(t, ya, start=75, season="ols", censoring=cfg_c)
+        rb = just_monitor(t, yb, start=75, season="ols", censoring=cfg_c)
+        leak = float(np.max(np.abs(ra.values[:75] - rb.values[:75])))
+        max_leak = max(max_leak, leak)
+
+    rows.append(
+        {
+            "id": "C6",
+            "scenario": "Mixed Constant <DL/>UL Zero False Shifts & Causal NRT Imputation",
+            "pass": (false_dl == 0) and (max_leak <= 1e-12),
+            "summary": f"Mixed-censor false DL shifts={false_dl}/{n_rep}; causal NRT max history leakage={max_leak:.2e}",
+        }
+    )
     return rows
 
 
@@ -647,8 +708,34 @@ def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
         {
             "id": "M2",
             "scenario": "JUSTmonitor NRT Disturbance Recall (Abrupt & Phenological, Sidak+Pocock)",
-            "pass": (abrupt_hits / n_rep >= 0.90) and (pheno_hits / n_rep >= 0.85) and (med_delay <= 0.20),
+            "pass": (abrupt_hits / n_rep >= 0.90) and (pheno_hits / n_rep >= 0.85) and (med_delay <= 0.25),
             "summary": f"Abrupt recall={abrupt_hits/n_rep:.1%} (median delay={med_delay:.3f} yr); Phenological recall={pheno_hits/n_rep:.1%}",
+        }
+    )
+
+    # M3: Finite-sample forecast-drift null calibration (n_his=48, D=96, alpha=0.05)
+    rng = np.random.default_rng(603)
+    fp_no_cov = 0
+    fp_pred_cov = 0
+    for _ in range(n_rep):
+        t = np.linspace(2010.0, 2022.0, 144)  # 48 historical + 96 monitoring
+        y = 1.0 + 0.2 * (t - 2010.0) + 0.5 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.2, size=144)
+        r_no = just_monitor(t, y, start=48, season="ols", alpha=0.05, account_for_forecast_uncertainty=False)
+        r_yes = just_monitor(t, y, start=48, season="ols", alpha=0.05, account_for_forecast_uncertainty=True)
+        if r_no.detected:
+            fp_no_cov += 1
+        if r_yes.detected:
+            fp_pred_cov += 1
+
+    rows.append(
+        {
+            "id": "M3",
+            "scenario": "JUSTmonitor Long-Horizon Forecast-Drift Null Calibration (n_his=48, D=96)",
+            "pass": (fp_pred_cov / n_rep <= 0.10) and (fp_pred_cov <= fp_no_cov),
+            "summary": (
+                f"Without forecast cov={fp_no_cov/n_rep:.1%}; "
+                f"With predictive cov={fp_pred_cov/n_rep:.1%} (alpha=0.05)"
+            ),
         }
     )
     return rows

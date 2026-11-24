@@ -240,11 +240,12 @@ def _lssa_core(
     ols = solve_weighted_ols(
         D, y, pw, col_scales=col_scales, allow_rank_deficient=True, compute_cov=compute_cov
     )
-    crit = critical_value_lss(n, nc, alpha)
+    eff_nc = ols.rank if ols.rank_deficient else nc
+    crit = critical_value_lss(n, eff_nc, alpha)
 
     if omega.size > 0:
         spec, cs = compute_lss_vectorized(t0, omega, ols, pw, known_freqs=known_freqs)
-        pvals = _lss_pvalues(spec, n, nc)
+        pvals = _lss_pvalues(spec, n, eff_nc)
     else:
         spec = np.empty(0, dtype=np.float64)
         cs = np.empty((0, 2), dtype=np.float64)

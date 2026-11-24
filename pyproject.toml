@@ -40,6 +40,7 @@ classifiers = [
 dependencies = [
     "numpy>=1.24",
     "scipy>=1.13",
+    "pandas>=2.0",
     "ndimpute>=0.1.1,<1.0",
 ]
 

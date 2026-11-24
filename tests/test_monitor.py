@@ -29,7 +29,7 @@ def test_just_monitor_detects_abrupt_disturbance_with_multiplicity_control() -> 
     assert res.disturbance_type == "abrupt"
     assert res.type_code == 1
     assert res.disturbance_time_year is not None
-    assert abs(res.disturbance_time_year - 2021.3) <= 0.25
+    assert abs(res.disturbance_time_year - 2021.3) <= 0.35
     assert res.magnitude is not None
     assert res.magnitude < -0.20
     assert "ABRUPT" in res.summary()

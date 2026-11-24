@@ -28,6 +28,7 @@ full lite-environment compatibility when censored data are not used.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -115,6 +116,7 @@ class DlShiftEvent:
     old_limit: float
     new_limit: float
     relative_change: float
+    side: Literal["left", "right"] = "left"
 
 
 @dataclass(frozen=True)
@@ -215,7 +217,13 @@ def _parse_censored_values(
             raise CensoringError("Interval lower bounds must not exceed upper bounds.")
         is_interval = valid & (lo != hi)
         codes = np.where(is_interval, 2, 0).astype(np.intp)
-        mid = np.where(valid, 0.5 * (lo + hi), np.nan)
+        # Avoid ±inf in display values for half-infinite intervals (-inf, hi] or [lo, +inf)
+        both_finite = valid & np.isfinite(lo) & np.isfinite(hi)
+        mid = np.where(
+            both_finite,
+            0.5 * (lo + hi),
+            np.where(valid & np.isfinite(hi), hi, np.where(valid & np.isfinite(lo), lo, np.nan)),
+        )
         return mid, codes, lo, hi, "interval", missing
 
     if raw.ndim != 1:
@@ -306,25 +314,40 @@ def _parse_censored_values(
                 raise CensoringError("Numeric `censor_status` must contain only integers (-1, 0, 1).")
             int_codes = f_arr.astype(np.intp)
             uniq = set(np.unique(int_codes).tolist())
-            if config.censoring_type in ("left", "right"):
+            if not uniq <= {-1, 0, 1}:
+                raise CensoringError(
+                    f"`censor_status` must contain only -1, 0, 1; got {sorted(uniq)}."
+                )
+            if config.censoring_type == "left":
+                # Accept canonical {-1, 0} directly as well as legacy binary {0, 1}
+                if uniq <= {-1, 0}:
+                    codes = int_codes
+                elif uniq <= {0, 1}:
+                    codes = -int_codes
+                else:
+                    raise CensoringError(
+                        "censoring_type='left' requested, but `censor_status` contains both -1 and +1."
+                    )
+                ctype = "left"
+            elif config.censoring_type == "right":
                 if not uniq <= {0, 1}:
                     raise CensoringError(
-                        f"For censoring_type={config.censoring_type!r}, `censor_status` must be "
-                        f"boolean or 0/1; got {sorted(uniq)}."
+                        "censoring_type='right' requested, but `censor_status` contains -1 entries."
                     )
-                sign = -1 if config.censoring_type == "left" else 1
-                codes = int_codes * sign
-                ctype = config.censoring_type
+                codes = int_codes
+                ctype = "right"
+            elif config.censoring_type == "mixed":
+                codes = int_codes
+                ctype = "mixed"
             else:
-                if not uniq <= {-1, 0, 1}:
-                    raise CensoringError(
-                        f"`censor_status` must contain only -1, 0, 1; got {sorted(uniq)}."
-                    )
-                if config.censoring_type == "mixed" or -1 in uniq:
-                    codes = int_codes
+                # Canonical signed convention: -1 = left, 0 = observed, +1 = right.
+                # Never silently flip +1 to -1!
+                codes = int_codes
+                if -1 in uniq and 1 in uniq:
                     ctype = "mixed"
+                elif 1 in uniq:
+                    ctype = "right"
                 else:
-                    codes = -int_codes
                     ctype = "left"
 
     if ctype == "left" and np.any(codes == 1):
@@ -440,96 +463,112 @@ def detect_dl_shifts(
 ) -> tuple[DlShiftEvent, ...]:
     """Detect step shifts in active censoring limits along the time axis.
 
-    Detects two real-world laboratory detection-limit change patterns:
-    1. **Explicit limit transition:** The sequence of censoring limits shifts
-       by at least ``rel_threshold`` (even if only 1–2 observations fall below
-       a newly lowered detection limit).
-    2. **Implicit DL drop (censoring disappearance):** Censoring at an old
-       limit ``L_old`` ceases and multiple uncensored detections appear
-       strictly below ``(1 - rel_threshold) * L_old``.
+    Scans left-censored (``-1``) and right-censored (``+1``) limits **separately**
+    so constant mixed censoring (e.g., ``<0.8`` and ``>3.5``) never triggers false
+    DL-shift alerts. For each side, detects both:
+    1. **Explicit limit transition:** The sequence of active limits shifts by at
+       least ``rel_threshold``.
+    2. **Implicit limit shift (censoring disappearance):** Censoring at an old
+       limit ``L_old`` ceases and >=3 uncensored detections appear strictly beyond
+       ``L_old`` (below ``(1 - rel_threshold) * L_old`` for left censoring, or
+       above ``(1 + rel_threshold) * L_old`` for right censoring).
     """
-    cen_pos = np.flatnonzero((status_codes == -1) | (status_codes == 1))
-    if cen_pos.size < min_run:
-        return ()
+    all_events: list[DlShiftEvent] = []
 
-    lims = original_values[cen_pos]
-    m = int(lims.size)
-    h = min(5, max(min_run, m // 8))
-
-    candidates: list[tuple[int, float, float, float]] = []
-    for k in range(1, m):
-        left_slice = lims[max(0, k - h) : k]
-        right_slice = lims[k : min(m, k + h)]
-        if left_slice.size < min_run and right_slice.size < min_run:
+    for side_code in (-1, 1):
+        side_lit: Literal["left", "right"] = "left" if side_code == -1 else "right"
+        cen_pos = np.flatnonzero(status_codes == side_code)
+        if cen_pos.size < min_run:
             continue
-        left_med = float(np.median(left_slice))
-        right_med = float(np.median(right_slice))
-        denom = max(abs(left_med), abs(right_med), 1e-12)
-        rel = abs(right_med - left_med) / denom
-        step_at_k = abs(lims[k] - lims[k - 1]) / denom
-        if rel >= rel_threshold and step_at_k >= rel_threshold * 0.5:
-            pos_idx = int(cen_pos[k])
-            # If a left-DL dropped, the new lower limit became active as soon as
-            # uncensored detections strictly below the old limit began appearing.
-            if status_codes[cen_pos[k - 1]] == -1 and right_med < left_med:
+
+        lims = original_values[cen_pos]
+        m = int(lims.size)
+        h = min(5, max(min_run, m // 8))
+
+        candidates: list[tuple[int, float, float, float]] = []
+        for k in range(1, m):
+            left_slice = lims[max(0, k - h) : k]
+            right_slice = lims[k : min(m, k + h)]
+            if left_slice.size < min_run and right_slice.size < min_run:
+                continue
+            left_med = float(np.median(left_slice))
+            right_med = float(np.median(right_slice))
+            denom = max(abs(left_med), abs(right_med), 1e-12)
+            rel = abs(right_med - left_med) / denom
+            step_at_k = abs(lims[k] - lims[k - 1]) / denom
+            if rel >= rel_threshold and step_at_k >= rel_threshold * 0.5:
+                pos_idx = int(cen_pos[k])
                 prev_pos = int(cen_pos[k - 1])
                 inter = np.arange(prev_pos + 1, pos_idx)
                 if inter.size > 0:
-                    inter_det_below = inter[
-                        (status_codes[inter] == 0)
-                        & (original_values[inter] < left_med * (1.0 - rel_threshold))
-                    ]
-                    if inter_det_below.size > 0:
-                        pos_idx = int(inter_det_below[0])
-            candidates.append((pos_idx, left_med, right_med, rel))
+                    if side_code == -1 and right_med < left_med:
+                        inter_det = inter[
+                            (status_codes[inter] == 0)
+                            & (original_values[inter] < left_med * (1.0 - rel_threshold))
+                        ]
+                        if inter_det.size > 0:
+                            pos_idx = int(inter_det[0])
+                    elif side_code == 1 and right_med > left_med:
+                        inter_det = inter[
+                            (status_codes[inter] == 0)
+                            & (original_values[inter] > left_med * (1.0 + rel_threshold))
+                        ]
+                        if inter_det.size > 0:
+                            pos_idx = int(inter_det[0])
+                candidates.append((pos_idx, left_med, right_med, rel))
 
-    # Implicit left-DL drop: censoring at L_old stops and >=3 uncensored detections
-    # subsequently appear well below L_old (e.g., lab upgraded from <2.0 to <0.2 so
-    # almost nothing is censored afterward, yet values 0.4, 0.7, 1.1 are now detected).
-    left_pos = np.flatnonzero(status_codes == -1)
-    if left_pos.size >= min_run:
-        last_left = int(left_pos[-1])
-        old_dl = float(original_values[last_left])
-        after_mask = (np.arange(original_values.size) > last_left) & (status_codes == 0)
-        after_vals = original_values[after_mask]
-        below_old = after_vals[after_vals < old_dl * (1.0 - rel_threshold)]
-        if below_old.size >= 3:
-            first_below_pos = int(
-                np.flatnonzero(after_mask & (original_values < old_dl * (1.0 - rel_threshold)))[0]
-            )
-            inferred_new = float(np.min(below_old))
-            rel = abs(old_dl - inferred_new) / max(abs(old_dl), 1e-12)
-            # Only add if not already covered by an explicit transition nearby
-            if not any(abs(c[0] - first_below_pos) <= max(5, h) for c in candidates):
-                candidates.append((first_below_pos, old_dl, inferred_new, rel))
-
-    if not candidates:
-        return ()
-
-    candidates.sort(key=lambda item: item[0])
-    # Merge adjacent transitions within 5 valid observations, keeping largest relative jump
-    merged: list[tuple[int, float, float, float]] = [candidates[0]]
-    for cand in candidates[1:]:
-        if cand[0] - merged[-1][0] <= max(5, h):
-            if cand[3] > merged[-1][3]:
-                merged[-1] = cand
+        # Implicit limit shift: censoring at old_dl ceases and >=3 uncensored detections
+        # appear strictly past old_dl in the newly unlocked range.
+        last_c = int(cen_pos[-1])
+        old_dl = float(original_values[last_c])
+        after_mask = (np.arange(original_values.size) > last_c) & (status_codes == 0)
+        if side_code == -1:
+            thresh_val = old_dl * (1.0 - rel_threshold) if old_dl >= 0 else old_dl * (1.0 + rel_threshold)
+            beyond_mask = after_mask & (original_values < thresh_val)
         else:
-            merged.append(cand)
+            thresh_val = old_dl * (1.0 + rel_threshold) if old_dl >= 0 else old_dl * (1.0 - rel_threshold)
+            beyond_mask = after_mask & (original_values > thresh_val)
 
-    events: list[DlShiftEvent] = []
-    for v_idx, old_l, new_l, rel in merged:
-        events.append(
-            DlShiftEvent(
-                index=int(valid_to_orig[v_idx]),
-                valid_index=v_idx,
-                time=times_raw[v_idx],
-                time_year=float(times_numeric[v_idx]),
-                old_limit=old_l,
-                new_limit=new_l,
-                relative_change=rel,
+        beyond_pos = np.flatnonzero(beyond_mask)
+        if beyond_pos.size >= 3:
+            first_beyond = int(beyond_pos[0])
+            inferred_new = (
+                float(np.min(original_values[beyond_pos]))
+                if side_code == -1
+                else float(np.max(original_values[beyond_pos]))
             )
-        )
-    return tuple(events)
+            rel = abs(old_dl - inferred_new) / max(abs(old_dl), abs(inferred_new), 1e-12)
+            if not any(abs(c[0] - first_beyond) <= max(5, h) for c in candidates):
+                candidates.append((first_beyond, old_dl, inferred_new, rel))
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda item: item[0])
+        merged: list[tuple[int, float, float, float]] = [candidates[0]]
+        for cand in candidates[1:]:
+            if cand[0] - merged[-1][0] <= max(5, h):
+                if cand[3] > merged[-1][3]:
+                    merged[-1] = cand
+            else:
+                merged.append(cand)
+
+        for v_idx, old_l, new_l, rel in merged:
+            all_events.append(
+                DlShiftEvent(
+                    index=int(valid_to_orig[v_idx]),
+                    valid_index=v_idx,
+                    time=times_raw[v_idx],
+                    time_year=float(times_numeric[v_idx]),
+                    old_limit=old_l,
+                    new_limit=new_l,
+                    relative_change=rel,
+                    side=side_lit,
+                )
+            )
+
+    all_events.sort(key=lambda e: e.valid_index)
+    return tuple(all_events)
 
 
 def check_dl_shift_coincidence(
@@ -624,8 +663,10 @@ def recensor_to_common_limit(
 ) -> FloatArray | None:
     """Temporarily recensor all observations below max active left-DL in ``[start:stop]``.
 
-    Returns the re-imputed window series (or ``None`` if recensoring leaves too
-    few detects or there is only one unique left detection limit).
+    Handles both explicit multi-DL windows and implicit DL-drop windows where
+    only the old higher limit remains censored while uncensored detections fall
+    below ``l_max``. Returns the re-imputed window series (or ``None`` if
+    recensoring has no effect or leaves too few detects).
     """
     codes_w = provenance.status_codes[start:stop].copy()
     vals_w = provenance.original_values[start:stop].copy()
@@ -633,10 +674,11 @@ def recensor_to_common_limit(
     if not np.any(left_mask):
         return None
     unique_dls = np.unique(vals_w[left_mask])
-    if unique_dls.size < 2:
+    l_max = float(np.max(unique_dls))
+    has_det_below = bool(np.any((codes_w == 0) & (vals_w < l_max)))
+    if unique_dls.size < 2 and not has_det_below:
         return None
 
-    l_max = float(np.max(unique_dls))
     recen_mask = (codes_w == -1) | ((codes_w == 0) & (vals_w < l_max))
     vals_recen = np.where(recen_mask, l_max, vals_w)
     codes_recen = np.where(recen_mask, -1, codes_w)
@@ -809,6 +851,21 @@ def _bootstrap_refit_draw(
         return np.asarray(imp, dtype=np.float64)
 
 
+def _spawn_stability_rngs(
+    random_state: int | np.random.Generator | None,
+    n_draws: int,
+) -> list[np.random.Generator]:
+    """Create deterministic or fresh child RNGs honoring int, Generator, or None seeds."""
+    if isinstance(random_state, (int, np.integer)):
+        ss = np.random.SeedSequence(int(random_state) + 10_007)
+        return [np.random.default_rng(s) for s in ss.spawn(n_draws)]
+    if isinstance(random_state, np.random.Generator):
+        child_seeds = random_state.integers(0, 2**32 - 1, size=n_draws)
+        return [np.random.default_rng(int(s)) for s in child_seeds]
+    ss = np.random.SeedSequence()
+    return [np.random.default_rng(s) for s in ss.spawn(n_draws)]
+
+
 def generate_stability_draws(
     provenance: CensoringProvenance,
     config: CensoredConfig,
@@ -819,14 +876,51 @@ def generate_stability_draws(
     if n_draws <= 0 or provenance.n_censored == 0:
         return []
 
-    base_seed = config.random_state if isinstance(config.random_state, (int, np.integer)) else 0
-    ss = np.random.SeedSequence(int(base_seed) + 10_007)
-    child_rngs = [np.random.default_rng(s) for s in ss.spawn(n_draws)]
+    child_rngs = _spawn_stability_rngs(config.random_state, n_draws)
 
     draws: list[FloatArray] = []
     for rng in child_rngs:
         if config.stability_mode == "bootstrap":
-            draws.append(_bootstrap_refit_draw(provenance, config, rng))
+            imp = _bootstrap_refit_draw(provenance, config, rng)
+            if config.scope == "seasonal_stratified":
+                quarters = np.floor((t_valid % 1.0) * 4.0).astype(np.intp) % 4
+                for q in range(4):
+                    mask = quarters == q
+                    c_q = provenance.status_codes[mask]
+                    n_q = int(c_q.size)
+                    n_cen_q = int(np.sum(c_q != 0))
+                    if n_cen_q == 0 or (n_q - n_cen_q) < 5 or (n_cen_q / n_q) > 0.80:
+                        continue
+                    v_q = provenance.original_values[mask]
+                    if np.unique(v_q[c_q == 0]).size < 2:
+                        continue
+                    sub_prov = CensoringProvenance(
+                        method=provenance.method,
+                        censoring_type=provenance.censoring_type,
+                        dist=provenance.dist,
+                        impute_type=provenance.impute_type,
+                        scope="global",
+                        censor_fraction=n_cen_q / n_q,
+                        n_censored=n_cen_q,
+                        n_observed=n_q - n_cen_q,
+                        is_censored=c_q != 0,
+                        status_codes=c_q,
+                        original_values=v_q,
+                        original_left=provenance.original_left[mask]
+                        if provenance.original_left is not None
+                        else None,
+                        original_right=provenance.original_right[mask]
+                        if provenance.original_right is not None
+                        else None,
+                        imputed_values=imp[mask],
+                        dl_shifts=(),
+                        ndimpute_attrs={},
+                        imputed_weight_factor=provenance.imputed_weight_factor,
+                        n_stability_draws=0,
+                        stability_mode=provenance.stability_mode,
+                    )
+                    imp[mask] = _bootstrap_refit_draw(sub_prov, config, rng)
+            draws.append(imp)
         else:
             cfg_draw = CensoredConfig(
                 method=config.method,
@@ -863,6 +957,85 @@ def generate_stability_draws(
     return draws
 
 
+def _impute_causal_history_and_monitoring(
+    vals_valid: FloatArray,
+    codes_valid: IntArray,
+    left_valid: FloatArray | None,
+    right_valid: FloatArray | None,
+    ctype: str,
+    cfg: CensoredConfig,
+    rng: np.random.Generator,
+    hist_idx: int,
+    start_idx: int,
+) -> tuple[FloatArray, dict[str, Any]]:
+    """Impute strictly causally: fit distribution on ``[hist_idx:start_idx]`` only.
+
+    Guarantees zero look-ahead leakage from monitoring observations ``[start_idx:]``
+    into historical imputed values ``[:start_idx]``. Each censored monitoring point
+    at index ``k >= start_idx`` is imputed conditionally against the frozen historical
+    slice ``[hist_idx:start_idx]`` alone.
+    """
+    n_valid = int(vals_valid.size)
+    imp_out = vals_valid.copy()
+
+    h_vals = vals_valid[hist_idx:start_idx]
+    h_codes = codes_valid[hist_idx:start_idx]
+    h_left = left_valid[hist_idx:start_idx] if left_valid is not None else None
+    h_right = right_valid[hist_idx:start_idx] if right_valid is not None else None
+
+    h_cen = int(np.sum(h_codes != 0))
+    h_obs = int(h_codes.size) - h_cen
+    h_distinct = int(np.unique(h_vals[h_codes == 0]).size) if h_obs > 0 else 0
+    if h_cen > 0 and (h_obs < 2 or h_distinct < 2):
+        raise CensoringError(
+            f"Too few uncensored observations in the historical period [{hist_idx}:{start_idx}] "
+            f"to fit causal imputation ({h_obs} detected, {h_distinct} distinct)."
+        )
+
+    # 1. Impute historical slice strictly from [hist_idx:start_idx]
+    if h_cen > 0:
+        h_imp, attrs = _call_ndimpute_single(h_vals, h_codes, h_left, h_right, ctype, cfg, rng)
+        imp_out[hist_idx:start_idx] = h_imp
+    else:
+        attrs = {
+            "method": cfg.method,
+            "censoring_type": ctype,
+            "dist": cfg.dist,
+            "impute_type": cfg.impute_type,
+        }
+
+    # 2. Impute any censored pre-history or monitoring observations strictly conditioned
+    #    on the frozen historical data (one observation at a time so neither future
+    #    monitoring points nor other censored monitoring points leak backwards).
+    rng_mon = np.random.default_rng(int(rng.integers(0, 2**32 - 1)))
+    for k in range(n_valid):
+        if hist_idx <= k < start_idx:
+            continue
+        if codes_valid[k] == 0:
+            continue
+        if h_obs < 2 or h_distinct < 2:
+            # No historical distribution available to condition on; keep raw limit
+            imp_out[k] = vals_valid[k]
+            continue
+        v_pair = np.concatenate([h_vals, np.array([vals_valid[k]], dtype=np.float64)])
+        c_pair = np.concatenate([h_codes, np.array([codes_valid[k]], dtype=np.intp)])
+        l_pair = (
+            np.concatenate([h_left, np.array([left_valid[k]], dtype=np.float64)])
+            if (h_left is not None and left_valid is not None)
+            else None
+        )
+        r_pair = (
+            np.concatenate([h_right, np.array([right_valid[k]], dtype=np.float64)])
+            if (h_right is not None and right_valid is not None)
+            else None
+        )
+        # Ensure each monitoring point gets its own isolated draw from rng_mon
+        imp_pair, _ = _call_ndimpute_single(v_pair, c_pair, l_pair, r_pair, ctype, cfg, rng_mon)
+        imp_out[k] = float(imp_pair[-1])
+
+    return imp_out, attrs
+
+
 def prepare_series_with_censoring(
     t: TimeLike,
     y: ValueLike,
@@ -870,11 +1043,14 @@ def prepare_series_with_censoring(
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     allow_duplicates: bool = False,
+    causal_split_fn: Callable[[TimeSeriesInput], tuple[int, int]] | None = None,
 ) -> PreparedCensoredSeries:
-    """Unified entry point preparing numeric OR censored time series for JUST/STPD.
+    """Unified entry point preparing numeric OR censored time series for JUST/STPD/Monitor.
 
     When inputs are purely numeric and neither ``censor_status`` nor ``censoring``
     is provided, bypasses ``ndimpute`` completely (zero pandas/ndimpute imports).
+    When ``causal_split_fn`` is supplied (by :func:`just_monitor`), imputation is
+    fitted strictly on ``[history:start]`` to eliminate look-ahead data leakage.
     """
     if not has_censored_input(y, censor_status, censoring):
         from ._time import prepare_numeric_series
@@ -1009,7 +1185,7 @@ def prepare_series_with_censoring(
             )
 
         # Non-stationarity check across first vs second half censoring rates
-        if cfg.scope == "global" and n_valid >= 20:
+        if cfg.scope == "global" and n_valid >= 20 and causal_split_fn is None:
             half = n_valid // 2
             f1 = float(np.mean(is_cen[:half]))
             f2 = float(np.mean(is_cen[half:]))
@@ -1036,13 +1212,24 @@ def prepare_series_with_censoring(
         else np.random.default_rng(cfg.random_state)
     )
 
-    imp_global, attrs = _call_ndimpute_single(
-        vals_valid, codes_valid, left_valid, right_valid, ctype, cfg, rng
+    rate_ratio = estimate_sampling_rate_ratio(t_valid)
+    pre_series = TimeSeriesInput(
+        times_numeric=t_valid,
+        times_raw=t_raw_valid,
+        is_datetime=is_dt,
+        values=vals_valid,
+        valid_mask=valid_mask,
+        valid_to_orig=valid_to_orig,
+        n_input=n_input,
+        n_valid=n_valid,
+        n_dropped_nan=n_input - n_valid,
+        sampling_rate_ratio=rate_ratio,
     )
+
     fallback_count = 0
-    if cfg.scope == "seasonal_stratified" and n_cen > 0:
-        imp_values, fallback_count = _impute_seasonal_stratified(
-            t_valid,
+    if causal_split_fn is not None and n_cen > 0:
+        hist_idx, start_idx = causal_split_fn(pre_series)
+        imp_values, attrs = _impute_causal_history_and_monitoring(
             vals_valid,
             codes_valid,
             left_valid,
@@ -1050,10 +1237,27 @@ def prepare_series_with_censoring(
             ctype,
             cfg,
             rng,
-            imp_global,
+            hist_idx,
+            start_idx,
         )
     else:
-        imp_values = imp_global
+        imp_global, attrs = _call_ndimpute_single(
+            vals_valid, codes_valid, left_valid, right_valid, ctype, cfg, rng
+        )
+        if cfg.scope == "seasonal_stratified" and n_cen > 0:
+            imp_values, fallback_count = _impute_seasonal_stratified(
+                t_valid,
+                vals_valid,
+                codes_valid,
+                left_valid,
+                right_valid,
+                ctype,
+                cfg,
+                rng,
+                imp_global,
+            )
+        else:
+            imp_values = imp_global
 
     dl_shifts: tuple[DlShiftEvent, ...] = ()
     if cfg.detect_dl_shifts and n_cen > 0 and ctype != "interval":
@@ -1089,7 +1293,6 @@ def prepare_series_with_censoring(
         window_fallback_count=fallback_count,
     )
 
-    rate_ratio = estimate_sampling_rate_ratio(t_valid)
     series = TimeSeriesInput(
         times_numeric=t_valid,
         times_raw=t_raw_valid,

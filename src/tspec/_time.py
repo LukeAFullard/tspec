@@ -37,6 +37,15 @@ class TimeSeriesInput:
 
 def _to_array(obj: Any) -> np.ndarray[Any, Any]:
     if type(obj).__module__.startswith("pandas") and hasattr(obj, "to_numpy"):
+        # Normalize timezone-aware pandas DatetimeIndex / Series cleanly to UTC-naive
+        # to avoid NumPy's timezone representation UserWarning.
+        tz = getattr(obj, "tz", None)
+        if tz is None and hasattr(obj, "dt"):
+            tz = getattr(obj.dt, "tz", None)
+            if tz is not None:
+                return np.asarray(obj.dt.tz_convert("UTC").dt.tz_localize(None).to_numpy())
+        elif tz is not None:
+            return np.asarray(obj.tz_convert("UTC").tz_localize(None).to_numpy())
         return np.asarray(obj.to_numpy())
     return np.asarray(obj)
 
@@ -197,10 +206,11 @@ def estimate_sampling_rate_ratio(t_num: FloatArray) -> float:
             cnt = int(np.sum((t_num >= lo) & (t_num < hi)))
         else:
             cnt = int(np.sum((t_num >= lo) & (t_num <= hi)))
-        if cnt > 0:
-            rates.append(cnt / span)
-    if len(rates) < 2 or min(rates) <= 0:
+        rates.append(cnt / span)
+    if len(rates) < 2 or max(rates) <= 0:
         return 1.0
+    if min(rates) <= 0.0:
+        return float("inf")
     return float(max(rates) / min(rates))
 
 
