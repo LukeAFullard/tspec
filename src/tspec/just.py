@@ -1449,11 +1449,14 @@ def _window_component_half_widths(
     is_obs_grid: bool = True,
     parity_mode: bool = False,
 ) -> tuple[FloatArray, FloatArray]:
-    """Compute pointwise Student-t half-widths for mean-shifted trend and centered seasonal.
+    """Compute pointwise Student-t half-widths for local trend and seasonal components.
 
-    Accounts exactly for the within-window zero-mean seasonal centering
-    (``trend_eff = trend + mean(seasonal)``, ``seasonal_eff = seasonal - mean(seasonal)``)
-    using the full parameter covariance ``cov`` from OLS/WLS or Huber/MM IRLS.
+    In ``parity_mode=True``, accounts for Ghaderpour's within-window sample-mean
+    seasonal shifting (``trend_eff = trend + mean(seasonal)``,
+    ``seasonal_eff = seasonal - mean(seasonal)``). In default mode
+    (``parity_mode=False``), pure sinusoidal harmonics already have analytical
+    cycle mean zero and are not sample-centered (preventing sampling-density
+    bias on irregular grids), so exact block covariances apply directly.
     """
     n_eval = int(t_eval.size)
     n_tr = 2 * (int(local_jumps.size) + 1)
@@ -1485,16 +1488,23 @@ def _window_component_half_widths(
         var_tr = np.maximum(0.0, np.sum((D_u @ cov) * D_u, axis=1))
         return t_crit * np.sqrt(var_tr), np.zeros(n_eval, dtype=np.float64)
 
+    D_tr = D_u[:, :n_tr]
     D_seas = D_u[:, n_tr:]
-    d_seas_mean = np.mean(D_seas, axis=0)
-    D_seas_cent = D_seas - d_seas_mean[None, :]
     cov_ss = cov[n_tr:, n_tr:]
-    var_seas = np.maximum(0.0, np.sum((D_seas_cent @ cov_ss) * D_seas_cent, axis=1))
 
-    D_tr_eff = np.empty_like(D_u)
-    D_tr_eff[:, :n_tr] = D_u[:, :n_tr]
-    D_tr_eff[:, n_tr:] = d_seas_mean[None, :]
-    var_tr = np.maximum(0.0, np.sum((D_tr_eff @ cov) * D_tr_eff, axis=1))
+    if parity_mode:
+        d_seas_mean = np.mean(D_seas, axis=0)
+        D_seas_cent = D_seas - d_seas_mean[None, :]
+        var_seas = np.maximum(0.0, np.sum((D_seas_cent @ cov_ss) * D_seas_cent, axis=1))
+
+        D_tr_eff = np.empty_like(D_u)
+        D_tr_eff[:, :n_tr] = D_tr
+        D_tr_eff[:, n_tr:] = d_seas_mean[None, :]
+        var_tr = np.maximum(0.0, np.sum((D_tr_eff @ cov) * D_tr_eff, axis=1))
+    else:
+        cov_tt = cov[:n_tr, :n_tr]
+        var_tr = np.maximum(0.0, np.sum((D_tr @ cov_tt) * D_tr, axis=1))
+        var_seas = np.maximum(0.0, np.sum((D_seas @ cov_ss) * D_seas, axis=1))
 
     return t_crit * np.sqrt(var_tr), t_crit * np.sqrt(var_seas)
 
@@ -1532,10 +1542,13 @@ def just_decompose(
     seasonality.
 
     Pointwise confidence intervals at level ``ci_level`` (default ``0.95``) are
-    computed analytically inside each window (accounting for zero-mean seasonal
-    centering) and blended across overlapping Gaussian windows via the
-    conservative Cauchy–Schwarz half-width blend so overlapping correlated
-    windows do not artificially shrink interval widths.
+    computed analytically inside each window and blended across overlapping
+    Gaussian windows via the conservative Cauchy–Schwarz half-width blend so
+    overlapping correlated windows do not artificially shrink interval widths.
+    In default mode (``parity_mode=False``), pure sinusoidal seasonal terms are
+    not sample-mean shifted onto the trend, eliminating seasonal-balance bias on
+    irregularly sampled timestamps (``parity_mode=True`` retains Ghaderpour's
+    sample-mean centering for exact upstream parity).
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -1775,9 +1788,10 @@ def just_decompose(
         win_freqs_list.append(freqs_w)
         season_t = _eval_seasonal(ty_loc, freqs_w, cs_coeff)
         trend_t = yy - season_t - rem_w
-        mean_s = float(np.mean(season_t))
-        trend_t = trend_t + mean_s
-        season_t = season_t - mean_s
+        if parity_mode:
+            mean_s = float(np.mean(season_t))
+            trend_t = trend_t + mean_s
+            season_t = season_t - mean_s
 
         hw_tr_w, hw_s_w = _window_component_half_widths(
             ty_loc,
@@ -1812,9 +1826,10 @@ def just_decompose(
                 ty_loc, tty_loc, local_j, tr_coeff, parity_mode=parity_mode
             )
             season_tt = _eval_seasonal(tty_loc, freqs_w, cs_coeff)
-            mean_s_tt = float(np.mean(season_tt))
-            trend_tt = trend_tt + mean_s_tt
-            season_tt = season_tt - mean_s_tt
+            if parity_mode:
+                mean_s_tt = float(np.mean(season_tt))
+                trend_tt = trend_tt + mean_s_tt
+                season_tt = season_tt - mean_s_tt
             hw_tr_tt, hw_s_tt = _window_component_half_widths(
                 ty_loc,
                 tty_loc,

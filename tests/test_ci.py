@@ -110,15 +110,19 @@ class TestJustDecomposeCI:
 
     def test_empirical_pointwise_coverage(self) -> None:
         rng = np.random.default_rng(2025)
-        t = np.linspace(2015.0, 2021.0, 120)
+        t = np.sort(rng.uniform(2015.0, 2021.0, 140))
         true_trend = 4.0 + 0.5 * (t - 2015.0)
         true_seas = 1.1 * np.cos(2 * np.pi * t) - 0.4 * np.sin(2 * np.pi * t)
-        true_seas -= np.mean(true_seas)
+
+        # Verify zero seasonal-balance bias on irregular grids in default mode
+        r_clean = just_decompose(t, true_trend + true_seas, season="ols", omega=[1.0])
+        np.testing.assert_allclose(r_clean.trend, true_trend, atol=1e-10)
+        np.testing.assert_allclose(r_clean.seasonal, true_seas, atol=1e-10)
 
         tr_hits = []
         s_hits = []
         for _ in range(80):
-            y = true_trend + true_seas + rng.normal(0.0, 0.3, t.size)
+            y = true_trend + true_seas + rng.normal(0.0, 0.35, t.size)
             res = just_decompose(t, y, season="ols", omega=[1.0], ci_level=0.95)
             assert res.trend_ci_low is not None and res.trend_ci_high is not None
             assert res.seasonal_ci_low is not None and res.seasonal_ci_high is not None

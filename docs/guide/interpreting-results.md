@@ -49,7 +49,7 @@ Every trend, seasonal, and forecast estimator in `tspec` computes fast analytica
 
 | Function / Mode | Output Fields | Interval Formula |
 | :--- | :--- | :--- |
-| `just_decompose()` | `trend_ci_low/high`, `seasonal_ci_low/high` (plus `*_reg_ci_*` for `eval_times`) | Exact within-window Student-$t$ half-widths (accounting for zero-mean seasonal centering), combined across overlapping Gaussian windows via the conservative **Cauchy–Schwarz half-width blend**. |
+| `just_decompose()` | `trend_ci_low/high`, `seasonal_ci_low/high` (plus `*_reg_ci_*` for `eval_times`) | Exact within-window Student-$t$ half-widths (keeping pure zero-cycle-mean harmonics in default mode to avoid irregular-grid centering bias), blended across overlapping Gaussian windows via the conservative **Cauchy–Schwarz half-width blend**. |
 | `fit_piecewise_trend()` & `detect_turning_points()` | `trend_ci_low/high` on `PiecewiseTrendResult` | Exact $O(n)$ disjoint-support variance recursion for `mode="sequential"` (TPTR); exact $\mathbf{d}_i^T \widehat{\text{Cov}}\,\mathbf{d}_i$ for `mode="joint"` / `"huber"`; `None` for `mode="l1"`. |
 | `analyze_series()` | `trend_ci_low/high`, `decomposition.seasonal_ci_low/high`, and per-segment `slope_ci_low/high` | Exact analytical ribbons for `"ols"` and `"huber"`; **median-pivoted Sen/ATS slope-CI fans** (`MannKS` / Helsel convention) for `"sen"`; `None` for `"l1"`. |
 | `just_monitor()` | `forecast_ci_low/high` **and** `forecast_pi_low/high` | Inner band: mean forecast uncertainty (widens quadratically as forecast extrapolates past `start`). Outer band: out-of-sample observation **prediction interval** adding $\hat{\sigma}_{\text{his}}^2 / w_i$. |
@@ -57,6 +57,7 @@ Every trend, seasonal, and forecast estimator in `tspec` computes fast analytica
 !!! note "Statistical Interpretation & Caveats"
     - **Conditional pointwise bands:** Analytical intervals are **conditional on the detected breakpoints and selected seasonal frequencies** (post-selection breakpoint-location uncertainty is not folded into the analytical band). For heavily censored records, pair with `CensoredConfig(n_stability_draws=20)` to assess breakpoint stability.
     - **Autocorrelation:** Standard intervals assume independent residuals unless you supply an inverse-covariance weight matrix `weights = C_f^{-1}`. If `tspec` emits `MODERATE_AUTOCORRELATION` or `STRONG_AUTOCORRELATION`, analytical bands are optimistic (too narrow).
+    - **Theil–Sen bowtie fan (`slope_estimator="sen"`):** The plotted median-pivoted fan shows **slope uncertainty** (`seg.slope_ci_low/high`) around each segment's median point $(t_{\text{med}}, \hat{y}_{\text{med}})$—pinching to zero width at $t_{\text{med}}$—rather than vertical intercept uncertainty.
     - **Why `mode="l1"` returns `None`:** Exact linear-programming $L_1$ (LAD) regression has no closed-form finite-sample covariance without density estimation or resampling. Rather than showing misleading parametric error bars, `tspec` returns `None`—use `slope_estimator="sen"` or `"huber"` when you want robust CIs.
 
 ### Example 1: JUST Decomposition Trend & Seasonal 95% CIs
