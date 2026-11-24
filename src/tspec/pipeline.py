@@ -99,10 +99,14 @@ class PipelineResult(BaseResult):
     segments: tuple[SegmentSummary, ...] = ()
     robust: str = "none"
     slope_estimator: str = "ols"
+    ci_level: float = 0.95
+    trend_ci_low: FloatArray | None = None
+    trend_ci_high: FloatArray | None = None
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
         n_tp = len(self.turning_points.turning_points) if self.turning_points is not None else 0
+        ci_pct = f"{100.0 * self.ci_level:g}"
         lines = [
             f"tspec Guided Pipeline Result (jump_adjustment={self.jump_adjustment!r}, "
             f"robust={self.robust!r}, slope_estimator={self.slope_estimator!r})",
@@ -146,12 +150,13 @@ class PipelineResult(BaseResult):
                 p_s = f"{seg.pvalue:.2e}" if seg.pvalue is not None else "n/a"
                 lines.append(
                     f"  seg={seg.segment_index:<2d} [{t0_s}..{t1_s}] n={seg.n_obs:<4d} "
-                    f"({seg.estimator}) slope={seg.slope:+.4f} CI95={ci_s} p={p_s}"
+                    f"({seg.estimator}) slope={seg.slope:+.4f} CI{ci_pct}={ci_s} p={p_s}"
                 )
         lines.extend(format_diagnostics_block(self.diagnostics))
         return "\n".join(lines)
 
     def explain(self) -> str:
+        ci_pct = f"{100.0 * self.ci_level:g}"
         lines: list[str] = [
             f"Analyzed {self.diagnostics.n_valid} unevenly spaced observations using the "
             f"guided JUST -> STPD workflow (robust={self.robust!r}, "
@@ -209,7 +214,7 @@ class PipelineResult(BaseResult):
                     f"{seg.estimator}): slope = {seg.slope:+.4g}/unit time"
                 )
                 if seg.slope_ci_low is not None and seg.slope_ci_high is not None:
-                    msg += f" (95% CI [{seg.slope_ci_low:+.4g}, {seg.slope_ci_high:+.4g}])"
+                    msg += f" ({ci_pct}% CI [{seg.slope_ci_low:+.4g}, {seg.slope_ci_high:+.4g}])"
                 if seg.pvalue is not None:
                     msg += f", p={seg.pvalue:.2e}"
                 lines.append(msg + ".")
@@ -227,9 +232,18 @@ class PipelineResult(BaseResult):
             "combined_trend": self.combined_trend,
             "step_offset": self.step_offsets,
         }
+        if self.trend_ci_low is not None and self.trend_ci_high is not None:
+            data["trend_ci_low"] = self.trend_ci_low
+            data["trend_ci_high"] = self.trend_ci_high
         if self.decomposition is not None:
             data["just_trend"] = self.decomposition.trend
             data["seasonal"] = self.decomposition.seasonal
+            if (
+                self.decomposition.seasonal_ci_low is not None
+                and self.decomposition.seasonal_ci_high is not None
+            ):
+                data["seasonal_ci_low"] = self.decomposition.seasonal_ci_low
+                data["seasonal_ci_high"] = self.decomposition.seasonal_ci_high
             data["remainder"] = self.decomposition.remainder
         if self.censoring is not None:
             data["is_censored"] = self.censoring.is_censored
@@ -326,11 +340,11 @@ def _build_segment_summaries(
     huber_k: float,
     prov: CensoringProvenance | None,
     alpha: float = 0.05,
-) -> tuple[tuple[SegmentSummary, ...], FloatArray | None]:
-    """Compute per-segment trend slopes, CIs, and p-values across detected breakpoints."""
+) -> tuple[tuple[SegmentSummary, ...], FloatArray | None, FloatArray | None, FloatArray | None]:
+    """Compute per-segment trend slopes, CIs, p-values, and pointwise trend CI bands."""
     n = int(t_valid.size)
     if n == 0:
-        return (), None
+        return (), None, None, None
 
     jump_bps = sorted({j for j in jump_valid_indices if 0 < j < n})
     tp_bps = sorted({tp for tp in tp_valid_indices if 0 < tp < n and tp not in jump_bps})
@@ -339,6 +353,12 @@ def _build_segment_summaries(
     segments: list[SegmentSummary] = []
     override_trend: FloatArray | None = (
         np.empty(n, dtype=np.float64) if slope_estimator in ("sen", "l1", "huber") else None
+    )
+    override_ci_low: FloatArray | None = (
+        np.full(n, np.nan, dtype=np.float64) if slope_estimator in ("sen", "huber") else None
+    )
+    override_ci_high: FloatArray | None = (
+        np.full(n, np.nan, dtype=np.float64) if slope_estimator in ("sen", "huber") else None
     )
     seg_counter = 0
 
@@ -389,7 +409,11 @@ def _build_segment_summaries(
         sub_bounds = [e0, *tp_epoch, e1]
 
         if slope_estimator == "sen":
-            assert override_trend is not None
+            assert (
+                override_trend is not None
+                and override_ci_low is not None
+                and override_ci_high is not None
+            )
             for k in range(len(sub_bounds) - 1):
                 s0, s1 = sub_bounds[k], sub_bounds[k + 1]
                 seg_codes = prov.status_codes[s0:s1] if prov is not None else None
@@ -405,7 +429,17 @@ def _build_segment_summaries(
                     status_codes=seg_codes,
                     original_values=seg_orig,
                 )
-                override_trend[s0:s1] = ts_fit.intercept + ts_fit.slope * t_valid[s0:s1]
+                t_seg = t_valid[s0:s1]
+                override_trend[s0:s1] = ts_fit.intercept + ts_fit.slope * t_seg
+                if ts_fit.ci_low is not None and ts_fit.ci_high is not None:
+                    # Median-pivoted Sen/ATS slope-CI fan (Helsel 2012 / MannKS convention)
+                    t_med = float(np.median(t_seg))
+                    y_med = ts_fit.intercept + ts_fit.slope * t_med
+                    dt_seg = t_seg - t_med
+                    b_lo = y_med + ts_fit.ci_low * dt_seg
+                    b_hi = y_med + ts_fit.ci_high * dt_seg
+                    override_ci_low[s0:s1] = np.minimum(b_lo, b_hi)
+                    override_ci_high[s0:s1] = np.maximum(b_lo, b_hi)
                 segments.append(
                     _make_seg(
                         s0,
@@ -448,7 +482,11 @@ def _build_segment_summaries(
                         )
                     )
         elif slope_estimator == "huber":
-            assert override_trend is not None
+            assert (
+                override_trend is not None
+                and override_ci_low is not None
+                and override_ci_high is not None
+            )
             n_ep = e1 - e0
             if n_ep < 2 or float(t_valid[e1 - 1] - t_valid[e0]) <= 0.0:
                 med_y = float(np.median(y_deseas[e0:e1]))
@@ -472,6 +510,16 @@ def _build_segment_summaries(
                 y_fit_ep = D_ep @ coeff
                 override_trend[e0:e1] = y_fit_ep
                 dof_ep = n_ep - hr_ep.ols.rank
+                if (
+                    hr_ep.ols.cov.size > 0
+                    and np.all(np.isfinite(hr_ep.ols.cov))
+                    and dof_ep > 0
+                ):
+                    var_ep = np.maximum(0.0, np.sum((D_ep @ hr_ep.ols.cov) * D_ep, axis=1))
+                    t_crit_ep = float(t_dist.ppf(1.0 - 0.5 * alpha, dof_ep))
+                    hw_ep = t_crit_ep * np.sqrt(var_ep)
+                    override_ci_low[e0:e1] = y_fit_ep - hw_ep
+                    override_ci_high[e0:e1] = y_fit_ep + hw_ep
                 for k in range(len(sub_bounds) - 1):
                     s0, s1 = sub_bounds[k], sub_bounds[k + 1]
                     v = np.zeros(m_ep + 2, dtype=np.float64)
@@ -482,7 +530,7 @@ def _build_segment_summaries(
                     ci_lo: float | None = None
                     ci_hi: float | None = None
                     pval_k: float | None = None
-                    if hr_ep.ols.cov is not None and dof_ep > 0:
+                    if hr_ep.ols.cov.size > 0 and np.all(np.isfinite(hr_ep.ols.cov)) and dof_ep > 0:
                         var_k = max(0.0, float(v @ hr_ep.ols.cov @ v))
                         se_k = float(np.sqrt(var_k))
                         if se_k > 0.0:
@@ -498,7 +546,7 @@ def _build_segment_summaries(
                         _make_seg(s0, s1, "huber", slope_k, intercept_k, ci_lo, ci_hi, pval_k)
                     )
         else:
-            # Default OLS per-segment slopes, 95% t-CIs, and p-values
+            # Default OLS per-segment slopes, t-CIs, and p-values
             for k in range(len(sub_bounds) - 1):
                 s0, s1 = sub_bounds[k], sub_bounds[k + 1]
                 n_s = s1 - s0
@@ -519,7 +567,7 @@ def _build_segment_summaries(
                 ci_lo = None
                 ci_hi = None
                 pval_k = None
-                if ols_s.cov is not None and dof_s > 0:
+                if ols_s.cov.size > 0 and np.all(np.isfinite(ols_s.cov)) and dof_s > 0:
                     se_k = float(np.sqrt(max(0.0, float(ols_s.cov[1, 1])))) / s_t
                     if se_k > 0.0:
                         t_crit = float(t_dist.ppf(1.0 - 0.5 * alpha, dof_s))
@@ -534,7 +582,7 @@ def _build_segment_summaries(
                     _make_seg(s0, s1, "ols", slope_k, intercept_k, ci_lo, ci_hi, pval_k)
                 )
 
-    return tuple(segments), override_trend
+    return tuple(segments), override_trend, override_ci_low, override_ci_high
 
 
 def analyze_series(
@@ -546,6 +594,7 @@ def analyze_series(
     detect_turning_points: bool = True,
     remove_seasonality: bool = True,
     jump_adjustment: Literal["offset", "segment"] = "offset",
+    ci_level: float = 0.95,
     robust: RobustMethod = "none",
     slope_estimator: SlopeEstimator = "ols",
     huber_k: float = 1.345,
@@ -564,17 +613,20 @@ def analyze_series(
        (defaulting to 20 stochastic stability draws when censoring is detected).
     2. Detects abrupt jumps via :func:`just_jumps` (enabling scale-free
        ``jump_alpha=0.05`` screening by default).
-    3. Extracts seasonality and trend via :func:`just_decompose`.
+    3. Extracts seasonality and trend via :func:`just_decompose` with analytical
+       pointwise confidence intervals at level ``ci_level``.
     4. Removes seasonality and vertical jump offsets (or segments by epoch)
        and runs :func:`detect_turning_points` (STPD) to isolate smooth changes
        in trend slope.
-    5. Computes per-segment trend slopes, confidence intervals, and p-values
-       (:attr:`PipelineResult.segments`) using ``slope_estimator``:
+    5. Computes per-segment trend slopes, confidence intervals, p-values
+       (:attr:`PipelineResult.segments`), and pointwise trend bands
+       (:attr:`PipelineResult.trend_ci_low` / ``trend_ci_high``) using
+       ``slope_estimator``:
 
        - ``'ols'``: weighted ordinary least squares with Student-t CIs.
        - ``'sen'``: exact **Theil–Sen** (uncensored) or **Akritas–Theil–Sen**
-         (left/right censored) with distribution-free CIs and Mann–Kendall
-         p-values.
+         (left/right censored) with distribution-free CIs, Mann–Kendall
+         p-values, and median-pivoted slope-CI fans.
        - ``'huber'``: continuous **Huber IRLS** hinge-spline with Huber (1981)
          asymptotic CIs.
        - ``'l1'``: globally optimal continuous **L1 (LAD)** hinge-spline via
@@ -592,6 +644,8 @@ def analyze_series(
 
     if jump_adjustment not in ("offset", "segment"):
         raise ValueError("`jump_adjustment` must be 'offset' or 'segment'.")
+    if not (0.0 < ci_level < 1.0):
+        raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     rob_method = validate_robust_args(robust, huber_k)
     if slope_estimator not in ("ols", "sen", "l1", "huber"):
         raise ValueError(
@@ -627,13 +681,15 @@ def analyze_series(
     d_kw: dict[str, Any] = dict(decompose_kwargs or {})
     s_kw: dict[str, Any] = dict(stpd_kwargs or {})
 
-    # Propagate robust configuration unless explicitly overridden in stage kwargs
+    # Propagate robust & CI configuration unless explicitly overridden in stage kwargs
     j_kw.setdefault("robust", rob_method)
     j_kw.setdefault("huber_k", huber_k)
     d_kw.setdefault("robust", rob_method)
     d_kw.setdefault("huber_k", huber_k)
+    d_kw.setdefault("ci_level", ci_level)
     s_kw.setdefault("robust", rob_method)
     s_kw.setdefault("huber_k", huber_k)
+    s_kw.setdefault("ci_level", ci_level)
     if slope_estimator in ("l1", "huber"):
         s_kw.setdefault("refit_mode", slope_estimator)
 
@@ -802,12 +858,16 @@ def analyze_series(
     stpd_res: StpdResult | None = None
     w_stpd = w_valid_raw if (w_valid_raw is not None and np.ndim(w_valid_raw) <= 1) else None
     if detect_turning_points:
+        eff_stpd_ci = float(s_kw.get("ci_level", ci_level))
         if jump_adjustment == "segment" and jump_valid_indices:
             bounds = [0, *sorted(jump_valid_indices), series.n_valid]
             seg_tps: list[TurningPointEvent] = []
             seg_flagged: list[FlaggedJumpCandidate] = []
             seg_valid_idx: list[int] = []
             seg_fitted = np.empty(series.n_valid, dtype=np.float64)
+            seg_ci_low_arr = np.full(series.n_valid, np.nan, dtype=np.float64)
+            seg_ci_high_arr = np.full(series.n_valid, np.nan, dtype=np.float64)
+            seg_has_ci = True
             seg_slopes_list: list[FloatArray] = []
             seg_intercepts_list: list[FloatArray] = []
             seg_dirs_list: list[FloatArray] = []
@@ -833,6 +893,11 @@ def analyze_series(
                         )
                         pw_s = seg_res.piecewise_trend
                         seg_fitted[s0:s1] = pw_s.fitted_trend
+                        if pw_s.trend_ci_low is not None and pw_s.trend_ci_high is not None:
+                            seg_ci_low_arr[s0:s1] = pw_s.trend_ci_low
+                            seg_ci_high_arr[s0:s1] = pw_s.trend_ci_high
+                        else:
+                            seg_has_ci = False
                         seg_slopes_list.append(pw_s.slopes)
                         seg_intercepts_list.append(pw_s.intercepts)
                         seg_dirs_list.append(pw_s.directions)
@@ -874,8 +939,14 @@ def analyze_series(
                     weights=seg_w,
                     mode=eff_refit_mode,
                     huber_k=huber_k,
+                    ci_level=eff_stpd_ci,
                 )
                 seg_fitted[s0:s1] = pw_seg.fitted_trend
+                if pw_seg.trend_ci_low is not None and pw_seg.trend_ci_high is not None:
+                    seg_ci_low_arr[s0:s1] = pw_seg.trend_ci_low
+                    seg_ci_high_arr[s0:s1] = pw_seg.trend_ci_high
+                else:
+                    seg_has_ci = False
                 seg_slopes_list.append(pw_seg.slopes)
                 seg_intercepts_list.append(pw_seg.intercepts)
                 seg_cond_max = max(seg_cond_max, pw_seg.diagnostics.condition_number_max)
@@ -920,6 +991,9 @@ def analyze_series(
                 times_raw=t_raw_valid,
                 is_datetime=series.is_datetime,
                 diagnostics=seg_diag,
+                ci_level=eff_stpd_ci,
+                trend_ci_low=seg_ci_low_arr if seg_has_ci else None,
+                trend_ci_high=seg_ci_high_arr if seg_has_ci else None,
             )
             stpd_res = StpdResult(
                 turning_points=tuple(seg_tps),
@@ -970,6 +1044,7 @@ def analyze_series(
                             weights=w_stpd,
                             mode=eff_refit_mode_j,
                             huber_k=huber_k,
+                            ci_level=eff_stpd_ci,
                         )
                         updated_tps = tuple(
                             replace(
@@ -998,8 +1073,16 @@ def analyze_series(
                     ]
                 )
 
+    trend_ci_low: FloatArray | None = None
+    trend_ci_high: FloatArray | None = None
     if stpd_res is not None:
         combined_trend = stpd_res.piecewise_trend.fitted_trend + step_offsets
+        if (
+            stpd_res.piecewise_trend.trend_ci_low is not None
+            and stpd_res.piecewise_trend.trend_ci_high is not None
+        ):
+            trend_ci_low = stpd_res.piecewise_trend.trend_ci_low + step_offsets
+            trend_ci_high = stpd_res.piecewise_trend.trend_ci_high + step_offsets
         cond_max = max(
             stpd_res.diagnostics.condition_number_max,
             jumps_res.diagnostics.condition_number_max if jumps_res is not None else 1.0,
@@ -1007,6 +1090,8 @@ def analyze_series(
         )
     elif decomp_res is not None:
         combined_trend = decomp_res.trend
+        trend_ci_low = decomp_res.trend_ci_low
+        trend_ci_high = decomp_res.trend_ci_high
         cond_max = decomp_res.diagnostics.condition_number_max
     else:
         combined_trend = y_work_valid.copy()
@@ -1016,7 +1101,7 @@ def analyze_series(
     tp_valid_indices = (
         [tp.valid_index for tp in stpd_res.turning_points] if stpd_res is not None else []
     )
-    segments, override_trend = _build_segment_summaries(
+    segments, override_trend, override_ci_low, override_ci_high = _build_segment_summaries(
         t_valid,
         t_raw_valid,
         series.valid_to_orig,
@@ -1028,9 +1113,12 @@ def analyze_series(
         slope_estimator=slope_estimator,
         huber_k=huber_k,
         prov=prov,
+        alpha=1.0 - ci_level,
     )
     if override_trend is not None:
         combined_trend = override_trend
+        trend_ci_low = override_ci_low
+        trend_ci_high = override_ci_high
 
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
@@ -1070,4 +1158,7 @@ def analyze_series(
         segments=segments,
         robust=rob_method,
         slope_estimator=slope_estimator,
+        ci_level=ci_level,
+        trend_ci_low=trend_ci_low,
+        trend_ci_high=trend_ci_high,
     )

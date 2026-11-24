@@ -76,6 +76,11 @@ def make_hero_combined_workflow() -> None:
     ax0 = axes[0]
     ax0.axvspan(2016.9, 2017.25, color="#CBD5E1", alpha=0.35, label="4-month blackout gap (zero interpolation)")
     ax0.plot(t, y, "o", color=DARK, ms=3.2, alpha=0.65, label="Irregular observations")
+    if res.trend_ci_low is not None and res.trend_ci_high is not None:
+        j_cut = res.jumps.jumps[0].valid_index if (res.jumps and res.jumps.jumps) else t.size
+        ax0.fill_between(t[:j_cut], res.trend_ci_low[:j_cut], res.trend_ci_high[:j_cut], color=BLUE, alpha=0.22, lw=0, label="95% trend CI")
+        if j_cut < t.size:
+            ax0.fill_between(t[j_cut:], res.trend_ci_low[j_cut:], res.trend_ci_high[j_cut:], color=BLUE, alpha=0.22, lw=0)
     ax0.plot(t, res.combined_trend, color=BLUE, lw=2.2, label="Combined trend (JUST + STPD)")
 
     if res.jumps and res.jumps.jumps:
@@ -111,7 +116,7 @@ def make_hero_combined_workflow() -> None:
     ax0.set_ylabel("Observed Value", fontweight="bold", color=DARK)
     ax0.set_title("Guided Two-Stage Workflow: tspec.analyze_series() — Irregular Seasonality + Jump + Turning Point",
                   fontsize=11.5, fontweight="bold", color=DARK, pad=10)
-    ax0.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=2, fontsize=8.2)
+    ax0.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=2, fontsize=8.0)
     _style_ax(ax0)
 
     # Panel 2: Deseasonalized & jump-adjusted series with STPD connected trend
@@ -119,7 +124,10 @@ def make_hero_combined_workflow() -> None:
     ax1.axvspan(2016.9, 2017.25, color="#CBD5E1", alpha=0.35)
     ax1.plot(t, res.adjusted_series, "o", color=DARK, ms=3.0, alpha=0.55, label="Deseasonalized & jump-adjusted")
     if res.turning_points:
-        ax1.plot(t, res.turning_points.piecewise_trend.fitted_trend, color=GREEN, lw=2.2, label="STPD connected piecewise trend")
+        pw = res.turning_points.piecewise_trend
+        if pw.trend_ci_low is not None and pw.trend_ci_high is not None:
+            ax1.fill_between(t, pw.trend_ci_low, pw.trend_ci_high, color=GREEN, alpha=0.22, lw=0, label="95% CI")
+        ax1.plot(t, pw.fitted_trend, color=GREEN, lw=2.2, label="STPD connected piecewise trend")
         for tp in res.turning_points.turning_points:
             ax1.axvline(tp.time_year, color=GREEN, ls=":", lw=1.6)
     ax1.set_ylabel("Adjusted Level", fontweight="bold", color=DARK)
@@ -130,11 +138,13 @@ def make_hero_combined_workflow() -> None:
     ax2 = axes[2]
     ax2.axvspan(2016.9, 2017.25, color="#CBD5E1", alpha=0.35)
     if res.decomposition is not None:
+        if res.decomposition.seasonal_ci_low is not None and res.decomposition.seasonal_ci_high is not None:
+            ax2.fill_between(t, res.decomposition.seasonal_ci_low, res.decomposition.seasonal_ci_high, color=PURPLE, alpha=0.22, lw=0, label="95% seasonal CI")
         ax2.plot(t, res.decomposition.seasonal, color=PURPLE, lw=1.6, label="Recovered seasonal component (1 + 2 cy/yr)")
     ax2.axhline(0.0, color=GRAY, lw=0.8, ls=":")
     ax2.set_ylabel("Seasonal", fontweight="bold", color=DARK)
     ax2.set_xlabel("Year", fontweight="bold", color=DARK)
-    ax2.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper right", fontsize=8.5)
+    ax2.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper right", ncol=2, fontsize=8.3)
     _style_ax(ax2)
 
     fig.tight_layout()
@@ -370,6 +380,9 @@ def make_tutorial_ndvi_wildfire() -> None:
     if rj.jumps:
         j = rj.jumps[0]
         k = j.valid_index
+        if decomp.trend_ci_low is not None and decomp.trend_ci_high is not None:
+            axes[0].fill_between(t[:k], decomp.trend_ci_low[:k], decomp.trend_ci_high[:k], color=BLUE, alpha=0.22, lw=0, label="95% trend CI")
+            axes[0].fill_between(t[k:], decomp.trend_ci_low[k:], decomp.trend_ci_high[k:], color=BLUE, alpha=0.22, lw=0)
         axes[0].plot(t[:k], decomp.trend[:k], color=BLUE, lw=2.3, label="Weighted JUST trend")
         axes[0].plot(t[k:], decomp.trend[k:], color=BLUE, lw=2.3)
         axes[0].axvline(j.time_year, color=ORANGE, ls="--", lw=1.8,
@@ -377,13 +390,15 @@ def make_tutorial_ndvi_wildfire() -> None:
     axes[0].set_ylabel("NDVI", fontweight="bold", color=DARK)
     axes[0].set_title("Satellite NDVI Wildfire Detection & Post-Fire Regrowth (Weighted JUST + ALLSSA)",
                       fontsize=11.0, fontweight="bold", color=DARK)
-    axes[0].legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", fontsize=8.4)
+    axes[0].legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=2, fontsize=8.1)
     _style_ax(axes[0])
 
+    if decomp.seasonal_ci_low is not None and decomp.seasonal_ci_high is not None:
+        axes[1].fill_between(t, decomp.seasonal_ci_low, decomp.seasonal_ci_high, color=GREEN, alpha=0.22, lw=0, label="95% seasonal CI")
     axes[1].plot(t, decomp.seasonal, color=GREEN, lw=1.7, label="ALLSSA seasonal component")
     axes[1].axhline(0.0, color=GRAY, lw=0.8, ls=":")
     axes[1].set_ylabel("Seasonal", fontweight="bold", color=DARK)
-    axes[1].legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper right", fontsize=8.5)
+    axes[1].legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper right", ncol=2, fontsize=8.3)
     _style_ax(axes[1])
 
     axes[2].vlines(t, 0.0, decomp.remainder, color=GRAY, lw=0.9, alpha=0.85)
@@ -408,7 +423,10 @@ def make_tutorial_subsidence_stpd() -> None:
 
     fig, ax = plt.subplots(figsize=(9.8, 4.3))
     ax.plot(t, y, "o", color=DARK, ms=3.8, alpha=0.7, label="Irregular InSAR LOS displacement (mm)")
-    ax.plot(t, res.piecewise_trend.fitted_trend, color=GREEN, lw=2.5, label="TPTR connected piecewise linear trend")
+    pw = res.piecewise_trend
+    if pw.trend_ci_low is not None and pw.trend_ci_high is not None:
+        ax.fill_between(t, pw.trend_ci_low, pw.trend_ci_high, color=GREEN, alpha=0.22, lw=0, label="95% pointwise CI")
+    ax.plot(t, pw.fitted_trend, color=GREEN, lw=2.5, label="TPTR connected piecewise linear trend")
 
     if res.turning_points:
         tp = res.turning_points[0]
@@ -473,10 +491,15 @@ def make_tutorial_nrt_monitoring() -> None:
     fig, (ax_top, ax_bot) = plt.subplots(2, 1, figsize=(10.0, 5.8), sharex=True, gridspec_kw={"height_ratios": [1.45, 1.0]})
 
     # Shade monitoring period
-    ax_top.axvspan(res.start_time, res.times[-1], color=SKY, alpha=0.14, label="Monitoring period")
+    ax_top.axvspan(res.start_time, res.times[-1], color=SKY, alpha=0.12, label="Monitoring period")
     ax_bot.axvspan(res.start_time, res.times[-1], color=SKY, alpha=0.14)
     ax_top.axvline(res.start_time, color=BLUE, ls=":", lw=1.3)
     ax_bot.axvline(res.start_time, color=BLUE, ls=":", lw=1.3)
+
+    if res.forecast_pi_low is not None and res.forecast_pi_high is not None:
+        ax_top.fill_between(res.times, res.forecast_pi_low, res.forecast_pi_high, color=SKY, alpha=0.22, lw=0, label="95% prediction interval")
+    if res.forecast_ci_low is not None and res.forecast_ci_high is not None:
+        ax_top.fill_between(res.times, res.forecast_ci_low, res.forecast_ci_high, color=BLUE, alpha=0.24, lw=0, label="95% forecast CI")
 
     ax_top.plot(res.times, res.values, "o", color=DARK, ms=3.3, alpha=0.72, label="Observations")
     n_his = int(np.searchsorted(res.time_years, float(res.steps[0].time_year), side="left"))
@@ -502,7 +525,7 @@ def make_tutorial_nrt_monitoring() -> None:
     ax_top.set_ylabel("Vegetation Index (EVI)", fontweight="bold", color=DARK)
     ax_top.set_title("v1.1 Near-Real-Time Monitoring: tspec.just_monitor() with Šidák + Pocock Multiplicity Control",
                      fontsize=11.0, fontweight="bold", color=DARK, pad=8)
-    ax_top.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=2, fontsize=8.3)
+    ax_top.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=2, fontsize=8.0)
     _style_ax(ax_top)
 
     # Bottom panel: sequential residual LSS peak vs controlled & unadjusted boundaries
@@ -526,6 +549,115 @@ def make_tutorial_nrt_monitoring() -> None:
     _save(fig, "tutorial_nrt_monitoring.png")
 
 
+def make_example_confidence_intervals() -> None:
+    """3-panel showcase of analytical pointwise CIs & prediction intervals across tspec."""
+    rng = np.random.default_rng(314)
+    fig, axes = plt.subplots(3, 1, figsize=(10.2, 8.6))
+
+    # Panel A: just_decompose trend + seasonal 95% CIs (Cauchy-Schwarz overlap blend)
+    t_a = np.sort(rng.uniform(2016.0, 2023.0, size=170))
+    y_a = 8.0 + 0.45 * (t_a - 2016.0) + 1.1 * np.cos(2 * np.pi * t_a) + rng.normal(0.0, 0.35, t_a.size)
+    dec = just_decompose(t_a, y_a, season="ols", ci_level=0.95)
+    ax = axes[0]
+    ax.plot(t_a, y_a, "o", color=DARK, ms=2.8, alpha=0.45, label="Irregular observations")
+    assert dec.trend_ci_low is not None and dec.trend_ci_high is not None
+    assert dec.seasonal_ci_low is not None and dec.seasonal_ci_high is not None
+    ax.fill_between(t_a, dec.trend_ci_low, dec.trend_ci_high, color=BLUE, alpha=0.25, lw=0, label="95% trend CI")
+    ax.plot(t_a, dec.trend, color=BLUE, lw=2.2, label="JUST trend")
+    # Plot seasonal shifted to bottom baseline on twin axis for clean visual inspection
+    ax_r = ax.twinx()
+    ax_r.fill_between(t_a, dec.seasonal_ci_low, dec.seasonal_ci_high, color=GREEN, alpha=0.22, lw=0, label="95% seasonal CI")
+    ax_r.plot(t_a, dec.seasonal, color=GREEN, lw=1.4, label="JUST seasonal")
+    ax_r.set_ylabel("Seasonal", fontweight="bold", color=GREEN)
+    ax_r.tick_params(axis="y", colors=GREEN, labelsize=9.0)
+    ax_r.spines["top"].set_visible(False)
+    ax_r.set_ylim(-2.2, 5.5)
+    ax.set_ylim(5.5, 13.5)
+    ax.set_ylabel("Trend / Value", fontweight="bold", color=DARK)
+    ax.set_title("A. JUST Decomposition — Analytical Pointwise 95% Trend & Seasonal CIs (Cauchy–Schwarz Blend)",
+                 fontsize=10.8, fontweight="bold", color=DARK, pad=6)
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax_r.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper left", ncol=3, fontsize=8.1)
+    _style_ax(ax)
+
+    # Panel B: analyze_series with robust='mm' + slope_estimator='sen' (Sen slope-CI fans)
+    t_b = np.sort(rng.uniform(2015.0, 2024.0, size=130))
+    tr_b = np.where(t_b < 2019.2, 5.0 + 0.25 * (t_b - 2015.0), 8.6 - 0.55 * (t_b - 2019.2))
+    y_b = tr_b + 0.65 * np.cos(2 * np.pi * t_b) + rng.normal(0.0, 0.55, t_b.size)
+    y_b[[16, 48, 86, 112]] += np.array([5.5, -4.8, 5.2, -5.0])  # isolated spikes
+    pipe = analyze_series(
+        t_b,
+        y_b,
+        robust="mm",
+        slope_estimator="sen",
+        ci_level=0.95,
+        detect_turning_points=False,
+        just_kwargs={"season": "ols", "jump_alpha": 0.01},
+        decompose_kwargs={"season": "ols"},
+    )
+    ax = axes[1]
+    ax.plot(t_b, y_b, "o", color=DARK, ms=3.2, alpha=0.58, label="Observations (with 4 isolated spikes)")
+    assert pipe.trend_ci_low is not None and pipe.trend_ci_high is not None
+    cuts = [int(j.valid_index) for j in (pipe.jumps.jumps if pipe.jumps else ())]
+    bounds = [0, *sorted(cuts), t_b.size]
+    for idx_b, (a_i, b_i) in enumerate(zip(bounds[:-1], bounds[1:], strict=True)):
+        ax.fill_between(
+            t_b[a_i:b_i],
+            pipe.trend_ci_low[a_i:b_i],
+            pipe.trend_ci_high[a_i:b_i],
+            color=BLUE,
+            alpha=0.28,
+            lw=0,
+            label="95% Sen slope CI fan" if idx_b == 0 else None,
+        )
+        ax.plot(
+            t_b[a_i:b_i],
+            pipe.combined_trend[a_i:b_i],
+            color=BLUE,
+            lw=2.2,
+            label="Theil–Sen trend (robust='mm')" if idx_b == 0 else None,
+        )
+    if pipe.jumps:
+        for k_j, j in enumerate(pipe.jumps.jumps):
+            ax.axvline(j.time_year, color=ORANGE, ls="--", lw=1.6, label=f"JUST jump ({j.time_year:.2f})" if k_j == 0 else None)
+    ax.set_ylabel("Value", fontweight="bold", color=DARK)
+    ax.set_title("B. Robust Guided Pipeline (robust='mm', slope_estimator='sen') — Median-Pivoted 95% Sen Slope-CI Fans",
+                 fontsize=10.8, fontweight="bold", color=DARK, pad=6)
+    ax.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper left", ncol=2, fontsize=8.1)
+    _style_ax(ax)
+
+    # Panel C: just_monitor forecast mean CI vs out-of-sample prediction interval
+    t_c = np.linspace(2017.0, 2024.0, 150)
+    y_c = 2.0 + 0.12 * (t_c - 2017.0) + 0.45 * np.cos(2 * np.pi * t_c) + rng.normal(0.0, 0.14, t_c.size)
+    y_c = np.where(t_c >= 2023.15, y_c - 0.85, y_c)
+    mon = just_monitor(t_c, y_c, start=2021.8, season="ols", alpha=0.01, ci_level=0.95, stop_on_first=False)
+    ax = axes[2]
+    ax.axvspan(mon.start_time, mon.times[-1], color=SKY, alpha=0.10, label="Monitoring period")
+    ax.axvline(mon.start_time, color=BLUE, ls=":", lw=1.3)
+    assert mon.forecast_pi_low is not None and mon.forecast_pi_high is not None
+    assert mon.forecast_ci_low is not None and mon.forecast_ci_high is not None
+    ax.fill_between(mon.times, mon.forecast_pi_low, mon.forecast_pi_high, color=SKY, alpha=0.25, lw=0, label="95% prediction interval (obs)")
+    ax.fill_between(mon.times, mon.forecast_ci_low, mon.forecast_ci_high, color=BLUE, alpha=0.28, lw=0, label="95% forecast CI (mean)")
+    ax.plot(mon.times, mon.values, "o", color=DARK, ms=3.0, alpha=0.72, label="Observations")
+    n_h = int(np.searchsorted(mon.time_years, float(mon.steps[0].time_year), side="left"))
+    ax.plot(mon.times[:n_h], mon.forecast[:n_h], color=BLUE, lw=2.0, label="Historical fit")
+    ax.plot(mon.times[n_h - 1 :], mon.forecast[n_h - 1 :], color=BLUE, lw=2.0, ls="--", label="Forecast")
+    if mon.detected and mon.disturbance_time_year is not None:
+        pos = int(np.argmin(np.abs(mon.time_years - mon.disturbance_time_year)))
+        ax.plot(mon.times[pos], mon.values[pos], "*", color=ORANGE, ms=13, markeredgecolor="white", markeredgewidth=0.8, zorder=6,
+                label=f"Alarm ({mon.disturbance_time_year:.2f})")
+    ax.set_ylabel("Value", fontweight="bold", color=DARK)
+    ax.set_xlabel("Year", fontweight="bold", color=DARK)
+    ax.set_title("C. Near-Real-Time Monitoring (just_monitor) — Widening 95% Forecast CI vs. 95% Prediction Interval",
+                 fontsize=10.8, fontweight="bold", color=DARK, pad=6)
+    ax.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=3, fontsize=8.0)
+    _style_ax(ax)
+
+    fig.tight_layout()
+    _save(fig, "example_confidence_intervals.png")
+
+
 def main() -> None:
     print(f"Generating tspec v{tspec.__version__} documentation figures into {OUT_DIR} ...")
     make_hero_combined_workflow()
@@ -535,7 +667,8 @@ def main() -> None:
     make_tutorial_ndvi_wildfire()
     make_tutorial_subsidence_stpd()
     make_tutorial_nrt_monitoring()
-    print("All 7 figures generated successfully.")
+    make_example_confidence_intervals()
+    print("All 8 figures generated successfully.")
 
 
 if __name__ == "__main__":

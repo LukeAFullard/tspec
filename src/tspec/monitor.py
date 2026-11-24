@@ -22,6 +22,7 @@ from typing import Any, Literal
 import numpy as np
 from scipy import linalg
 from scipy.stats import norm
+from scipy.stats import t as t_dist
 
 from ._diagnostics import (
     DiagnosticReport,
@@ -199,6 +200,11 @@ class MonitorResult(BaseResult):
     horizon: int
     diagnostics: DiagnosticReport
     censoring: CensoringProvenance | None = None
+    ci_level: float = 0.95
+    forecast_ci_low: FloatArray | None = None
+    forecast_ci_high: FloatArray | None = None
+    forecast_pi_low: FloatArray | None = None
+    forecast_pi_high: FloatArray | None = None
 
     def summary(self) -> str:
         lines = [
@@ -466,6 +472,7 @@ def just_monitor(
     monitor_omega: ArrayLike | None = None,
     trend: Literal["linear", "constant"] = "linear",
     alpha: float = 0.01,
+    ci_level: float = 0.95,
     freq_correction: FreqCorrection = "sidak",
     sequential_control: SequentialControl = "pocock",
     consecutive_k: int = 2,
@@ -535,6 +542,9 @@ def just_monitor(
         and slope change; ``"constant"`` estimates jump magnitude only.
     alpha : float, default 0.01
         Nominal significance level in ``(0, 1)``.
+    ci_level : float, default 0.95
+        Nominal pointwise confidence and prediction interval level in ``(0, 1)``
+        for ``forecast_ci_low/high`` and ``forecast_pi_low/high``.
     freq_correction : {"sidak", "bonferroni", "none"}, default "sidak"
         Per-step correction across ``monitor_omega`` frequencies. Forced to
         ``"none"`` when ``parity_mode=True``.
@@ -602,6 +612,8 @@ def just_monitor(
         raise ValueError(f"h must be in [0, 1], got {h}.")
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"alpha must be in (0, 1), got {alpha}.")
+    if not (0.0 < ci_level < 1.0):
+        raise ValueError(f"ci_level must be in (0, 1), got {ci_level}.")
     if consecutive_k < 1:
         raise ValueError(f"consecutive_k must be >= 1, got {consecutive_k}.")
 
@@ -707,6 +719,9 @@ def just_monitor(
     empty_j = np.empty(0, dtype=np.intp)
     cond_max = 1.0
 
+    pw_act_base = pw_act
+    pw_his_base = pw_his
+
     # Fit stable historical linear trend + seasonal model (Ghaderpour & Vujadinovic, 2020b)
     if season_norm == "allssa":
         his_allssa = _allssa_core(
@@ -721,7 +736,7 @@ def just_monitor(
             decimal=1,
             max_iter=200,
             parity_mode=parity_mode,
-            compute_cov=False,
+            compute_cov=True,
             robust=eff_robust,
             huber_k=huber_k,
         )
@@ -729,6 +744,7 @@ def just_monitor(
         his_trend_coeff = his_allssa.trend_coeff
         his_coeff = np.concatenate([his_trend_coeff, his_allssa.cos_sin_coeffs.ravel()])
         his_residuals = his_allssa.residuals
+        his_cov = his_allssa.cov
         cond_max = max(cond_max, his_allssa.condition_number_max)
     elif season_norm == "ols":
         his_ols = _lssa_core(
@@ -741,7 +757,7 @@ def just_monitor(
             "linear",
             False,
             om_hist,
-            compute_cov=False,
+            compute_cov=True,
             robust=eff_robust,
             huber_k=huber_k,
         )
@@ -749,6 +765,7 @@ def just_monitor(
         his_trend_coeff = his_ols.coeff[:2]
         his_coeff = his_ols.coeff
         his_residuals = his_ols.residuals
+        his_cov = his_ols.cov
         cond_max = max(cond_max, his_ols.condition_number)
     else:
         his_none = _lssa_core(
@@ -761,7 +778,7 @@ def just_monitor(
             "linear",
             False,
             np.empty(0, dtype=np.float64),
-            compute_cov=False,
+            compute_cov=True,
             robust=eff_robust,
             huber_k=huber_k,
         )
@@ -769,6 +786,7 @@ def just_monitor(
         his_trend_coeff = his_none.coeff[:2]
         his_coeff = his_none.coeff
         his_residuals = his_none.residuals
+        his_cov = his_none.cov
         cond_max = max(cond_max, his_none.condition_number)
 
     # Under robust='huber' or 'mm', down-weight historical baseline spikes in [history:start]
@@ -791,8 +809,55 @@ def just_monitor(
 
     # Forecast historical model across [hist_idx : n] (unscaling design columns to match his_coeff)
     D_act, col_scales_act = build_design_matrix(t_act, "linear", empty_j, False, his_freqs)
-    forecast = np.asarray((D_act / col_scales_act) @ his_coeff, dtype=np.float64)
+    D_act_u = D_act / col_scales_act
+    forecast = np.asarray(D_act_u @ his_coeff, dtype=np.float64)
     residuals_act = np.asarray(y_act - forecast, dtype=np.float64)
+
+    # Pointwise mean forecast CI and out-of-sample observation prediction interval (PI)
+    nc_his = int(his_coeff.size)
+    dof_his = n_his - nc_his
+    forecast_ci_low: FloatArray | None = None
+    forecast_ci_high: FloatArray | None = None
+    forecast_pi_low: FloatArray | None = None
+    forecast_pi_high: FloatArray | None = None
+    if (
+        his_cov.size > 0
+        and his_cov.shape == (nc_his, nc_his)
+        and np.all(np.isfinite(his_cov))
+        and dof_his > 0
+    ):
+        var_mean = np.maximum(0.0, np.sum((D_act_u @ his_cov) * D_act_u, axis=1))
+        rw_his_base = whiten_vector(his_residuals, pw_his_base)
+        if eff_robust != "none":
+            mad_his = float(1.482602218505602 * np.median(np.abs(rw_his_base))) * np.sqrt(
+                n_his / max(1, dof_his)
+            )
+            sigma2_his = mad_his * mad_his
+        else:
+            sigma2_his = float(np.dot(rw_his_base, rw_his_base)) / dof_his
+
+        n_act_len = int(t_act.size)
+        if pw_act_base.kind == "none":
+            inv_w_act = np.ones(n_act_len, dtype=np.float64)
+        elif pw_act_base.kind == "scalar":
+            inv_w_act = np.full(n_act_len, 1.0 / pw_act_base.scalar, dtype=np.float64)
+        elif pw_act_base.kind == "vector":
+            assert pw_act_base.vector is not None
+            inv_w_act = 1.0 / pw_act_base.vector
+        else:
+            assert pw_act_base.cholesky_lower is not None
+            sigma_mat = linalg.cho_solve(
+                (pw_act_base.cholesky_lower, True), np.eye(n_act_len, dtype=np.float64)
+            )
+            inv_w_act = np.maximum(0.0, np.diag(sigma_mat))
+
+        t_crit_his = float(t_dist.ppf(0.5 + 0.5 * ci_level, df=dof_his))
+        hw_ci = t_crit_his * np.sqrt(var_mean)
+        hw_pi = t_crit_his * np.sqrt(np.maximum(0.0, var_mean + sigma2_his * inv_w_act))
+        forecast_ci_low = forecast - hw_ci
+        forecast_ci_high = forecast + hw_ci
+        forecast_pi_low = forecast - hw_pi
+        forecast_pi_high = forecast + hw_pi
 
     # Precompute out-of-sample predictive covariance factor V_all = D_out (D_his^T P_his D_his)^{-1/2}
     v_out_all: FloatArray | None = None
@@ -1137,4 +1202,9 @@ def just_monitor(
         horizon=eff_horizon,
         diagnostics=diag,
         censoring=prepared.provenance,
+        ci_level=ci_level,
+        forecast_ci_low=forecast_ci_low,
+        forecast_ci_high=forecast_ci_high,
+        forecast_pi_low=forecast_pi_low,
+        forecast_pi_high=forecast_pi_high,
     )

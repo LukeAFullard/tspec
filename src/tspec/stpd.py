@@ -111,6 +111,9 @@ class PiecewiseTrendResult(BaseResult):
     times_raw: np.ndarray[Any, Any]
     is_datetime: bool
     diagnostics: DiagnosticReport
+    ci_level: float = 0.95
+    trend_ci_low: FloatArray | None = None
+    trend_ci_high: FloatArray | None = None
 
     def summary(self) -> str:
         lines = [
@@ -153,14 +156,16 @@ class PiecewiseTrendResult(BaseResult):
 
     def to_dataframe(self) -> Any:
         pd = require_pandas()
-        return pd.DataFrame(
-            {
-                "time": self.times_raw,
-                "time_year": self.times_numeric,
-                "fitted_trend": self.fitted_trend,
-                "residual": self.residuals,
-            }
-        )
+        data: dict[str, Any] = {
+            "time": self.times_raw,
+            "time_year": self.times_numeric,
+            "fitted_trend": self.fitted_trend,
+            "residual": self.residuals,
+        }
+        if self.trend_ci_low is not None and self.trend_ci_high is not None:
+            data["trend_ci_low"] = self.trend_ci_low
+            data["trend_ci_high"] = self.trend_ci_high
+        return pd.DataFrame(data)
 
     def plot(self, ax: Any = None, **kwargs: Any) -> tuple[Any, Any]:
         from .plotting import plot_piecewise_trend
@@ -883,28 +888,37 @@ def _chained_forward_fit(
     y: FloatArray,
     tp_sorted: IntArray,
     w: FloatArray | None = None,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Sequential chained connected OLS/WLS across sorted turning points."""
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
+    """Sequential chained connected OLS/WLS across sorted turning points.
+
+    Also returns the exact dimensionless pointwise variance factors
+    ``v[i] = Var(y_hat[i]) / sigma^2`` via an O(n) disjoint-support recursion.
+    """
     n = int(t.size)
     m = int(tp_sorted.size)
     y_fit = np.empty(n, dtype=np.float64)
+    v_fac = np.empty(n, dtype=np.float64)
 
     if m == 0:
         if w is None:
+            sw = float(n)
             tm = float(np.mean(t))
             ym = float(np.mean(y))
             dt = t - tm
-            a = float(np.dot(dt, y - ym)) / float(np.dot(dt, dt))
+            stt = float(np.dot(dt, dt))
+            a = float(np.dot(dt, y - ym)) / stt if stt > 0.0 else 0.0
             b = ym - a * tm
         else:
             sw = float(np.sum(w))
             tm = float(np.sum(w * t)) / sw
             ym = float(np.sum(w * y)) / sw
             dt = t - tm
-            a = float(np.sum(w * dt * (y - ym))) / float(np.sum(w * dt * dt))
+            stt = float(np.sum(w * dt * dt))
+            a = float(np.sum(w * dt * (y - ym))) / stt if stt > 0.0 else 0.0
             b = ym - a * tm
         y_fit[:] = b + a * t
-        return np.array([a], dtype=np.float64), np.array([b], dtype=np.float64), y_fit
+        v_fac[:] = (1.0 / sw) + (dt * dt / stt if stt > 0.0 else 0.0)
+        return np.array([a], dtype=np.float64), np.array([b], dtype=np.float64), y_fit, v_fac
 
     bounds = np.append(tp_sorted, n - 1)
     slopes = np.empty(m + 1, dtype=np.float64)
@@ -915,10 +929,12 @@ def _chained_forward_fit(
     t1 = t[:end0]
     y1 = y[:end0]
     if w is None:
+        sw1 = float(end0)
         tm = float(np.mean(t1))
         ym = float(np.mean(y1))
         dt = t1 - tm
-        a0 = float(np.dot(dt, y1 - ym)) / float(np.dot(dt, dt))
+        stt1 = float(np.dot(dt, dt))
+        a0 = float(np.dot(dt, y1 - ym)) / stt1 if stt1 > 0.0 else 0.0
         b0 = ym - a0 * tm
     else:
         w1 = w[:end0]
@@ -926,28 +942,42 @@ def _chained_forward_fit(
         tm = float(np.sum(w1 * t1)) / sw1
         ym = float(np.sum(w1 * y1)) / sw1
         dt = t1 - tm
-        a0 = float(np.sum(w1 * dt * (y1 - ym))) / float(np.sum(w1 * dt * dt))
+        stt1 = float(np.sum(w1 * dt * dt))
+        a0 = float(np.sum(w1 * dt * (y1 - ym))) / stt1 if stt1 > 0.0 else 0.0
         b0 = ym - a0 * tm
     slopes[0] = a0
     intercepts[0] = b0
     y_fit[:end0] = b0 + a0 * t1
+    v_fac[:end0] = (1.0 / sw1) + (dt * dt / stt1 if stt1 > 0.0 else 0.0)
 
-    # Subsequent anchored segments
+    # Subsequent anchored segments: exact disjoint-support variance recursion
+    # y_hat_i = (1 - d_i * gamma_k) * y_hat_{tau_k} + d_i * (c_k^T y), where
+    # supp(c_k) = {tau_k+1..tau_{k+1}} is disjoint from supp(y_hat_{tau_k}) = {0..tau_k}.
     for k in range(m):
         i_start = int(bounds[k])
         i_stop = int(bounds[k + 1]) + 1
         d_seg = t[i_start:i_stop] - t[i_start]
         y_seg = y[i_start:i_stop] - y_fit[i_start]
         if w is None:
-            ak = float(np.dot(d_seg, y_seg)) / float(np.dot(d_seg, d_seg))
+            s_dd = float(np.dot(d_seg, d_seg))
+            s_d = float(np.sum(d_seg))
+            ak = float(np.dot(d_seg, y_seg)) / s_dd if s_dd > 0.0 else 0.0
         else:
             wk = w[i_start:i_stop]
-            ak = float(np.sum(wk * d_seg * y_seg)) / float(np.sum(wk * d_seg * d_seg))
+            s_dd = float(np.sum(wk * d_seg * d_seg))
+            s_d = float(np.sum(wk * d_seg))
+            ak = float(np.sum(wk * d_seg * y_seg)) / s_dd if s_dd > 0.0 else 0.0
         slopes[k + 1] = ak
         intercepts[k + 1] = y_fit[i_start] - ak * t[i_start]
         y_fit[i_start:i_stop] = y_fit[i_start] + ak * d_seg
+        v_anchor = float(v_fac[i_start])
+        if s_dd > 0.0:
+            gamma_k = s_d / s_dd
+            v_fac[i_start:i_stop] = (1.0 - d_seg * gamma_k) ** 2 * v_anchor + (d_seg * d_seg) / s_dd
+        else:
+            v_fac[i_start:i_stop] = v_anchor
 
-    return slopes, intercepts, y_fit
+    return slopes, intercepts, y_fit, v_fac
 
 
 def _fit_piecewise_core(
@@ -964,6 +994,7 @@ def _fit_piecewise_core(
     w: FloatArray | None = None,
     mode: RefitMode = "sequential",
     huber_k: float = 1.345,
+    ci_level: float = 0.95,
 ) -> PiecewiseTrendResult:
     """Internal piecewise connected linear trend fitter (sequential, joint, L1, or Huber)."""
     n = int(t_num.size)
@@ -974,6 +1005,8 @@ def _fit_piecewise_core(
 
     t0 = t_num - t_num[0]
     cond_num = 1.0
+    trend_ci_low: FloatArray | None = None
+    trend_ci_high: FloatArray | None = None
 
     if mode == "l1":
         slopes, intercepts, y_fit, cond_num = fit_l1_piecewise(t_num, y, tp_sorted, w=w)
@@ -990,12 +1023,19 @@ def _fit_piecewise_core(
             D[:, 2 + k] = np.maximum(0.0, u - u[tp])
         pw = prepare_weights(w, n) if w is not None else prepare_weights(None, n)
         if mode == "huber":
-            hr = solve_huber_irls(D, y, pw, k=huber_k, compute_cov=False)
+            hr = solve_huber_irls(D, y, pw, k=huber_k, compute_cov=True)
             ols = hr.ols
         else:
-            ols = solve_weighted_ols(D, y, pw)
+            ols = solve_weighted_ols(D, y, pw, compute_cov=True)
         cond_num = float(ols.condition_number)
         y_fit = y - ols.residuals
+        dof_j = n - ols.rank
+        if ols.cov.size > 0 and np.all(np.isfinite(ols.cov)) and dof_j > 0:
+            var_fit = np.maximum(0.0, np.sum((D @ ols.cov) * D, axis=1))
+            t_crit = float(student_t.ppf(0.5 + 0.5 * ci_level, df=dof_j))
+            hw = t_crit * np.sqrt(var_fit)
+            trend_ci_low = y_fit - hw
+            trend_ci_high = y_fit + hw
         b0 = float(ols.coeff[0])
         a0 = float(ols.coeff[1]) / s_t
         deltas = ols.coeff[2:] / s_t
@@ -1010,12 +1050,14 @@ def _fit_piecewise_core(
             intercepts[k + 1] = float(y_fit[tp]) - cum_slope * float(t_num[tp])
         selected_dir = "joint"
     else:
-        slopes_f, intercepts_f, y_f = _chained_forward_fit(t0, y, tp_sorted, w)
+        slopes_f, intercepts_f, y_f, v_f = _chained_forward_fit(t0, y, tp_sorted, w)
         t_rev = t0[-1] - t0[::-1]
         y_rev = y[::-1]
         w_rev = w[::-1] if w is not None else None
         tp_rev = np.sort(n - 1 - tp_sorted)
-        slopes_b_rev, _int_b_rev, y_b_rev = _chained_forward_fit(t_rev, y_rev, tp_rev, w_rev)
+        slopes_b_rev, _int_b_rev, y_b_rev, v_b_rev = _chained_forward_fit(
+            t_rev, y_rev, tp_rev, w_rev
+        )
         slopes_b = -slopes_b_rev[::-1]
         y_b = y_b_rev[::-1]
 
@@ -1032,11 +1074,23 @@ def _fit_piecewise_core(
         if err_f < err_b:
             slopes = slopes_f
             y_fit = y_f
+            v_sel = v_f
+            rss_sel = err_f * err_f
             selected_dir = "forward"
         else:
             slopes = slopes_b
             y_fit = y_b
+            v_sel = v_b_rev[::-1]
+            rss_sel = err_b * err_b
             selected_dir = "backward"
+
+        dof_s = n - (m + 2)
+        if dof_s > 0:
+            sigma2_hat = max(0.0, rss_sel) / dof_s
+            t_crit = float(student_t.ppf(0.5 + 0.5 * ci_level, df=dof_s))
+            hw = t_crit * np.sqrt(np.maximum(0.0, sigma2_hat * v_sel))
+            trend_ci_low = y_fit - hw
+            trend_ci_high = y_fit + hw
 
         intercepts = np.empty(m + 1, dtype=np.float64)
         bounds_full = [0, *(int(tp) for tp in tp_sorted), n - 1]
@@ -1126,6 +1180,9 @@ def _fit_piecewise_core(
         times_raw=t_raw,
         is_datetime=is_dt,
         diagnostics=diag,
+        ci_level=ci_level,
+        trend_ci_low=trend_ci_low,
+        trend_ci_high=trend_ci_high,
     )
 
 
@@ -1137,6 +1194,7 @@ def fit_piecewise_trend(
     weights: ArrayLike | None = None,
     mode: RefitMode = "sequential",
     huber_k: float = 1.345,
+    ci_level: float = 0.95,
 ) -> PiecewiseTrendResult:
     """Fit a global connected piecewise-linear trend across known turning points.
 
@@ -1152,10 +1210,13 @@ def fit_piecewise_trend(
         - ``'sequential'``: Ghaderpour et al. (2024) ``TPTR`` forward/backward chained OLS.
         - ``'joint'``: globally optimal simultaneous continuous hinge-spline OLS.
         - ``'l1'``: globally optimal continuous L1 (LAD) hinge-spline via linear
-          programming (50% vertical breakdown, strictly continuous at knots).
+          programming (50% vertical breakdown, strictly continuous at knots;
+          pointwise CIs are ``None``).
         - ``'huber'``: globally optimal continuous Huber IRLS hinge-spline.
     huber_k:
         Huber tuning constant used when ``mode='huber'`` (default ``1.345``).
+    ci_level:
+        Nominal pointwise confidence level in ``(0, 1)`` (default ``0.95``).
     """
     if mode not in ("sequential", "joint", "l1", "huber"):
         raise ValueError(
@@ -1163,6 +1224,8 @@ def fit_piecewise_trend(
         )
     if not np.isfinite(huber_k) or huber_k <= 0.0:
         raise ValueError(f"`huber_k` must be finite and strictly positive; got {huber_k}.")
+    if not (0.0 < ci_level < 1.0):
+        raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     series = prepare_numeric_series(t, y)
     w_arr: FloatArray | None = None
     if weights is not None:
@@ -1200,6 +1263,7 @@ def fit_piecewise_trend(
         w=w_arr,
         mode=mode,
         huber_k=huber_k,
+        ci_level=ci_level,
     )
 
 
@@ -1338,6 +1402,7 @@ def detect_turning_points(
     max_fb_diff: int = 3,
     max_fb_time_diff: float | None = None,
     refit_mode: RefitMode | None = None,
+    ci_level: float = 0.95,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1389,6 +1454,9 @@ def detect_turning_points(
         ``'l1'`` (continuous LAD hinge-spline), or ``'huber'`` (continuous Huber
         hinge-spline). Defaults to ``'huber'`` when ``robust='huber'`` and
         ``'sequential'`` otherwise.
+    ci_level:
+        Nominal pointwise confidence level in ``(0, 1)`` for the global
+        piecewise trend fit (default ``0.95``).
     robust:
         ``'none'`` (default WLS/OLS), ``'huber'`` (Huber-weighted asymmetric
         sequential scan + Schrader–Hettmansperger robust test), or ``'mm'``
@@ -1425,6 +1493,8 @@ def detect_turning_points(
         raise ValueError("`ndri_th` must lie in [0, 1].")
     if not (0.0 < alpha < 1.0):
         raise ValueError("`alpha` must lie in (0, 1).")
+    if not (0.0 < ci_level < 1.0):
+        raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     if dir_th < 0.0:
         raise ValueError("`dir_th` must be non-negative.")
     if tp_th <= 0.0:
@@ -1669,6 +1739,7 @@ def detect_turning_points(
         w=w_valid,
         mode=eff_refit_mode,
         huber_k=huber_k,
+        ci_level=ci_level,
     )
 
     tp_events: list[TurningPointEvent] = []

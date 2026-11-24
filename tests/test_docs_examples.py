@@ -11,6 +11,7 @@ DOCS_DIR = Path(__file__).resolve().parents[1] / "docs"
 TUTORIAL_FILES = [
     DOCS_DIR / "index.md",
     DOCS_DIR / "guide" / "concepts.md",
+    DOCS_DIR / "guide" / "interpreting-results.md",
     DOCS_DIR / "tutorials" / "water-quality-censored.md",
     DOCS_DIR / "tutorials" / "vegetation-ndvi-wildfire.md",
     DOCS_DIR / "tutorials" / "subsidence-turning-point.md",

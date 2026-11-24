@@ -17,6 +17,7 @@ from typing import Any, Literal
 
 import numpy as np
 from scipy.stats import f as f_dist
+from scipy.stats import t as t_dist
 
 from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
 from ._linalg import PreparedWeights, prepare_weights, whiten_vector
@@ -245,6 +246,15 @@ class JustDecomposeResult(BaseResult):
     window_mode: str
     censoring: CensoringProvenance | None
     diagnostics: DiagnosticReport
+    ci_level: float = 0.95
+    trend_ci_low: FloatArray | None = None
+    trend_ci_high: FloatArray | None = None
+    seasonal_ci_low: FloatArray | None = None
+    seasonal_ci_high: FloatArray | None = None
+    trend_reg_ci_low: FloatArray | None = None
+    trend_reg_ci_high: FloatArray | None = None
+    seasonal_reg_ci_low: FloatArray | None = None
+    seasonal_reg_ci_high: FloatArray | None = None
 
     def summary(self) -> str:
         t_range = float(np.ptp(self.trend)) if self.trend.size else 0.0
@@ -289,6 +299,12 @@ class JustDecomposeResult(BaseResult):
             "seasonal": self.seasonal,
             "remainder": self.remainder,
         }
+        if self.trend_ci_low is not None and self.trend_ci_high is not None:
+            data["trend_ci_low"] = self.trend_ci_low
+            data["trend_ci_high"] = self.trend_ci_high
+        if self.seasonal_ci_low is not None and self.seasonal_ci_high is not None:
+            data["seasonal_ci_low"] = self.seasonal_ci_low
+            data["seasonal_ci_high"] = self.seasonal_ci_high
         if self.censoring is not None:
             data["is_censored"] = self.censoring.is_censored
             data["censor_status"] = self.censoring.status_codes
@@ -1421,6 +1437,68 @@ def _eval_seasonal(t_eval: FloatArray, freqs: FloatArray, cs_coeff: FloatArray) 
     )
 
 
+def _window_component_half_widths(
+    t_obs: FloatArray,
+    t_eval: FloatArray,
+    local_jumps: IntArray,
+    freqs: FloatArray,
+    cov: FloatArray,
+    n_obs: int,
+    ci_level: float,
+    *,
+    is_obs_grid: bool = True,
+    parity_mode: bool = False,
+) -> tuple[FloatArray, FloatArray]:
+    """Compute pointwise Student-t half-widths for mean-shifted trend and centered seasonal.
+
+    Accounts exactly for the within-window zero-mean seasonal centering
+    (``trend_eff = trend + mean(seasonal)``, ``seasonal_eff = seasonal - mean(seasonal)``)
+    using the full parameter covariance ``cov`` from OLS/WLS or Huber/MM IRLS.
+    """
+    n_eval = int(t_eval.size)
+    n_tr = 2 * (int(local_jumps.size) + 1)
+    n_seas = 2 * int(freqs.size)
+    nc = n_tr + n_seas
+
+    if cov.size == 0 or cov.shape != (nc, nc) or not np.all(np.isfinite(cov)) or n_obs <= nc:
+        nan_arr = np.full(n_eval, np.nan, dtype=np.float64)
+        return nan_arr, (np.zeros(n_eval, dtype=np.float64) if n_seas == 0 else nan_arr.copy())
+
+    if is_obs_grid:
+        eval_jumps = local_jumps
+    elif local_jumps.size > 0:
+        mapped_j: list[int] = []
+        for j in local_jumps:
+            idx_e = int(np.searchsorted(t_eval, t_obs[j], side="left"))
+            if parity_mode:
+                idx_e = min(n_eval, idx_e + 1)
+            mapped_j.append(idx_e)
+        eval_jumps = np.array(mapped_j, dtype=np.intp)
+    else:
+        eval_jumps = np.empty(0, dtype=np.intp)
+
+    D_full, col_scales = build_design_matrix(t_eval, "linear", eval_jumps, False, freqs)
+    D_u = D_full / col_scales
+    t_crit = float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n_obs - nc)))
+
+    if n_seas == 0:
+        var_tr = np.maximum(0.0, np.sum((D_u @ cov) * D_u, axis=1))
+        return t_crit * np.sqrt(var_tr), np.zeros(n_eval, dtype=np.float64)
+
+    D_seas = D_u[:, n_tr:]
+    d_seas_mean = np.mean(D_seas, axis=0)
+    D_seas_cent = D_seas - d_seas_mean[None, :]
+    cov_ss = cov[n_tr:, n_tr:]
+    var_seas = np.maximum(0.0, np.sum((D_seas_cent @ cov_ss) * D_seas_cent, axis=1))
+
+    D_tr_eff = np.empty_like(D_u)
+    D_tr_eff[:, :n_tr] = D_u[:, :n_tr]
+    D_tr_eff[:, n_tr:] = d_seas_mean[None, :]
+    var_tr = np.maximum(0.0, np.sum((D_tr_eff @ cov) * D_tr_eff, axis=1))
+
+    return t_crit * np.sqrt(var_tr), t_crit * np.sqrt(var_seas)
+
+
 def just_decompose(
     t: TimeLike,
     y: ValueLike,
@@ -1437,6 +1515,7 @@ def just_decompose(
     season: SeasonMode = "allssa",
     omega: ArrayLike | None = None,
     alpha: float = 0.01,
+    ci_level: float = 0.95,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1448,8 +1527,15 @@ def just_decompose(
     Uses Gaussian-weighted overlapping window estimation with zero interpolation
     of the input observations. Optional ``eval_times`` evaluates the fitted
     parametric trend and seasonal models analytically onto any target grid.
-    Set ``robust='huber'`` to fit each window via convex Huber IRLS M-estimation
-    so isolated extreme spikes do not distort the local trend or seasonality.
+    Set ``robust='huber'`` or ``robust='mm'`` to fit each window via outlier-resistant
+    M/MM-estimation so isolated extreme spikes do not distort the local trend or
+    seasonality.
+
+    Pointwise confidence intervals at level ``ci_level`` (default ``0.95``) are
+    computed analytically inside each window (accounting for zero-mean seasonal
+    centering) and blended across overlapping Gaussian windows via the
+    conservative Cauchy–Schwarz half-width blend so overlapping correlated
+    windows do not artificially shrink interval widths.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -1458,6 +1544,8 @@ def just_decompose(
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"`alpha` must lie in (0, 1); got {alpha}.")
+    if not (0.0 < ci_level < 1.0):
+        raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
@@ -1564,10 +1652,18 @@ def just_decompose(
     seasonals0 = np.zeros(n, dtype=np.float64)
     remainders0 = np.zeros(n, dtype=np.float64)
     sum_w0 = np.zeros(n, dtype=np.float64)
+    trend_hw0 = np.zeros(n, dtype=np.float64)
+    seas_hw0 = np.zeros(n, dtype=np.float64)
+    sum_w0_tr_ci = np.zeros(n, dtype=np.float64)
+    sum_w0_s_ci = np.zeros(n, dtype=np.float64)
 
     trends_reg_acc = np.zeros(n_tt, dtype=np.float64)
     seasonals_reg_acc = np.zeros(n_tt, dtype=np.float64)
     sum_w_reg = np.zeros(n_tt, dtype=np.float64)
+    trend_reg_hw_acc = np.zeros(n_tt, dtype=np.float64)
+    seas_reg_hw_acc = np.zeros(n_tt, dtype=np.float64)
+    sum_w_reg_tr_ci = np.zeros(n_tt, dtype=np.float64)
+    sum_w_reg_s_ci = np.zeros(n_tt, dtype=np.float64)
 
     win_freqs_list: list[FloatArray] = []
     cond_max = 1.0
@@ -1622,7 +1718,7 @@ def just_decompose(
                 1,
                 max(25, 2 * int(om_arr.size)),
                 parity_mode=parity_mode,
-                compute_cov=False,
+                compute_cov=True,
                 robust=eff_robust,
                 huber_k=huber_k,
             )
@@ -1630,6 +1726,7 @@ def just_decompose(
             cs_coeff = res_a.cos_sin_coeffs
             rem_w = res_a.residuals
             freqs_w = res_a.frequencies
+            cov_w = res_a.cov
             cond_max = max(cond_max, res_a.condition_number_max)
         elif season_l == "ols":
             res_l = _lssa_core(
@@ -1642,7 +1739,7 @@ def just_decompose(
                 "linear",
                 False,
                 om_arr,
-                compute_cov=False,
+                compute_cov=True,
                 robust=eff_robust,
                 huber_k=huber_k,
             )
@@ -1651,6 +1748,7 @@ def just_decompose(
             tr_coeff = res_l.coeff[: res_l.coeff.size - 2 * n_f]
             cs_coeff = res_l.coeff[res_l.coeff.size - 2 * n_f :].reshape(n_f, 2)
             freqs_w = om_arr
+            cov_w = res_l.cov
             cond_max = max(cond_max, res_l.condition_number)
         else:
             res_l = _lssa_core(
@@ -1663,7 +1761,7 @@ def just_decompose(
                 "linear",
                 False,
                 np.empty(0, dtype=np.float64),
-                compute_cov=False,
+                compute_cov=True,
                 robust=eff_robust,
                 huber_k=huber_k,
             )
@@ -1671,6 +1769,7 @@ def just_decompose(
             tr_coeff = res_l.coeff
             cs_coeff = np.empty((0, 2), dtype=np.float64)
             freqs_w = np.empty(0, dtype=np.float64)
+            cov_w = res_l.cov
             cond_max = max(cond_max, res_l.condition_number)
 
         win_freqs_list.append(freqs_w)
@@ -1680,12 +1779,33 @@ def just_decompose(
         trend_t = trend_t + mean_s
         season_t = season_t - mean_s
 
+        hw_tr_w, hw_s_w = _window_component_half_widths(
+            ty_loc,
+            ty_loc,
+            local_j,
+            freqs_w,
+            cov_w,
+            size0,
+            ci_level,
+            is_obs_grid=True,
+            parity_mode=parity_mode,
+        )
+
         tau0 = float(ty[size0 // 2]) if (size0 % 2 == 1) else 0.5 * float(ty[size0 // 2] + ty[size0 // 2 - 1])
         gauss_w = np.exp(dil_fac * (ty - tau0) ** 2)
         trends0[lb0:ub0] += trend_t * gauss_w
         seasonals0[lb0:ub0] += season_t * gauss_w
         remainders0[lb0:ub0] += rem_w * gauss_w
         sum_w0[lb0:ub0] += gauss_w
+
+        fin_tr = np.isfinite(hw_tr_w)
+        if np.any(fin_tr):
+            trend_hw0[lb0:ub0] += np.where(fin_tr, hw_tr_w * gauss_w, 0.0)
+            sum_w0_tr_ci[lb0:ub0] += np.where(fin_tr, gauss_w, 0.0)
+        fin_s = np.isfinite(hw_s_w)
+        if np.any(fin_s):
+            seas_hw0[lb0:ub0] += np.where(fin_s, hw_s_w * gauss_w, 0.0)
+            sum_w0_s_ci[lb0:ub0] += np.where(fin_s, gauss_w, 0.0)
 
         if has_eval:
             trend_tt = _eval_piecewise_trend(
@@ -1695,6 +1815,17 @@ def just_decompose(
             mean_s_tt = float(np.mean(season_tt))
             trend_tt = trend_tt + mean_s_tt
             season_tt = season_tt - mean_s_tt
+            hw_tr_tt, hw_s_tt = _window_component_half_widths(
+                ty_loc,
+                tty_loc,
+                local_j,
+                freqs_w,
+                cov_w,
+                size0,
+                ci_level,
+                is_obs_grid=False,
+                parity_mode=parity_mode,
+            )
             w_len = ub - lb
             tau_tt = (
                 float(tty[w_len // 2])
@@ -1705,6 +1836,15 @@ def just_decompose(
             trends_reg_acc[lb:ub] += trend_tt * gw_tt
             seasonals_reg_acc[lb:ub] += season_tt * gw_tt
             sum_w_reg[lb:ub] += gw_tt
+
+            fin_tr_tt = np.isfinite(hw_tr_tt)
+            if np.any(fin_tr_tt):
+                trend_reg_hw_acc[lb:ub] += np.where(fin_tr_tt, hw_tr_tt * gw_tt, 0.0)
+                sum_w_reg_tr_ci[lb:ub] += np.where(fin_tr_tt, gw_tt, 0.0)
+            fin_s_tt = np.isfinite(hw_s_tt)
+            if np.any(fin_s_tt):
+                seas_reg_hw_acc[lb:ub] += np.where(fin_s_tt, hw_s_tt * gw_tt, 0.0)
+                sum_w_reg_s_ci[lb:ub] += np.where(fin_s_tt, gw_tt, 0.0)
 
     if eval_gap_skipped > 0:
         warnings_list.append(
@@ -1733,6 +1873,13 @@ def just_decompose(
         trend = np.where(sum_w0 > 0, trends0 / sum_w0, np.nan)
         seasonal = np.where(sum_w0 > 0, seasonals0 / sum_w0, np.nan)
         remainder = np.where(sum_w0 > 0, remainders0 / sum_w0, np.nan)
+        tr_hw = np.where(sum_w0_tr_ci > 0, trend_hw0 / sum_w0_tr_ci, np.nan)
+        s_hw = np.where(sum_w0_s_ci > 0, seas_hw0 / sum_w0_s_ci, np.nan)
+        trend_ci_low = trend - tr_hw
+        trend_ci_high = trend + tr_hw
+        seasonal_ci_low = seasonal - s_hw
+        seasonal_ci_high = seasonal + s_hw
+
         if has_eval:
             trend_reg: FloatArray | None = np.where(
                 sum_w_reg > 0, trends_reg_acc / sum_w_reg, np.nan
@@ -1740,9 +1887,19 @@ def just_decompose(
             seasonal_reg: FloatArray | None = np.where(
                 sum_w_reg > 0, seasonals_reg_acc / sum_w_reg, np.nan
             )
+            tr_reg_hw = np.where(sum_w_reg_tr_ci > 0, trend_reg_hw_acc / sum_w_reg_tr_ci, np.nan)
+            s_reg_hw = np.where(sum_w_reg_s_ci > 0, seas_reg_hw_acc / sum_w_reg_s_ci, np.nan)
+            trend_reg_ci_low: FloatArray | None = trend_reg - tr_reg_hw
+            trend_reg_ci_high: FloatArray | None = trend_reg + tr_reg_hw
+            seasonal_reg_ci_low: FloatArray | None = seasonal_reg - s_reg_hw
+            seasonal_reg_ci_high: FloatArray | None = seasonal_reg + s_reg_hw
         else:
             trend_reg = None
             seasonal_reg = None
+            trend_reg_ci_low = None
+            trend_reg_ci_high = None
+            seasonal_reg_ci_low = None
+            seasonal_reg_ci_high = None
 
     valid_rem = remainder[~np.isnan(remainder)]
     rn, rn_warns = compute_red_noise_diagnostics(
@@ -1778,4 +1935,13 @@ def just_decompose(
         window_mode=window_mode,
         censoring=prov,
         diagnostics=diag,
+        ci_level=ci_level,
+        trend_ci_low=trend_ci_low,
+        trend_ci_high=trend_ci_high,
+        seasonal_ci_low=seasonal_ci_low,
+        seasonal_ci_high=seasonal_ci_high,
+        trend_reg_ci_low=trend_reg_ci_low,
+        trend_reg_ci_high=trend_reg_ci_high,
+        seasonal_reg_ci_low=seasonal_reg_ci_low,
+        seasonal_reg_ci_high=seasonal_reg_ci_high,
     )
