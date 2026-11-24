@@ -200,6 +200,7 @@ class JustJumpResult(BaseResult):
                 "occurrences": j.occurrences,
                 "window_center_distance": j.window_center_distance,
                 "jump_pvalue": j.jump_pvalue,
+                "step_pvalue": j.step_pvalue,
                 "window_censored_fraction": j.window_censored_fraction,
                 "coincides_with_dl_shift": j.coincides_with_dl_shift,
                 "dl_artifact_likely": j.dl_artifact_likely,
@@ -508,7 +509,11 @@ def _nested_jump_ftests(
     local_jump_idx: int,
     freqs: FloatArray,
     *,
+    season: str = "ols",
+    omega: FloatArray | None = None,
+    alpha: float = 0.01,
     bonferroni: bool = False,
+    parity_mode: bool = False,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -518,6 +523,11 @@ def _nested_jump_ftests(
       hinge ``[1, t0, (t0 - t_j)_+]``, isolating whether a genuine vertical step
       discontinuity exists beyond a smooth slope bend.
 
+    When ``season == "allssa"``, harmonics are selected strictly under the
+    no-jump null model first so adaptive frequency selection cannot be mined
+    jointly with the candidate split to artificially deflate ``rss1`` (fixing
+    post-selection ALLSSA Type I error inflation).
+
     If ``bonferroni=True``, multiplies raw p-values by the number of candidate
     interior split indices scanned in the window (``max(1, n_win - 5)``) to
     mitigate post-selection inflation.
@@ -526,7 +536,29 @@ def _nested_jump_ftests(
 
     n_win = int(t_win.size)
     t0 = t_win - t_win[0]
-    n_f = int(freqs.size)
+
+    # For adaptive ALLSSA, select harmonics under the no-jump null model so the
+    # nested F-test conditions on a null-selected subspace without harmonic mining.
+    if season == "allssa" and omega is not None and omega.size > 0 and n_win >= 5:
+        null_allssa = _allssa_core(
+            t0,
+            y_win,
+            pw_win,
+            omega,
+            np.empty(0, dtype=np.intp),
+            alpha,
+            "linear",
+            False,
+            1,
+            max(25, 2 * int(omega.size)),
+            parity_mode=parity_mode,
+            compute_cov=False,
+        )
+        test_freqs = null_allssa.frequencies
+    else:
+        test_freqs = freqs
+
+    n_f = int(test_freqs.size)
     nc_full = 4 + 2 * n_f
     dof2 = n_win - nc_full
     if dof2 <= 0:
@@ -541,7 +573,8 @@ def _nested_jump_ftests(
         0.05,
         "linear",
         False,
-        freqs,
+        test_freqs,
+        compute_cov=False,
     )
     res_null = _lssa_core(
         t0,
@@ -552,25 +585,24 @@ def _nested_jump_ftests(
         0.05,
         "linear",
         False,
-        freqs,
+        test_freqs,
+        compute_cov=False,
     )
 
     # Optimal continuous hinge model across the window:
-    # [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(freqs)] for k in [3 .. n_win - 3].
-    # Optimizing k fairly compares the best discontinuous jump against the best
-    # continuous turning point rather than handicapping the hinge at a biased split.
+    # [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(test_freqs)] for k in [3 .. n_win - 3].
     s_t = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
     D_hinge = np.empty((n_win, 3 + 2 * n_f), dtype=np.float64)
     D_hinge[:, 0] = 1.0
     D_hinge[:, 1] = t0 / s_t
     if n_f > 0:
-        phases = np.outer((2.0 * np.pi) * t0, freqs)
+        phases = np.outer((2.0 * np.pi) * t0, test_freqs)
         D_hinge[:, 3::2] = np.cos(phases)
         D_hinge[:, 4::2] = np.sin(phases)
     rss_hinge = np.inf
     for k_knot in range(3, n_win - 2):
         D_hinge[:, 2] = np.maximum(0.0, t0 - t0[k_knot]) / s_t
-        rss_k = solve_weighted_ols(D_hinge, y_win, pw_win).norm_res
+        rss_k = solve_weighted_ols(D_hinge, y_win, pw_win, compute_cov=False).norm_res
         if rss_k < rss_hinge:
             rss_hinge = rss_k
 
@@ -578,9 +610,15 @@ def _nested_jump_ftests(
     rss0 = res_null.norm_res
     mult = float(max(1, n_win - 5)) if bonferroni else 1.0
 
-    if rss1 <= 1e-24:
-        p_jump = 0.0 if rss0 > 1e-24 else 1.0
-        p_step = 0.0 if rss_hinge > 1e-24 else 1.0
+    # Scale-invariant constant-window and noiseless guards
+    # (prevents tiny roundoff RSS on constant windows from yielding p=0,
+    # while handling scaled noiseless jumps down to 1e-13 cleanly).
+    if float(np.ptp(y_win)) <= 1e-13 * abs(float(np.mean(y_win))):
+        return 1.0, 1.0
+    tol = 1e-26 * max(rss0, rss_hinge, float(np.finfo(np.float64).tiny))
+    if rss1 <= tol:
+        p_jump = 0.0 if rss0 > tol else 1.0
+        p_step = 0.0 if rss_hinge > tol else 1.0
         return p_jump, p_step
 
     den = rss1 / dof2
@@ -619,6 +657,7 @@ def _run_just_jumps_array(
     """Core sliding-window JUST jump search + aggregation + merging."""
     candidates: list[WindowCandidate] = []
     window_fallbacks = 0
+    window_y_cache: dict[tuple[int, int], FloatArray] = {}
 
     use_local_censor = (
         provenance is not None
@@ -633,6 +672,7 @@ def _run_just_jumps_array(
         if use_local_censor:
             assert provenance is not None and censor_cfg is not None and rng is not None
             y_w, fb = impute_window_local(provenance, censor_cfg, w_start, w_stop, rng)
+            window_y_cache[(w_start, w_stop)] = y_w
             if fb:
                 window_fallbacks += 1
         else:
@@ -693,7 +733,10 @@ def _run_just_jumps_array(
         if abs(mag_val) < mag_th and abs(dir_val) < dir_th:
             continue
         t_w = t_valid[best_c.window_start : best_c.window_stop]
-        y_w = y_valid[best_c.window_start : best_c.window_stop]
+        y_w = window_y_cache.get(
+            (best_c.window_start, best_c.window_stop),
+            y_valid[best_c.window_start : best_c.window_stop],
+        )
         pw_w = pw.slice_range(best_c.window_start, best_c.window_stop)
         p_jump, p_step = _nested_jump_ftests(
             t_w,
@@ -701,7 +744,11 @@ def _run_just_jumps_array(
             pw_w,
             j_idx - best_c.window_start,
             best_c.selected_freqs,
+            season=season,
+            omega=omega,
+            alpha=alpha,
             bonferroni=bonferroni_window,
+            parity_mode=parity_mode,
         )
         if jump_alpha is not None and (np.isnan(p_jump) or p_jump >= jump_alpha):
             continue
@@ -796,6 +843,8 @@ def just_jumps(
         raise ValueError(f"`alpha` must lie in (0, 1); got {alpha}.")
     if jump_alpha is not None and not (0.0 < jump_alpha < 1.0):
         raise ValueError(f"`jump_alpha` must lie in (0, 1); got {jump_alpha}.")
+    if step_alpha is not None and not (0.0 < step_alpha < 1.0):
+        raise ValueError(f"`step_alpha` must lie in (0, 1); got {step_alpha}.")
     if mag_th < 0.0 or dir_th < 0.0 or jump_th < 0.0:
         raise ValueError("`mag_th`, `dir_th`, and `jump_th` must be non-negative.")
 
@@ -922,10 +971,26 @@ def just_jumps(
     stability_counts: dict[int, int] = {item[0]: 0 for item in accepted}
     n_stab = cfg.n_stability_draws if (cfg is not None and prov is not None and prov.n_censored > 0) else 0
     if n_stab > 0 and accepted and prov is not None and cfg is not None:
+        from .censored import _spawn_stability_rngs
+
         dt_med = float(np.median(np.diff(series.times_numeric))) if series.n_valid > 1 else 0.1
         match_tol = max(0.35, 2.0 * dt_med)
         draw_series = generate_stability_draws(prov, cfg, series.times_numeric)
-        for y_draw in draw_series:
+        win_rngs = _spawn_stability_rngs(cfg.random_state, len(draw_series)) if cfg.scope == "windowed" else None
+        for idx_d, y_draw in enumerate(draw_series):
+            draw_cfg = (
+                CensoredConfig(
+                    method=cfg.method,
+                    censoring_type=cfg.censoring_type,
+                    dist=cfg.dist,
+                    impute_type="stochastic",
+                    scope="windowed",
+                    clamp=cfg.clamp,
+                    ndimpute_kwargs=cfg.ndimpute_kwargs,
+                )
+                if cfg.scope == "windowed"
+                else None
+            )
             acc_d, _, _ = _run_just_jumps_array(
                 series.times_numeric,
                 y_draw,
@@ -942,6 +1007,9 @@ def just_jumps(
                 step_alpha=step_alpha,
                 bonferroni_window=bonferroni_window,
                 parity_mode=parity_mode,
+                provenance=prov if cfg.scope == "windowed" else None,
+                censor_cfg=draw_cfg,
+                rng=win_rngs[idx_d] if win_rngs is not None else None,
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted:
@@ -1264,7 +1332,12 @@ def just_decompose(
         windows_tt, win_size, _win_step, rate_eff = _build_count_windows(
             n_tt, tt_num, size, step, parity_mode=parity_mode
         )
-        dil_fac = float(np.log(0.1) / ((win_size / (6.0 * rate_eff)) ** 2))
+        if parity_mode:
+            rate_for_dil = float(rate_eff)
+        else:
+            span_tt = float(tt_num[-1] - tt_num[0]) if n_tt > 1 else 1.0
+            rate_for_dil = (n_tt / span_tt) if span_tt > 0.0 else float(rate_eff)
+        dil_fac = float(np.log(0.1) / ((win_size / (6.0 * rate_for_dil)) ** 2))
         if not parity_mode and series.sampling_rate_ratio > 2.0:
             warnings_list.append(
                 WarningItem(
@@ -1293,6 +1366,20 @@ def just_decompose(
                 )
             )
 
+    cfg = prep.config
+    use_local_censor = (
+        prov is not None
+        and cfg is not None
+        and cfg.scope == "windowed"
+        and prov.n_censored > 0
+    )
+    if cfg is not None and isinstance(cfg.random_state, np.random.Generator):
+        rng_dec: np.random.Generator = cfg.random_state
+    else:
+        rng_dec = np.random.default_rng(cfg.random_state if cfg is not None else 0)
+    win_censor_fb = 0
+    eval_gap_skipped = 0
+
     trends0 = np.zeros(n, dtype=np.float64)
     seasonals0 = np.zeros(n, dtype=np.float64)
     remainders0 = np.zeros(n, dtype=np.float64)
@@ -1314,12 +1401,29 @@ def just_decompose(
             lb0, ub0 = lb, ub
 
         size0 = ub0 - lb0
-        ty = t0[lb0:ub0]
-        yy = series.values[lb0:ub0]
-        pw_w = pw.slice_range(lb0, ub0)
         local_j = np.array(
             [int(j - lb0) for j in j_valid if lb0 + 2 <= j < ub0 - 1], dtype=np.intp
         )
+        base_nc = 2 * (int(local_j.size) + 1)
+        if season_l == "ols":
+            min_needed = base_nc + 2 * int(om_arr.size) + 1
+        elif season_l == "allssa":
+            min_needed = base_nc + 3
+        else:
+            min_needed = base_nc + 1
+        if size0 <= 0 or (has_eval and size0 < min_needed):
+            eval_gap_skipped += 1
+            continue
+
+        ty = t0[lb0:ub0]
+        if use_local_censor:
+            assert prov is not None and cfg is not None
+            yy, fb = impute_window_local(prov, cfg, lb0, ub0, rng_dec)
+            if fb:
+                win_censor_fb += 1
+        else:
+            yy = series.values[lb0:ub0]
+        pw_w = pw.slice_range(lb0, ub0)
 
         # Shift local window time to ty[0] for numerical conditioning when evaluating
         ty_loc = ty - ty[0]
@@ -1338,6 +1442,7 @@ def just_decompose(
                 1,
                 max(25, 2 * int(om_arr.size)),
                 parity_mode=parity_mode,
+                compute_cov=False,
             )
             tr_coeff = res_a.trend_coeff
             cs_coeff = res_a.cos_sin_coeffs
@@ -1355,6 +1460,7 @@ def just_decompose(
                 "linear",
                 False,
                 om_arr,
+                compute_cov=False,
             )
             rem_w = res_l.residuals
             n_f = int(om_arr.size)
@@ -1373,6 +1479,7 @@ def just_decompose(
                 "linear",
                 False,
                 np.empty(0, dtype=np.float64),
+                compute_cov=False,
             )
             rem_w = res_l.residuals
             tr_coeff = res_l.coeff
@@ -1412,6 +1519,29 @@ def just_decompose(
             trends_reg_acc[lb:ub] += trend_tt * gw_tt
             seasonals_reg_acc[lb:ub] += season_tt * gw_tt
             sum_w_reg[lb:ub] += gw_tt
+
+    if eval_gap_skipped > 0:
+        warnings_list.append(
+            WarningItem(
+                code="SPARSE_WINDOW_SKIPPED",
+                severity="info",
+                message=(
+                    f"Skipped {eval_gap_skipped} evaluation window(s) spanning a data gap "
+                    "with insufficient observations; uncovered `eval_times` entries are NaN."
+                ),
+            )
+        )
+    if win_censor_fb > 0:
+        warnings_list.append(
+            WarningItem(
+                code="WINDOW_IMPUTATION_FALLBACK",
+                severity="info",
+                message=(
+                    f"Windowed censoring imputation fell back to global imputation in "
+                    f"{win_censor_fb} heavily censored window(s)."
+                ),
+            )
+        )
 
     with np.errstate(divide="ignore", invalid="ignore"):
         trend = np.where(sum_w0 > 0, trends0 / sum_w0, np.nan)

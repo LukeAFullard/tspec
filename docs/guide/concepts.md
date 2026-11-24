@@ -94,12 +94,13 @@ print(res_dur.explain())
 
 When monitoring incoming observations one by one (`just_monitor()`), you are **peeking repeatedly** at the data — and at *35 candidate frequencies* every single time a new point arrives. If you test at an unadjusted $\alpha = 0.05$ on every new observation, even completely normal white noise will eventually trigger a false alarm (**72.5%** of stable series falsely trigger over 25 monitoring steps!).
 
-`tspec` solves this out of the box with two complementary layers:
+`tspec` solves this out of the box with three complementary layers:
 
 1. **Per-step frequency correction (`freq_correction="sidak"`):** adjusts for scanning all 35 frequencies simultaneously at each step.
 2. **Across-time sequential control (`sequential_control`):**
-   - `"pocock"` *(default)*: distributes your $\alpha$ budget evenly across a planned monitoring horizon so the total false-alarm probability stays $\le \alpha$.
+   - `"pocock"` *(default)*: distributes your $\alpha$ budget evenly across a planned monitoring horizon so the familywise false-alarm probability stays bounded by $\alpha$ (under well-specified historical dynamics and Gaussian independent noise).
    - `"obrien_fleming"`: spends very little $\alpha$ early and saves statistical power for later monitoring steps.
    - `"consecutive_k"` *(e.g. `k=2`)*: ideal for open-ended streams without a fixed end date; requires two consecutive exceedances before sounding the alarm.
+3. **Out-of-sample predictive covariance (`account_for_forecast_uncertainty=True`):** propagates finite-sample historical trend and seasonal parameter uncertainty into the monitoring window weights so extrapolating beyond a short historical baseline does not trigger spurious drift alarms.
 
 ![Near-real-time monitoring sequential boundary](../assets/figures/tutorial_nrt_monitoring.png)

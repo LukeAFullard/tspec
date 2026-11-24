@@ -23,6 +23,7 @@ from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike
 from .censored import (
     CensoredConfig,
     CensoringProvenance,
+    _spawn_stability_rngs,
     check_dl_shift_coincidence,
     generate_stability_draws,
     impute_window_local,
@@ -110,15 +111,24 @@ class PiecewiseTrendResult(BaseResult):
             f"Segment slopes : {[round(float(s), 4) for s in self.slopes]}",
         ]
         if self.tp_indices.size > 0:
-            lines.append(
-                "  TP_Idx  Post-Slope   Direction    SNR(cent)   NDRI(rmse)  NDRI(L2)"
-            )
-            for k in range(self.tp_indices.size):
+            if self.slopes.size == self.tp_indices.size + 1:
                 lines.append(
-                    f"  {int(self.tp_indices[k]):<7d} {self.slopes[k + 1]:+11.4f}  "
-                    f"{self.directions[k]:+11.4f}  {self.local_snr_centered[k]:10.3f}  "
-                    f"{self.local_ndri_rmse[k]:10.3f}  {self.local_ndri_l2[k]:8.3f}"
+                    "  TP_Idx  Post-Slope   Direction    SNR(cent)   NDRI(rmse)  NDRI(L2)"
                 )
+                for k in range(self.tp_indices.size):
+                    lines.append(
+                        f"  {int(self.tp_indices[k]):<7d} {self.slopes[k + 1]:+11.4f}  "
+                        f"{self.directions[k]:+11.4f}  {self.local_snr_centered[k]:10.3f}  "
+                        f"{self.local_ndri_rmse[k]:10.3f}  {self.local_ndri_l2[k]:8.3f}"
+                    )
+            else:
+                lines.append("  TP_Idx   Direction    SNR(cent)   NDRI(rmse)  NDRI(L2)")
+                for k in range(self.tp_indices.size):
+                    lines.append(
+                        f"  {int(self.tp_indices[k]):<7d} {self.directions[k]:+11.4f}  "
+                        f"{self.local_snr_centered[k]:10.3f}  "
+                        f"{self.local_ndri_rmse[k]:10.3f}  {self.local_ndri_l2[k]:8.3f}"
+                    )
         lines.extend(format_diagnostics_block(self.diagnostics))
         return "\n".join(lines)
 
@@ -298,10 +308,20 @@ def _stpd_pvalue(
     slope1: float,
     slope2: float,
     w: FloatArray | None = None,
+    *,
+    parity_mode: bool = False,
 ) -> float:
-    """Two-sided Student t-test comparing slopes of two connected linear pieces."""
+    """Two-sided Student-t p-value testing H0: slope1 == slope2 at knot ``ind``.
+
+    In default mode (``parity_mode=False``), computes the exact linear-propagated
+    standard error of ``a1 - a2`` under the sequential 2-step OLS estimator
+    (accounting for the negative covariance between ``a1`` and ``a2`` induced by
+    the shared hinge anchor ``h = b1 + a1 * t[ind]``) with ``df = n - 3``.
+    In ``parity_mode=True``, reproduces Ghaderpour et al. (2024)'s approximate
+    independent-segment screening formula with ``df = n - 2``.
+    """
     n = int(t.size)
-    if ind <= 1 or n - ind <= 1 or n <= 2:
+    if ind <= 1 or n - ind <= 1 or n <= 3:
         return float("nan")
 
     t1 = t[: ind + 1]
@@ -312,31 +332,62 @@ def _stpd_pvalue(
     y2 = y[ind:] - (intercept1 + slope1 * t[ind])
     g2 = y2 - slope2 * d2
 
-    if w is None:
-        s1_num = float(np.dot(g1, g1)) / (ind - 1)
-        s1_den = float(np.linalg.norm(t1 - np.mean(t1)))
-        s2_num = float(np.dot(g2, g2)) / (n - ind - 1)
-        s2_den = float(np.linalg.norm(d2 - np.mean(d2)))
-    else:
-        w1 = w[: ind + 1]
-        w2 = w[ind:]
-        t1_bar = float(np.sum(w1 * t1) / np.sum(w1))
-        d2_bar = float(np.sum(w2 * d2) / np.sum(w2))
-        s1_num = float(np.sum(w1 * g1 * g1)) / (ind - 1)
-        s1_den = float(np.sqrt(np.sum(w1 * (t1 - t1_bar) ** 2)))
-        s2_num = float(np.sum(w2 * g2 * g2)) / (n - ind - 1)
-        s2_den = float(np.sqrt(np.sum(w2 * (d2 - d2_bar) ** 2)))
+    if parity_mode:
+        if w is None:
+            s1_num = float(np.dot(g1, g1)) / (ind - 1)
+            s1_den = float(np.linalg.norm(t1 - np.mean(t1)))
+            s2_num = float(np.dot(g2, g2)) / (n - ind - 1)
+            s2_den = float(np.linalg.norm(d2 - np.mean(d2)))
+        else:
+            w1 = w[: ind + 1]
+            w2 = w[ind:]
+            t1_bar = float(np.sum(w1 * t1) / np.sum(w1))
+            d2_bar = float(np.sum(w2 * d2) / np.sum(w2))
+            s1_num = float(np.sum(w1 * g1 * g1)) / (ind - 1)
+            s1_den = float(np.sqrt(np.sum(w1 * (t1 - t1_bar) ** 2)))
+            s2_num = float(np.sum(w2 * g2 * g2)) / (n - ind - 1)
+            s2_den = float(np.sqrt(np.sum(w2 * (d2 - d2_bar) ** 2)))
 
-    if s1_den <= 1e-15 or s2_den <= 1e-15:
+        if s1_den <= 0.0 or s2_den <= 0.0:
+            return float("nan")
+
+        se1 = float(np.sqrt(max(0.0, s1_num))) / s1_den
+        se2 = float(np.sqrt(max(0.0, s2_num))) / s2_den
+        se_comb = float(np.hypot(se1, se2))
+        if se_comb <= 1e-24 * max(1.0, abs(slope1), abs(slope2)):
+            return 0.0 if abs(slope1 - slope2) > 0.0 else 1.0
+        t_stat = abs(slope1 - slope2) / se_comb
+        return float(2.0 * student_t.sf(t_stat, df=n - 2))
+
+    # Exact linear-propagated variance of a1 - a2 = v^T y (accounts for Cov(a1, a2) < 0)
+    w_arr = np.ones(n, dtype=np.float64) if w is None else w
+    w1 = w_arr[: ind + 1]
+    w2 = w_arr[ind:]
+    w1_sum = float(np.sum(w1))
+    t1_bar = float(np.sum(w1 * t1) / w1_sum)
+    stt1 = float(np.sum(w1 * (t1 - t1_bar) ** 2))
+    sd2 = float(np.sum(w2 * d2 * d2))
+    md2 = float(np.sum(w2 * d2))
+    if stt1 <= 0.0 or sd2 <= 0.0:
         return float("nan")
 
-    se1 = float(np.sqrt(max(0.0, s1_num))) / s1_den
-    se2 = float(np.sqrt(max(0.0, s2_num))) / s2_den
-    se_comb = float(np.hypot(se1, se2))
-    if se_comb <= 1e-24:
-        return 0.0 if abs(slope1 - slope2) > 1e-15 else 1.0
-    t_stat = abs(slope1 - slope2) / se_comb
-    return float(2.0 * student_t.sf(t_stat, df=n - 2))
+    c1 = w1 * (t1 - t1_bar) / stt1
+    h_w = (w1 / w1_sum) + (t[ind] - t1_bar) * c1
+    v_left = c1 + (md2 / sd2) * h_w
+    v_right = -(w2[1:] * d2[1:]) / sd2
+
+    # Sum v_i^2 / w_i under Var(y_i) = sigma^2 / w_i
+    var_factor = float(np.sum((v_left * v_left) / w1) + np.sum((v_right * v_right) / w2[1:]))
+    # Combined residual sum of squares (avoiding double-counting hinge index `ind`)
+    rss_tot = float(np.sum(w1 * g1 * g1) + np.sum(w2[1:] * g2[1:] * g2[1:]))
+    dof = n - 3
+    sigma2_hat = max(0.0, rss_tot) / dof
+    se_exact = float(np.sqrt(sigma2_hat * var_factor))
+    slope_scale = max(abs(slope1), abs(slope2), float(np.finfo(np.float64).tiny))
+    if se_exact <= 1e-14 * slope_scale:
+        return 0.0 if abs(slope1 - slope2) > 1e-14 * slope_scale else 1.0
+    t_stat = abs(slope1 - slope2) / se_exact
+    return float(2.0 * student_t.sf(t_stat, df=dof))
 
 
 def _fit_two_piece_sequential_scan(
@@ -349,9 +400,10 @@ def _fit_two_piece_sequential_scan(
 
     Step 1 fits unconstrained linear piece on ``0..ind``; Step 2 anchors the
     second linear piece at ``(t[ind], b1 + a1 * t[ind])`` and estimates ``a2``
-    over ``ind..n-1``. Uses exact prefix-sum identities to evaluate all split
-    indices simultaneously in O(n) time while preserving exact forward/backward
-    asymmetry (Ghaderpour et al., 2024).
+    over ``ind..n-1``. Normalizes ``t`` to ``[0, 1]`` and removes the global
+    linear trend from ``y`` prior to prefix sums (exact algebraic invariance) to
+    eliminate catastrophic cancellation on steep trends, huge baselines, or tiny
+    time spans while preserving O(n) speed and exact forward/backward asymmetry.
     """
     n = int(t.size)
     lo = max(2, margin)
@@ -361,29 +413,49 @@ def _fit_two_piece_sequential_scan(
             f"Window size n={n} too small for margin={margin} (need at least 2*margin + 1 >= 5)."
         )
 
-    # Center y once for numerical stability in prefix sums of squares (exact shift invariance)
-    y_mean = float(np.mean(y))
-    yc = y - y_mean
+    span = float(t[-1] - t[0])
+    if span <= 0.0:
+        raise InsufficientDataError("Collinear timestamps prevented STPD window estimation.")
+    u = (t - t[0]) / span
+
+    # Remove global linear trend b_g + a_g * u (leaves all piecewise-linear residuals invariant!)
+    if w is None:
+        u_mean = float(np.mean(u))
+        y_mean = float(np.mean(y))
+        du = u - u_mean
+        suu_g = float(np.dot(du, du))
+        a_g = float(np.dot(du, y - y_mean) / suu_g) if suu_g > 0.0 else 0.0
+        b_g = y_mean - a_g * u_mean
+    else:
+        w_sum_g = float(np.sum(w))
+        u_mean = float(np.sum(w * u) / w_sum_g)
+        y_mean = float(np.sum(w * y) / w_sum_g)
+        du = u - u_mean
+        suu_g = float(np.sum(w * du * du))
+        a_g = float(np.sum(w * du * (y - y_mean)) / suu_g) if suu_g > 0.0 else 0.0
+        b_g = y_mean - a_g * u_mean
+
+    yc = y - (b_g + a_g * u)
     idx = np.arange(lo, hi, dtype=np.intp)
 
     if w is None:
         s_w = np.arange(1, n + 1, dtype=np.float64)
-        s_t = np.cumsum(t)
+        s_t = np.cumsum(u)
         s_y = np.cumsum(yc)
-        s_tt = np.cumsum(t * t)
-        s_ty = np.cumsum(t * yc)
+        s_tt = np.cumsum(u * u)
+        s_ty = np.cumsum(u * yc)
         s_yy = np.cumsum(yc * yc)
         w_at_idx = np.ones(idx.size, dtype=np.float64)
     else:
         s_w = np.cumsum(w)
-        s_t = np.cumsum(w * t)
+        s_t = np.cumsum(w * u)
         s_y = np.cumsum(w * yc)
-        s_tt = np.cumsum(w * t * t)
-        s_ty = np.cumsum(w * t * yc)
+        s_tt = np.cumsum(w * u * u)
+        s_ty = np.cumsum(w * u * yc)
         s_yy = np.cumsum(w * yc * yc)
         w_at_idx = w[idx]
 
-    # Segment 1: 0..ind (inclusive)
+    # Segment 1: 0..ind (inclusive) on dimensionless u in [0, 1]
     w1 = s_w[idx]
     t1_sum = s_t[idx]
     y1_sum = s_y[idx]
@@ -393,14 +465,14 @@ def _fit_two_piece_sequential_scan(
     sty = s_ty[idx] - w1 * t1_m * y1_m
     syy1 = s_yy[idx] - w1 * y1_m * y1_m
 
-    valid = stt > 1e-24
+    valid = stt > 1e-24 * w1
     a1 = np.zeros_like(stt)
     a1[valid] = sty[valid] / stt[valid]
     b1_c = y1_m - a1 * t1_m
     rss1 = np.maximum(0.0, syy1 - a1 * sty)
 
     # Segment 2: ind..n-1 (inclusive), anchored at (tau, h_c)
-    tau = t[idx]
+    tau = u[idx]
     h_c = b1_c + a1 * tau
     prev = idx - 1
     w2 = s_w[-1] - s_w[prev]
@@ -414,7 +486,7 @@ def _fit_two_piece_sequential_scan(
     dy2 = ty2_sum - tau * y2_sum - h_c * t2_sum + w2 * tau * h_c
     yy2 = yy2_sum - 2.0 * h_c * y2_sum + w2 * h_c * h_c
 
-    valid &= dd2 > 1e-24
+    valid &= dd2 > 1e-24 * w2
     if not np.any(valid):
         raise InsufficientDataError("Collinear timestamps prevented STPD window estimation.")
 
@@ -428,9 +500,9 @@ def _fit_two_piece_sequential_scan(
 
     best_pos = int(np.argmin(total_rss))
     best_ind = int(idx[best_pos])
-    best_a1 = float(a1[best_pos])
-    best_b1 = float(b1_c[best_pos] + y_mean)
-    best_a2 = float(a2[best_pos])
+    best_a1 = float((a1[best_pos] + a_g) / span)
+    best_b1 = float(b1_c[best_pos] + b_g - best_a1 * t[0])
+    best_a2 = float((a2[best_pos] + a_g) / span)
     best_norm = float(np.sqrt(total_rss[best_pos]))
     return best_ind, best_b1, best_a1, best_a2, best_norm
 
@@ -458,12 +530,14 @@ def _tpd_window(
     y: FloatArray,
     margin: int,
     w: FloatArray | None = None,
+    *,
+    parity_mode: bool = False,
 ) -> _WindowTpdStats:
     """Run forward and backward sequential turning-point detection on one window."""
     n = int(t.size)
     t_fwd = t - t[0]
     ind_f, b1_f, a1_f, a2_f, norm_f = _fit_two_piece_sequential_scan(t_fwd, y, margin, w)
-    pval_f = _stpd_pvalue(t_fwd, y, ind_f, b1_f, a1_f, a2_f, w)
+    pval_f = _stpd_pvalue(t_fwd, y, ind_f, b1_f, a1_f, a2_f, w, parity_mode=parity_mode)
 
     t_rev = t_fwd[-1] - t_fwd[::-1]
     y_rev = y[::-1]
@@ -472,7 +546,7 @@ def _tpd_window(
         t_rev, y_rev, margin, w_rev
     )
     ind_b = n - 1 - ind_b_rev
-    pval_b = _stpd_pvalue(t_rev, y_rev, ind_b_rev, b1_b, a1_b, a2_b, w_rev)
+    pval_b = _stpd_pvalue(t_rev, y_rev, ind_b_rev, b1_b, a1_b, a2_b, w_rev, parity_mode=parity_mode)
 
     fb_diff = abs(ind_b - ind_f)
     fb_time_diff = float(abs(t_fwd[ind_b] - t_fwd[ind_f]))
@@ -502,25 +576,42 @@ def _tpd_window(
         pval = pval_b
 
     res_all = y - y_fit
-    res_norm = float(np.linalg.norm(res_all))
-    if res_norm <= 1e-24:
+    r1 = res_all[: tp + 1]
+    r2 = res_all[tp:]
+    n_left = tp + 1
+    n_right = n - tp
+
+    if w is None:
+        res_norm = float(np.linalg.norm(res_all))
+        fit_norm = float(np.linalg.norm(y_fit))
+        fit_cent_norm = float(np.linalg.norm(y_fit - np.mean(y_fit)))
+        nr1 = float(np.linalg.norm(r1))
+        nr2 = float(np.linalg.norm(r2))
+        rmse1 = nr1 / np.sqrt(n_left)
+        rmse2 = nr2 / np.sqrt(n_right)
+    else:
+        w1 = w[: tp + 1]
+        w2 = w[tp:]
+        w_sum = float(np.sum(w))
+        y_fit_wmean = float(np.sum(w * y_fit) / w_sum)
+        res_norm = float(np.sqrt(np.sum(w * res_all * res_all)))
+        fit_norm = float(np.sqrt(np.sum(w * y_fit * y_fit)))
+        fit_cent_norm = float(np.sqrt(np.sum(w * (y_fit - y_fit_wmean) ** 2)))
+        nr1 = float(np.sqrt(np.sum(w1 * r1 * r1)))
+        nr2 = float(np.sqrt(np.sum(w2 * r2 * r2)))
+        rmse1 = nr1 / np.sqrt(float(np.sum(w1)))
+        rmse2 = nr2 / np.sqrt(float(np.sum(w2)))
+
+    zero_tol = 1e-14 * max(fit_norm, fit_cent_norm, float(np.finfo(np.float64).tiny))
+    if res_norm <= zero_tol:
         snr_raw = np.inf
         snr_centered = np.inf
     else:
-        snr_raw = float(np.linalg.norm(y_fit)) / res_norm
-        snr_centered = float(np.linalg.norm(y_fit - np.mean(y_fit))) / res_norm
+        snr_raw = fit_norm / res_norm
+        snr_centered = fit_cent_norm / res_norm
 
-    r1 = y[: tp + 1] - y_fit[: tp + 1]
-    r2 = y[tp:] - y_fit[tp:]
-    nr1 = float(np.linalg.norm(r1))
-    nr2 = float(np.linalg.norm(r2))
-    ndri_l2 = abs(nr1 - nr2) / (nr1 + nr2) if (nr1 + nr2) > 1e-24 else 0.0
-
-    n_left = tp + 1
-    n_right = n - tp
-    rmse1 = nr1 / np.sqrt(n_left)
-    rmse2 = nr2 / np.sqrt(n_right)
-    ndri_rmse = abs(rmse1 - rmse2) / (rmse1 + rmse2) if (rmse1 + rmse2) > 1e-24 else 0.0
+    ndri_l2 = abs(nr1 - nr2) / (nr1 + nr2) if (nr1 + nr2) > zero_tol else 0.0
+    ndri_rmse = abs(rmse1 - rmse2) / (rmse1 + rmse2) if (rmse1 + rmse2) > zero_tol else 0.0
 
     return _WindowTpdStats(
         local_tp=tp,
@@ -634,20 +725,25 @@ def _fit_piecewise_core(
         raise ValueError("`tp_indices` must lie strictly inside the series (1 <= tp <= n - 2).")
 
     t0 = t_num - t_num[0]
+    cond_num = 1.0
 
     if mode == "joint":
-        # Continuous piecewise linear hinge basis: [1, t0, (t0 - tau_1)_+, ..., (t0 - tau_m)_+]
+        # Continuous piecewise linear hinge basis scaled by span s_t for numerical conditioning:
+        # [1, t0/s_t, ((t0 - tau_1)/s_t)_+, ..., ((t0 - tau_m)/s_t)_+]
+        s_t = float(t0[-1]) if float(t0[-1]) > 0.0 else 1.0
+        u = t0 / s_t
         D = np.empty((n, m + 2), dtype=np.float64)
         D[:, 0] = 1.0
-        D[:, 1] = t0
+        D[:, 1] = u
         for k, tp in enumerate(tp_sorted):
-            D[:, 2 + k] = np.maximum(0.0, t0 - t0[tp])
+            D[:, 2 + k] = np.maximum(0.0, u - u[tp])
         pw = prepare_weights(w, n) if w is not None else prepare_weights(None, n)
         ols = solve_weighted_ols(D, y, pw)
+        cond_num = float(ols.condition_number)
         y_fit = y - ols.residuals
         b0 = float(ols.coeff[0])
-        a0 = float(ols.coeff[1])
-        deltas = ols.coeff[2:]
+        a0 = float(ols.coeff[1]) / s_t
+        deltas = ols.coeff[2:] / s_t
         slopes = np.empty(m + 1, dtype=np.float64)
         intercepts = np.empty(m + 1, dtype=np.float64)
         slopes[0] = a0
@@ -708,29 +804,48 @@ def _fit_piecewise_core(
         r_pair = y[i0 : i2 + 1] - y_fit[i0 : i2 + 1]
         y_pair = y_fit[i0 : i2 + 1]
 
-        nr1 = float(np.linalg.norm(r1))
-        nr2 = float(np.linalg.norm(r2))
-        nr_all = float(np.linalg.norm(r_pair))
+        if w is None:
+            nr1 = float(np.linalg.norm(r1))
+            nr2 = float(np.linalg.norm(r2))
+            nr_all = float(np.linalg.norm(r_pair))
+            ny_raw = float(np.linalg.norm(y_pair))
+            ny_cent = float(np.linalg.norm(y_pair - np.mean(y_pair)))
+            rmse1 = nr1 / np.sqrt(i1 - i0 + 1)
+            rmse2 = nr2 / np.sqrt(i2 - i1 + 1)
+        else:
+            w1 = w[i0 : i1 + 1]
+            w2 = w[i1 : i2 + 1]
+            wp = w[i0 : i2 + 1]
+            nr1 = float(np.sqrt(np.sum(w1 * r1 * r1)))
+            nr2 = float(np.sqrt(np.sum(w2 * r2 * r2)))
+            nr_all = float(np.sqrt(np.sum(wp * r_pair * r_pair)))
+            ny_raw = float(np.sqrt(np.sum(wp * y_pair * y_pair)))
+            wp_sum = float(np.sum(wp))
+            y_wmean = float(np.sum(wp * y_pair)) / wp_sum if wp_sum > 0.0 else 0.0
+            ny_cent = float(np.sqrt(np.sum(wp * (y_pair - y_wmean) ** 2)))
+            w1_sum = float(np.sum(w1))
+            w2_sum = float(np.sum(w2))
+            rmse1 = nr1 / np.sqrt(w1_sum) if w1_sum > 0.0 else 0.0
+            rmse2 = nr2 / np.sqrt(w2_sum) if w2_sum > 0.0 else 0.0
 
+        zero_tol = 1e-14 * max(ny_raw, ny_cent, 1e-300)
         directions[k - 1] = slopes[k] - slopes[k - 1]
-        if nr_all <= 1e-24:
+        if nr_all <= zero_tol:
             snr_raw_arr[k - 1] = np.inf
             snr_cent_arr[k - 1] = np.inf
         else:
-            snr_raw_arr[k - 1] = float(np.linalg.norm(y_pair)) / nr_all
-            snr_cent_arr[k - 1] = float(np.linalg.norm(y_pair - np.mean(y_pair))) / nr_all
-        ndri_l2_arr[k - 1] = abs(nr2 - nr1) / (nr1 + nr2) if (nr1 + nr2) > 1e-24 else 0.0
-        rmse1 = nr1 / np.sqrt(i1 - i0 + 1)
-        rmse2 = nr2 / np.sqrt(i2 - i1 + 1)
+            snr_raw_arr[k - 1] = ny_raw / nr_all
+            snr_cent_arr[k - 1] = ny_cent / nr_all
+        ndri_l2_arr[k - 1] = abs(nr2 - nr1) / (nr1 + nr2) if (nr1 + nr2) > zero_tol else 0.0
         ndri_rmse_arr[k - 1] = (
-            abs(rmse2 - rmse1) / (rmse1 + rmse2) if (rmse1 + rmse2) > 1e-24 else 0.0
+            abs(rmse2 - rmse1) / (rmse1 + rmse2) if (rmse1 + rmse2) > zero_tol else 0.0
         )
 
     residuals = y - y_fit
     rn, rn_warns = compute_red_noise_diagnostics(t_num, residuals)
     diag = DiagnosticReport(
         red_noise=rn,
-        condition_number_max=1.0,
+        condition_number_max=cond_num,
         n_input=n_input,
         n_valid=n,
         n_dropped_nan=n_dropped_nan,
@@ -839,6 +954,7 @@ def _run_stpd_windows(
     max_fb_diff: int,
     max_fb_time_diff: float | None,
     *,
+    parity_mode: bool = False,
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
@@ -877,7 +993,7 @@ def _run_stpd_windows(
         if m_eff < 2:
             continue
 
-        stats = _tpd_window(t_w, y_w, m_eff, w_w)
+        stats = _tpd_window(t_w, y_w, m_eff, w_w, parity_mode=parity_mode)
         ratio_lr = max(stats.n_left, stats.n_right) / max(1, min(stats.n_left, stats.n_right))
         if ratio_lr > 1.5:
             density_imbalanced = True
@@ -1160,6 +1276,7 @@ def detect_turning_points(
         tp_th,
         max_fb_diff,
         max_fb_time_diff,
+        parity_mode=parity_mode,
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
@@ -1195,7 +1312,27 @@ def detect_turning_points(
     if n_stab > 0 and accepted_raw and prov is not None and cfg is not None:
         dt_med = float(np.median(np.diff(series.times_numeric))) if n > 1 else 0.1
         match_tol = max(0.4, 3.0 * dt_med)
-        for y_draw in generate_stability_draws(prov, cfg, series.times_numeric):
+        stab_draws = generate_stability_draws(prov, cfg, series.times_numeric)
+        win_rngs = (
+            _spawn_stability_rngs(cfg.random_state, len(stab_draws))
+            if cfg.scope == "windowed"
+            else [None] * len(stab_draws)
+        )
+        for y_draw, draw_rng in zip(stab_draws, win_rngs, strict=True):
+            cfg_draw = (
+                CensoredConfig(
+                    method=cfg.method,
+                    censoring_type=cfg.censoring_type,
+                    dist=cfg.dist,
+                    impute_type="stochastic",
+                    scope=cfg.scope,
+                    random_state=draw_rng,
+                    clamp=cfg.clamp,
+                    ndimpute_kwargs=cfg.ndimpute_kwargs,
+                )
+                if cfg.scope == "windowed"
+                else None
+            )
             acc_d, _, _, _ = _run_stpd_windows(
                 series.times_numeric,
                 y_draw,
@@ -1211,6 +1348,10 @@ def detect_turning_points(
                 tp_th,
                 max_fb_diff,
                 max_fb_time_diff,
+                parity_mode=parity_mode,
+                provenance=prov if cfg.scope == "windowed" else None,
+                censor_cfg=cfg_draw,
+                rng=draw_rng,
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted_raw:

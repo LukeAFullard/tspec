@@ -21,6 +21,8 @@ TUTORIAL_FILES = [
 
 @pytest.mark.parametrize("md_path", TUTORIAL_FILES, ids=lambda p: p.name)
 def test_doc_python_blocks_execute_cleanly(md_path: Path) -> None:
+    if not md_path.exists():
+        pytest.skip(f"Documentation file {md_path.name} not bundled in source distribution.")
     text = md_path.read_text(encoding="utf-8")
     blocks = re.findall(r"```python\n(.*?)```", text, flags=re.DOTALL)
     assert len(blocks) >= 1

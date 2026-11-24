@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-from ._diagnostics import DiagnosticReport, WarningItem
+from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
 from ._linalg import prepare_weights
 from ._time import format_timestamp
 from ._types import ArrayLike, FloatArray, TimeLike, ValueLike, WeightLike
@@ -35,6 +35,8 @@ from .results import (
 )
 from .spectral import _lssa_core
 from .stpd import (
+    FlaggedJumpCandidate,
+    PiecewiseTrendResult,
     StpdResult,
     TurningPointEvent,
     fit_piecewise_trend,
@@ -250,6 +252,19 @@ def analyze_series(
     if eff_censoring is None and has_censored_input(y, censor_status, None):
         eff_censoring = CensoredConfig(n_stability_draws=20)
 
+    # Resolve non-integer random_state (None or Generator) to a single concrete integer
+    # seed so Stage 0 preprocessing and Stage 1 just_jumps share identical draws.
+    if eff_censoring is not None and not isinstance(eff_censoring.random_state, (int, np.integer)):
+        seed_rng = (
+            eff_censoring.random_state
+            if isinstance(eff_censoring.random_state, np.random.Generator)
+            else np.random.default_rng()
+        )
+        eff_censoring = replace(
+            eff_censoring,
+            random_state=int(seed_rng.integers(0, 2**31 - 1)),
+        )
+
     prep = prepare_series_with_censoring(
         t, y, censor_status=censor_status, censoring=eff_censoring
     )
@@ -302,6 +317,8 @@ def analyze_series(
             **j_kw,
         )
         jump_valid_indices = [j.valid_index for j in jumps_res.jumps]
+        if jumps_res.censoring is not None:
+            prov = jumps_res.censoring
         _add_warnings(jumps_res.diagnostics.warnings)
 
     # Use consistent imputed series for downstream decomposition & STPD
@@ -309,17 +326,19 @@ def analyze_series(
     t_valid = series.times_numeric
     t_raw_valid = series.times_raw
 
-    # Prepare weights for valid entries if passed
+    # Prepare weights for valid entries, propagating censoring imputed_weight_factor
     w_valid_raw: Any = None
-    if weights is not None:
-        pw_full = prepare_weights(weights, series.n_input)
-        pw_sub = pw_full.subset(series.valid_mask) if series.n_dropped_nan else pw_full
-        if pw_sub.kind == "vector":
-            w_valid_raw = pw_sub.vector
-        elif pw_sub.kind == "matrix":
-            w_valid_raw = pw_sub.matrix
-        elif pw_sub.kind == "scalar":
-            w_valid_raw = pw_sub.scalar
+    pw_work = prepare_weights(weights, series.n_input)
+    if series.n_dropped_nan:
+        pw_work = pw_work.subset(series.valid_mask)
+    if prep.weight_factors is not None:
+        pw_work = pw_work.scale_entries(prep.weight_factors)
+    if pw_work.kind == "vector":
+        w_valid_raw = pw_work.vector
+    elif pw_work.kind == "matrix":
+        w_valid_raw = pw_work.matrix
+    elif pw_work.kind == "scalar":
+        w_valid_raw = pw_work.scalar
 
     # Stage 2: JUST decomposition (on valid non-NaN series with detected jump indices)
     decomp_res: JustDecomposeResult | None = None
@@ -332,6 +351,21 @@ def analyze_series(
                 jump_indices=jump_valid_indices,
                 **d_kw,
             )
+            if series.n_dropped_nan > 0:
+                orig_j_arr = (
+                    series.valid_to_orig[decomp_res.jump_indices]
+                    if decomp_res.jump_indices.size > 0
+                    else decomp_res.jump_indices
+                )
+                decomp_res = replace(
+                    decomp_res,
+                    jump_indices=orig_j_arr,
+                    diagnostics=replace(
+                        decomp_res.diagnostics,
+                        n_input=series.n_input,
+                        n_dropped_nan=series.n_dropped_nan,
+                    ),
+                )
             _add_warnings(decomp_res.diagnostics.warnings)
         except InsufficientDataError as exc:
             _add_warnings(
@@ -360,6 +394,42 @@ def analyze_series(
     else:
         y_adj = y_deseas.copy()
 
+    def _remap_stpd_to_orig(res: StpdResult) -> StpdResult:
+        """Remap STPD turning points, flagged jumps, piecewise trend, and diagnostics to input axis."""
+        remapped_tps = tuple(
+            replace(tp, index=int(series.valid_to_orig[tp.valid_index]))
+            for tp in res.turning_points
+        )
+        remapped_flagged = tuple(
+            replace(fj, index=int(series.valid_to_orig[fj.valid_index]))
+            for fj in res.flagged_jumps
+        )
+        pw = res.piecewise_trend
+        pw_tp_orig = (
+            series.valid_to_orig[pw.tp_valid_indices]
+            if pw.tp_valid_indices.size > 0
+            else np.empty(0, dtype=np.intp)
+        )
+        pw_diag = replace(
+            pw.diagnostics,
+            n_input=series.n_input,
+            n_dropped_nan=series.n_dropped_nan,
+        )
+        pw_remapped = replace(pw, tp_indices=pw_tp_orig, diagnostics=pw_diag)
+        stpd_diag = replace(
+            res.diagnostics,
+            n_input=series.n_input,
+            n_dropped_nan=series.n_dropped_nan,
+        )
+        return replace(
+            res,
+            turning_points=remapped_tps,
+            flagged_jumps=remapped_flagged,
+            piecewise_trend=pw_remapped,
+            censoring=prov,
+            diagnostics=stpd_diag,
+        )
+
     # Stage 4: STPD continuous turning-point detection
     stpd_res: StpdResult | None = None
     w_stpd = w_valid_raw if (w_valid_raw is not None and np.ndim(w_valid_raw) <= 1) else None
@@ -367,8 +437,17 @@ def analyze_series(
         if jump_adjustment == "segment" and jump_valid_indices:
             bounds = [0, *sorted(jump_valid_indices), series.n_valid]
             seg_tps: list[TurningPointEvent] = []
+            seg_flagged: list[FlaggedJumpCandidate] = []
             seg_valid_idx: list[int] = []
             seg_fitted = np.empty(series.n_valid, dtype=np.float64)
+            seg_slopes_list: list[FloatArray] = []
+            seg_intercepts_list: list[FloatArray] = []
+            seg_dirs_list: list[FloatArray] = []
+            seg_snr_raw_list: list[FloatArray] = []
+            seg_snr_cent_list: list[FloatArray] = []
+            seg_ndri_l2_list: list[FloatArray] = []
+            seg_ndri_rmse_list: list[FloatArray] = []
+            seg_cond_max = 1.0
             for seg_i in range(len(bounds) - 1):
                 s0, s1 = bounds[seg_i], bounds[seg_i + 1]
                 seg_w = (
@@ -384,7 +463,16 @@ def analyze_series(
                             weights=seg_w,
                             **s_kw,
                         )
-                        seg_fitted[s0:s1] = seg_res.piecewise_trend.fitted_trend
+                        pw_s = seg_res.piecewise_trend
+                        seg_fitted[s0:s1] = pw_s.fitted_trend
+                        seg_slopes_list.append(pw_s.slopes)
+                        seg_intercepts_list.append(pw_s.intercepts)
+                        seg_dirs_list.append(pw_s.directions)
+                        seg_snr_raw_list.append(pw_s.local_snr_raw)
+                        seg_snr_cent_list.append(pw_s.local_snr_centered)
+                        seg_ndri_l2_list.append(pw_s.local_ndri_l2)
+                        seg_ndri_rmse_list.append(pw_s.local_ndri_rmse)
+                        seg_cond_max = max(seg_cond_max, seg_res.diagnostics.condition_number_max)
                         for tp in seg_res.turning_points:
                             g_valid = s0 + int(tp.valid_index)
                             seg_valid_idx.append(g_valid)
@@ -395,28 +483,70 @@ def analyze_series(
                                     index=int(series.valid_to_orig[g_valid]),
                                 )
                             )
+                        for fj in seg_res.flagged_jumps:
+                            g_valid_fj = s0 + int(fj.valid_index)
+                            seg_flagged.append(
+                                replace(
+                                    fj,
+                                    valid_index=g_valid_fj,
+                                    index=int(series.valid_to_orig[g_valid_fj]),
+                                )
+                            )
                         _add_warnings(seg_res.diagnostics.warnings)
                         continue
                     except InsufficientDataError:
                         pass
-                pw_seg = fit_piecewise_trend(t_raw_valid[s0:s1], y_adj[s0:s1], [], weights=seg_w)
+                pw_seg = fit_piecewise_trend(
+                    t_raw_valid[s0:s1],
+                    y_adj[s0:s1],
+                    [],
+                    weights=seg_w,
+                    mode=s_kw.get("refit_mode", "sequential"),
+                )
                 seg_fitted[s0:s1] = pw_seg.fitted_trend
+                seg_slopes_list.append(pw_seg.slopes)
+                seg_intercepts_list.append(pw_seg.intercepts)
+                seg_cond_max = max(seg_cond_max, pw_seg.diagnostics.condition_number_max)
 
-            pw_global = fit_piecewise_trend(
-                t_raw_valid,
-                y_adj,
-                seg_valid_idx,
-                weights=w_stpd,
-                mode=s_kw.get("refit_mode", "sequential"),
+            seg_resid = y_adj - seg_fitted
+            rn_seg, rn_seg_warns = compute_red_noise_diagnostics(t_valid, seg_resid)
+            seg_diag = DiagnosticReport(
+                red_noise=rn_seg,
+                condition_number_max=seg_cond_max,
+                n_input=series.n_input,
+                n_valid=series.n_valid,
+                n_dropped_nan=series.n_dropped_nan,
+                sampling_rate_ratio=series.sampling_rate_ratio,
+                warnings=rn_seg_warns,
             )
-            pw_global = replace(
-                pw_global,
+            tp_valid_arr = np.array(seg_valid_idx, dtype=np.intp)
+            tp_orig_arr = (
+                series.valid_to_orig[tp_valid_arr]
+                if tp_valid_arr.size > 0
+                else np.empty(0, dtype=np.intp)
+            )
+            pw_global = PiecewiseTrendResult(
+                tp_indices=tp_orig_arr,
+                tp_valid_indices=tp_valid_arr,
+                slopes=np.concatenate(seg_slopes_list) if seg_slopes_list else np.empty(0, dtype=np.float64),
+                intercepts=np.concatenate(seg_intercepts_list) if seg_intercepts_list else np.empty(0, dtype=np.float64),
                 fitted_trend=seg_fitted,
-                residuals=y_adj - seg_fitted,
+                residuals=seg_resid,
+                directions=np.concatenate(seg_dirs_list) if seg_dirs_list else np.empty(0, dtype=np.float64),
+                local_snr_raw=np.concatenate(seg_snr_raw_list) if seg_snr_raw_list else np.empty(0, dtype=np.float64),
+                local_snr_centered=np.concatenate(seg_snr_cent_list) if seg_snr_cent_list else np.empty(0, dtype=np.float64),
+                local_ndri_l2=np.concatenate(seg_ndri_l2_list) if seg_ndri_l2_list else np.empty(0, dtype=np.float64),
+                local_ndri_rmse=np.concatenate(seg_ndri_rmse_list) if seg_ndri_rmse_list else np.empty(0, dtype=np.float64),
+                mode="segmented",
+                selected_direction="joint" if s_kw.get("refit_mode") == "joint" else "forward",
+                times_numeric=t_valid,
+                times_raw=t_raw_valid,
+                is_datetime=series.is_datetime,
+                diagnostics=seg_diag,
             )
             stpd_res = StpdResult(
                 turning_points=tuple(seg_tps),
-                flagged_jumps=(),
+                flagged_jumps=tuple(seg_flagged),
                 piecewise_trend=pw_global,
                 times_numeric=t_valid,
                 times_raw=t_raw_valid,
@@ -431,7 +561,7 @@ def analyze_series(
                 dir_th=float(s_kw.get("dir_th", 0.0)),
                 tp_th=float(s_kw.get("tp_th", 1.0)),
                 censoring=prov,
-                diagnostics=pw_global.diagnostics,
+                diagnostics=seg_diag,
             )
         else:
             try:
@@ -460,33 +590,21 @@ def analyze_series(
                             weights=w_stpd,
                             mode=s_kw.get("refit_mode", "sequential"),
                         )
-                        remapped_tps = tuple(
+                        updated_tps = tuple(
                             replace(
                                 tp,
-                                index=int(series.valid_to_orig[tp.valid_index]),
                                 slope_before=float(pw_refit.slopes[k]),
                                 slope_after=float(pw_refit.slopes[k + 1]),
                                 direction=float(pw_refit.directions[k]),
                             )
                             for k, tp in enumerate(kept_tps)
                         )
-                        stpd_res = replace(
+                        raw_stpd = replace(
                             raw_stpd,
-                            turning_points=remapped_tps,
+                            turning_points=updated_tps,
                             piecewise_trend=pw_refit,
                         )
-                    else:
-                        remapped_tps = tuple(
-                            replace(tp, index=int(series.valid_to_orig[tp.valid_index]))
-                            for tp in raw_stpd.turning_points
-                        )
-                        stpd_res = replace(raw_stpd, turning_points=remapped_tps)
-                else:
-                    remapped_tps = tuple(
-                        replace(tp, index=int(series.valid_to_orig[tp.valid_index]))
-                        for tp in raw_stpd.turning_points
-                    )
-                    stpd_res = replace(raw_stpd, turning_points=remapped_tps)
+                stpd_res = _remap_stpd_to_orig(raw_stpd)
                 _add_warnings(stpd_res.diagnostics.warnings)
             except InsufficientDataError as exc:
                 _add_warnings(
@@ -515,8 +633,6 @@ def analyze_series(
 
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
-    from ._diagnostics import compute_red_noise_diagnostics
-
     seasonal_part = (
         np.nan_to_num(decomp_res.seasonal, nan=0.0)
         if (remove_seasonality and decomp_res is not None)

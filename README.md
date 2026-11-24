@@ -150,9 +150,9 @@ pip install --no-deps tspec
 `tspec` is verified across four automated validation tiers (full reports in [`validation/reports/`](validation/reports/)):
 
 - **Tier 1 — Upstream Numerical Parity:** **41 / 41 checks PASSED** against `Ghaderpour/LSWAVE-SignalProcessing` (`LSSA`, `ALLSSA`, `JUSTjumps`, `JUSTdecompose`, `JUSTmonitor`, `STPD`, `TPTR`; continuous max diffs `~1e-15`, exact discrete indices).
-- **Tier 2 — Monte Carlo Benchmarks:** **19 / 19 statistical gates PASSED** across JUST, STPD (NDRI ROC AUC `1.000`; 3:1 density imbalance false-rejection rate dropped from `42.0%` → `0.0%`), censored data (`ndimpute` ROS vs `DL/2`, `100%` DL-shift defense), AR(1) red-noise calibration, and `just_monitor` sequential-peeking control (`72.5%` unadjusted → `0.0%` Šidák+Pocock null FPR).
-- **Tier 3 — Unit, Property & Docs Tests:** 50+ `pytest` + Hypothesis invariance tests plus automated execution of every tutorial code block.
-- **Tier 4 — Speed & $O(n)$ Memory:** `allssa(decimal=4)` **6.4× faster** than upstream Python; **1,000-series STPD batch in 4.39 s**; 1D diagonal weights scale strictly in $O(n)$ memory (`19.4 MB` peak at $n = 10{,}000$).
+- **Tier 2 — Monte Carlo Benchmarks:** **22 / 22 statistical gates PASSED** across JUST (including null-selected `season="allssa"` at `5.0%` FPR), STPD (exact negative-covariance SE, NDRI ROC AUC `1.000`; 3:1 density imbalance false-rejection rate dropped from `42.0%` → `0.0%`), censored data (`ndimpute` ROS vs `DL/2`, `100%` DL-shift defense, zero causal NRT leakage), AR(1) red-noise calibration, and `just_monitor` sequential-peeking & long-horizon forecast-drift control (`72.5%` unadjusted → `0.0%` Šidák+Pocock; `25.0%` → `0.0%` with predictive covariance).
+- **Tier 3 — Unit, Property & Docs Tests:** 75 `pytest` + Hypothesis invariance & audit-regression tests plus automated execution of every tutorial code block and unpacked PyPI sdist verification.
+- **Tier 4 — Speed & $O(n)$ Memory:** `allssa(decimal=4)` **7.4× faster** than upstream Python; **1,000-series STPD batch in 4.83 s**; 1D diagonal weights scale strictly in $O(n)$ memory (`19.4 MB` peak at $n = 10{,}000$).
 
 ---
 

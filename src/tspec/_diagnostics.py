@@ -130,7 +130,27 @@ def compute_red_noise_diagnostics(
     else:
         ou_corr = max(0.0, phi1)
 
-    n_eff = float(max(1.0, n * (1.0 - phi1) / (1.0 + phi1))) if phi1 > 0.0 else float(n)
+    # Exact O(n) continuous-time OU effective sample size:
+    # n_eff = n^2 / sum_{i,j} exp(-|t_i - t_j| / tau), with exp(-dt_med / tau) = ou_corr
+    if ou_corr > 0.0 and dt_pos.size >= 1:
+        dt_med = float(np.median(dt_pos))
+        if dt_med > 0.0:
+            log_phi = float(np.log(np.clip(ou_corr, 1e-12, 0.999999)))
+            step_corr = np.exp(log_phi * (np.maximum(dt, 0.0) / dt_med))
+            # L_k = sum_{j=0}^{k-1} corr(t_j, t_k) satisfies L_k = r_k * (1 + L_{k-1})
+            L_curr = 0.0
+            sum_upper = 0.0
+            for rk in step_corr:
+                L_curr = float(rk) * (1.0 + L_curr)
+                sum_upper += L_curr
+            corr_sum = float(n) + 2.0 * sum_upper
+            n_eff = float(np.clip((n * n) / max(corr_sum, float(n)), 1.0, float(n)))
+        else:
+            n_eff = float(n)
+    elif phi1 > 0.0:
+        n_eff = float(max(1.0, n * (1.0 - phi1) / (1.0 + phi1)))
+    else:
+        n_eff = float(n)
 
     metric = max(phi1, ou_corr)
     warnings_list: list[WarningItem] = []

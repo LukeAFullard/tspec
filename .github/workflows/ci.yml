@@ -64,7 +64,16 @@ jobs:
           assert importlib.util.find_spec('ndimpute') is None
           assert importlib.util.find_spec('pandas') is None
           "
-          pytest tests/test_time_adapter.py tests/test_linalg.py tests/test_spectral.py tests/test_just.py tests/test_stpd.py -k "not pandas and not censored and not plot"
+          pytest tests/test_time_adapter.py tests/test_linalg.py tests/test_spectral.py tests/test_just.py tests/test_stpd.py tests/test_monitor.py tests/test_pipeline.py -k "not pandas and not censored and not plot and not abrupt_disturbance_with_multiplicity"
+          python -c "
+          import numpy as np, tspec
+          t = np.linspace(2016.0, 2022.0, 120)
+          y = 1.0 + 0.2 * np.cos(2 * np.pi * t) + np.where(t >= 2021.0, 0.5, 0.0)
+          r_mon = tspec.just_monitor(t, y, start=2020.5, season='ols')
+          assert r_mon.detected
+          r_pipe = tspec.analyze_series(t, y)
+          assert r_pipe.jumps is not None
+          "
 
   packaging-hygiene:
     name: Verify sdist & wheel clean-room hygiene
@@ -95,3 +104,18 @@ jobs:
                   assert not any('upstream_ref' in n or 'LSWAVE' in n for n in names), names
           print('Clean-room packaging check passed.')
           "
+
+      - name: Verify unpacked sdist installs and passes pytest
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python -c "
+          import glob, tarfile, pathlib
+          out = pathlib.Path('sdist_check')
+          out.mkdir(exist_ok=True)
+          with tarfile.open(glob.glob('dist/*.tar.gz')[0]) as tf:
+              tf.extractall(out, filter='data')
+          "
+          SDIST_DIR=$(echo sdist_check/tspec-*)
+          pip install "${SDIST_DIR}[dev]"
+          pytest "${SDIST_DIR}/tests" -q
