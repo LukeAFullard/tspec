@@ -19,7 +19,15 @@ import numpy as np
 from scipy.stats import f as f_dist
 
 from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
-from ._linalg import PreparedWeights, prepare_weights
+from ._linalg import PreparedWeights, prepare_weights, whiten_vector
+from ._robust import (
+    RobustMethod,
+    huber_nested_ftest,
+    huber_rho,
+    solve_robust_irls,
+    tukey_rho,
+    validate_robust_args,
+)
 from ._time import convert_eval_times, format_timestamp
 from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike, WeightLike
 from .censored import (
@@ -426,8 +434,11 @@ def _detect_jump_in_window(
     alpha: float,
     *,
     parity_mode: bool,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> tuple[int, float, float, float, FloatArray]:
     """Scan all interior split indices ``3 .. n_win - 3`` in a single window."""
+    eff_robust: RobustMethod = "none" if parity_mode else robust
     n_win = int(t_win.size)
     t0 = t_win - t_win[0]
     best_ind = -1
@@ -436,7 +447,16 @@ def _detect_jump_in_window(
     best_rss = np.inf
     best_freqs = np.empty(0, dtype=np.float64)
 
-    for ind in range(3, n_win - 2):
+    robust_cands: list[tuple[int, FloatArray, FloatArray, FloatArray]] = []
+    min_mad = np.inf
+    min_seg = (
+        min(max(6, min(n_win // 5, 8)), max(3, (n_win - 1) // 2))
+        if eff_robust != "none"
+        else 3
+    )
+    split_stop = (n_win - min_seg + 1) if eff_robust != "none" else (n_win - 2)
+
+    for ind in range(min_seg, split_stop):
         j_arr = np.array([ind], dtype=np.intp)
         if season == "allssa":
             res_a = _allssa_core(
@@ -452,10 +472,13 @@ def _detect_jump_in_window(
                 max(25, 2 * int(omega.size)),
                 parity_mode=parity_mode,
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             rss = res_a.norm_res
             tr_c = res_a.trend_coeff
             freqs = res_a.frequencies
+            res_vec = res_a.residuals
         elif season == "ols":
             res_l = _lssa_core(
                 t0,
@@ -468,10 +491,13 @@ def _detect_jump_in_window(
                 False,
                 omega,
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             rss = res_l.norm_res
             tr_c = res_l.coeff[:4]
             freqs = omega
+            res_vec = res_l.residuals
         else:
             res_l = _lssa_core(
                 t0,
@@ -484,17 +510,50 @@ def _detect_jump_in_window(
                 False,
                 np.empty(0, dtype=np.float64),
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             rss = res_l.norm_res
             tr_c = res_l.coeff[:4]
             freqs = np.empty(0, dtype=np.float64)
+            res_vec = res_l.residuals
 
-        if rss < best_rss:
+        if eff_robust != "none":
+            rw_base = whiten_vector(res_vec, pw_win)
+            p_est = 4 + 2 * int(freqs.size)
+            dof_fac = float(np.sqrt(n_win / max(1, n_win - p_est)))
+            mad_j = float(dof_fac * 1.482602218505602 * np.median(np.abs(rw_base)))
+            if mad_j < min_mad:
+                min_mad = mad_j
+            robust_cands.append((ind, rw_base, tr_c, freqs))
+        elif rss < best_rss:
             best_rss = rss
             best_ind = ind
             best_mag = float((tr_c[1] - tr_c[0]) + (tr_c[3] - tr_c[2]) * t0[ind])
             best_dir = float(tr_c[3] - tr_c[2])
             best_freqs = freqs
+
+    if eff_robust != "none":
+        if not robust_cands:
+            raise InsufficientDataError(f"Window of length {n_win} is too short for jump detection.")
+        # Evaluate all candidate splits on a shared window scale so robust losses
+        # are directly comparable across split locations without masking jumps.
+        y_ref = float(np.sqrt(np.mean(whiten_vector(y_win - np.median(y_win), pw_win) ** 2)))
+        s_win = min_mad if min_mad > 1e-14 * max(y_ref, 1e-300) else 0.0
+        for ind, rw_base, tr_c, freqs in robust_cands:
+            if s_win > 0.0:
+                u_j = rw_base / s_win
+                loss_j = float(
+                    np.sum(tukey_rho(u_j) if eff_robust == "mm" else huber_rho(u_j, huber_k))
+                )
+            else:
+                loss_j = float(np.dot(rw_base, rw_base))
+            if loss_j < best_rss:
+                best_rss = loss_j
+                best_ind = ind
+                best_mag = float((tr_c[1] - tr_c[0]) + (tr_c[3] - tr_c[2]) * t0[ind])
+                best_dir = float(tr_c[3] - tr_c[2])
+                best_freqs = freqs
 
     if best_ind < 0:
         raise InsufficientDataError(f"Window of length {n_win} is too short for jump detection.")
@@ -514,6 +573,8 @@ def _nested_jump_ftests(
     alpha: float = 0.01,
     bonferroni: bool = False,
     parity_mode: bool = False,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -528,12 +589,17 @@ def _nested_jump_ftests(
     jointly with the candidate split to artificially deflate ``rss1`` (fixing
     post-selection ALLSSA Type I error inflation).
 
+    When ``robust in ("huber", "mm")`` (and ``parity_mode=False``), uses the
+    Schrader–Hettmansperger (1980) robust drop-in-dispersion F-test at the
+    shared full-model scale so outlier spikes do not inflate false positives.
+
     If ``bonferroni=True``, multiplies raw p-values by the number of candidate
-    interior split indices scanned in the window (``max(1, n_win - 5)``) to
-    mitigate post-selection inflation.
+    interior split indices scanned in the window to mitigate post-selection
+    inflation.
     """
     from ._linalg import solve_weighted_ols
 
+    eff_robust: RobustMethod = "none" if parity_mode else robust
     n_win = int(t_win.size)
     t0 = t_win - t_win[0]
 
@@ -553,6 +619,8 @@ def _nested_jump_ftests(
             max(25, 2 * int(omega.size)),
             parity_mode=parity_mode,
             compute_cov=False,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
         test_freqs = null_allssa.frequencies
     else:
@@ -564,7 +632,76 @@ def _nested_jump_ftests(
     if dof2 <= 0:
         return float("nan"), float("nan")
 
-    res_full = _lssa_core(
+    min_seg = (
+        min(max(6, min(n_win // 5, 8)), max(3, (n_win - 1) // 2))
+        if eff_robust != "none"
+        else 3
+    )
+    n_cands = max(1, (n_win - 2 * min_seg + 1) if eff_robust != "none" else (n_win - 5))
+    mult = float(n_cands) if bonferroni else 1.0
+    if float(np.ptp(y_win)) <= 1e-13 * abs(float(np.mean(y_win))):
+        return 1.0, 1.0
+
+    # Continuous hinge basis [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(test_freqs)]
+    s_t = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
+    D_hinge = np.empty((n_win, 3 + 2 * n_f), dtype=np.float64)
+    D_hinge[:, 0] = 1.0
+    D_hinge[:, 1] = t0 / s_t
+    if n_f > 0:
+        phases = np.outer((2.0 * np.pi) * t0, test_freqs)
+        D_hinge[:, 3::2] = np.cos(phases)
+        D_hinge[:, 4::2] = np.sin(phases)
+
+    if eff_robust != "none":
+        D_full, cs_full = build_design_matrix(
+            t0, "linear", np.array([local_jump_idx], dtype=np.intp), False, test_freqs
+        )
+        D_null, cs_null = build_design_matrix(
+            t0, "linear", np.empty(0, dtype=np.intp), False, test_freqs
+        )
+        _, p_jump_raw, res_full, _ = huber_nested_ftest(
+            D_null,
+            D_full,
+            y_win,
+            pw_win,
+            method=eff_robust,
+            k=huber_k,
+            col_scales_null=cs_null,
+            col_scales_full=cs_full,
+        )
+        if np.isnan(p_jump_raw):
+            return float("nan"), float("nan")
+        knot_stop = n_win - min_seg + 1
+        if res_full.scale <= 0.0 or res_full.lambda_scale <= 0.0:
+            # Noiseless jump regime
+            rss_h = np.inf
+            for k_knot in range(min_seg, knot_stop):
+                D_hinge[:, 2] = np.maximum(0.0, t0 - t0[k_knot]) / s_t
+                rss_k = solve_weighted_ols(D_hinge, y_win, pw_win, compute_cov=False).norm_res
+                if rss_k < rss_h:
+                    rss_h = rss_k
+            tol_r = 1e-26 * max(rss_h, res_full.ols.y_w_norm_sq, float(np.finfo(np.float64).tiny))
+            p_step_raw = 0.0 if rss_h > tol_r else 1.0
+        else:
+            loss_hinge = np.inf
+            for k_knot in range(min_seg, knot_stop):
+                D_hinge[:, 2] = np.maximum(0.0, t0 - t0[k_knot]) / s_t
+                h_k = solve_robust_irls(
+                    D_hinge,
+                    y_win,
+                    pw_win,
+                    method=eff_robust,
+                    k=huber_k,
+                    fixed_scale=res_full.scale,
+                    compute_cov=False,
+                )
+                if h_k.loss < loss_hinge:
+                    loss_hinge = h_k.loss
+            f_step = max(0.0, 2.0 * (loss_hinge - res_full.loss)) / res_full.lambda_scale
+            p_step_raw = float(f_dist.sf(f_step, 1, dof2))
+        return float(min(1.0, mult * p_jump_raw)), float(min(1.0, mult * p_step_raw))
+
+    res_full_ols = _lssa_core(
         t0,
         y_win,
         pw_win,
@@ -576,7 +713,7 @@ def _nested_jump_ftests(
         test_freqs,
         compute_cov=False,
     )
-    res_null = _lssa_core(
+    res_null_ols = _lssa_core(
         t0,
         y_win,
         pw_win,
@@ -589,16 +726,6 @@ def _nested_jump_ftests(
         compute_cov=False,
     )
 
-    # Optimal continuous hinge model across the window:
-    # [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(test_freqs)] for k in [3 .. n_win - 3].
-    s_t = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
-    D_hinge = np.empty((n_win, 3 + 2 * n_f), dtype=np.float64)
-    D_hinge[:, 0] = 1.0
-    D_hinge[:, 1] = t0 / s_t
-    if n_f > 0:
-        phases = np.outer((2.0 * np.pi) * t0, test_freqs)
-        D_hinge[:, 3::2] = np.cos(phases)
-        D_hinge[:, 4::2] = np.sin(phases)
     rss_hinge = np.inf
     for k_knot in range(3, n_win - 2):
         D_hinge[:, 2] = np.maximum(0.0, t0 - t0[k_knot]) / s_t
@@ -606,15 +733,10 @@ def _nested_jump_ftests(
         if rss_k < rss_hinge:
             rss_hinge = rss_k
 
-    rss1 = res_full.norm_res
-    rss0 = res_null.norm_res
-    mult = float(max(1, n_win - 5)) if bonferroni else 1.0
+    rss1 = res_full_ols.norm_res
+    rss0 = res_null_ols.norm_res
 
-    # Scale-invariant constant-window and noiseless guards
-    # (prevents tiny roundoff RSS on constant windows from yielding p=0,
-    # while handling scaled noiseless jumps down to 1e-13 cleanly).
-    if float(np.ptp(y_win)) <= 1e-13 * abs(float(np.mean(y_win))):
-        return 1.0, 1.0
+    # Scale-invariant noiseless guard (handles scaled noiseless jumps down to 1e-13 cleanly).
     tol = 1e-26 * max(rss0, rss_hinge, float(np.finfo(np.float64).tiny))
     if rss1 <= tol:
         p_jump = 0.0 if rss0 > tol else 1.0
@@ -646,6 +768,8 @@ def _run_just_jumps_array(
     step_alpha: float | None = None,
     bonferroni_window: bool = False,
     parity_mode: bool,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
@@ -679,7 +803,15 @@ def _run_just_jumps_array(
             y_w = y_valid[w_start:w_stop]
         pw_w = pw.slice_range(w_start, w_stop)
         loc_ind, mag, direction, rss, freqs = _detect_jump_in_window(
-            t_w, y_w, pw_w, season, omega, alpha, parity_mode=parity_mode
+            t_w,
+            y_w,
+            pw_w,
+            season,
+            omega,
+            alpha,
+            parity_mode=parity_mode,
+            robust=robust,
+            huber_k=huber_k,
         )
         n_w = w_stop - w_start
         dist_center = abs(loc_ind - (n_w - 1) / 2.0)
@@ -749,6 +881,8 @@ def _run_just_jumps_array(
             alpha=alpha,
             bonferroni=bonferroni_window,
             parity_mode=parity_mode,
+            robust=robust,
+            huber_k=huber_k,
         )
         if jump_alpha is not None and (np.isnan(p_jump) or p_jump >= jump_alpha):
             continue
@@ -779,6 +913,8 @@ def just_jumps(
     jump_alpha: float | None = None,
     step_alpha: float | None = None,
     bonferroni_window: bool = False,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
@@ -828,6 +964,14 @@ def just_jumps(
         Optional nested partial F-test significance cutoff (e.g. ``0.05``).
         Defaults to ``None`` for Ghaderpour parity; ``jump_pvalue`` is always
         computed and stored on every :class:`JumpEvent`.
+    robust:
+        ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS window
+        fits + Schrader–Hettmansperger robust nested F-tests), or ``'mm'``
+        (Yohai 1987 Huber-initialized Tukey biweight MM-estimation, recommended
+        for extreme isolated spikes without masking genuine sustained jumps).
+        Forced to ``'none'`` when ``parity_mode=True``.
+    huber_k:
+        Huber tuning constant (default ``1.345``).
     censor_status, censoring:
         Optional censoring indicator array and :class:`CensoredConfig`.
     parity_mode:
@@ -847,6 +991,7 @@ def just_jumps(
         raise ValueError(f"`step_alpha` must lie in (0, 1); got {step_alpha}.")
     if mag_th < 0.0 or dir_th < 0.0 or jump_th < 0.0:
         raise ValueError("`mag_th`, `dir_th`, and `jump_th` must be non-negative.")
+    eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
     series = prep.series
@@ -950,6 +1095,8 @@ def just_jumps(
         step_alpha=step_alpha,
         bonferroni_window=bonferroni_window,
         parity_mode=parity_mode,
+        robust=eff_robust,
+        huber_k=huber_k,
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
@@ -1007,6 +1154,8 @@ def just_jumps(
                 step_alpha=step_alpha,
                 bonferroni_window=bonferroni_window,
                 parity_mode=parity_mode,
+                robust=eff_robust,
+                huber_k=huber_k,
                 provenance=prov if cfg.scope == "windowed" else None,
                 censor_cfg=draw_cfg,
                 rng=win_rngs[idx_d] if win_rngs is not None else None,
@@ -1067,9 +1216,29 @@ def just_jumps(
                 t_w = series.times_numeric[best_c.window_start : best_c.window_stop]
                 pw_w = pw.slice_range(best_c.window_start, best_c.window_stop)
                 loc_r, mag_r, dir_r, _, freqs_r = _detect_jump_in_window(
-                    t_w, y_recen, pw_w, season_l, om_arr, alpha, parity_mode=parity_mode
+                    t_w,
+                    y_recen,
+                    pw_w,
+                    season_l,
+                    om_arr,
+                    alpha,
+                    parity_mode=parity_mode,
+                    robust=eff_robust,
+                    huber_k=huber_k,
                 )
-                p_r, _ = _nested_jump_ftests(t_w, y_recen, pw_w, loc_r, freqs_r)
+                p_r, _ = _nested_jump_ftests(
+                    t_w,
+                    y_recen,
+                    pw_w,
+                    loc_r,
+                    freqs_r,
+                    season=season_l,
+                    omega=om_arr,
+                    alpha=alpha,
+                    parity_mode=parity_mode,
+                    robust=eff_robust,
+                    huber_k=huber_k,
+                )
                 vanished = (abs(mag_r) < mag_th and abs(dir_r) < dir_th) or (p_r >= 0.05)
                 dl_artifact = bool(vanished)
                 if dl_artifact:
@@ -1138,6 +1307,8 @@ def just_jumps(
                 1,
                 max(25, 2 * int(om_arr.size)),
                 parity_mode=parity_mode,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             global_res = fit_global.residuals
             cond_max = fit_global.condition_number_max
@@ -1152,6 +1323,8 @@ def just_jumps(
                 "linear",
                 False,
                 om_arr,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             global_res = fit_l.residuals
             cond_max = fit_l.condition_number
@@ -1166,6 +1339,8 @@ def just_jumps(
                 "linear",
                 False,
                 np.empty(0, dtype=np.float64),
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             global_res = fit_l.residuals
             cond_max = fit_l.condition_number
@@ -1262,6 +1437,8 @@ def just_decompose(
     season: SeasonMode = "allssa",
     omega: ArrayLike | None = None,
     alpha: float = 0.01,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
@@ -1271,6 +1448,8 @@ def just_decompose(
     Uses Gaussian-weighted overlapping window estimation with zero interpolation
     of the input observations. Optional ``eval_times`` evaluates the fitted
     parametric trend and seasonal models analytically onto any target grid.
+    Set ``robust='huber'`` to fit each window via convex Huber IRLS M-estimation
+    so isolated extreme spikes do not distort the local trend or seasonality.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -1279,6 +1458,7 @@ def just_decompose(
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"`alpha` must lie in (0, 1); got {alpha}.")
+    eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
     series = prep.series
@@ -1443,6 +1623,8 @@ def just_decompose(
                 max(25, 2 * int(om_arr.size)),
                 parity_mode=parity_mode,
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             tr_coeff = res_a.trend_coeff
             cs_coeff = res_a.cos_sin_coeffs
@@ -1461,6 +1643,8 @@ def just_decompose(
                 False,
                 om_arr,
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             rem_w = res_l.residuals
             n_f = int(om_arr.size)
@@ -1480,6 +1664,8 @@ def just_decompose(
                 False,
                 np.empty(0, dtype=np.float64),
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             rem_w = res_l.residuals
             tr_coeff = res_l.coeff

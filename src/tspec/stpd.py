@@ -18,6 +18,15 @@ from scipy.stats import t as student_t
 
 from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
 from ._linalg import prepare_weights, solve_weighted_ols
+from ._robust import (
+    RobustMethod,
+    fit_l1_piecewise,
+    huber_nested_ftest,
+    huber_rho,
+    solve_huber_irls,
+    tukey_weight,
+    validate_robust_args,
+)
 from ._time import format_timestamp, prepare_numeric_series
 from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike
 from .censored import (
@@ -40,7 +49,7 @@ from .results import (
 
 SnrMode = Literal["raw", "centered"]
 NdriMode = Literal["l2", "rmse"]
-RefitMode = Literal["sequential", "joint"]
+RefitMode = Literal["sequential", "joint", "l1", "huber"]
 
 
 @dataclass(frozen=True)
@@ -525,6 +534,196 @@ class _WindowTpdStats:
     n_right: int
 
 
+def _huber_line_2param(
+    u: FloatArray,
+    y: FloatArray,
+    w_base: FloatArray | None,
+    k: float,
+    max_iter: int = 12,
+    tol: float = 1e-6,
+) -> tuple[float, float]:
+    """Closed-form weighted 2-parameter Huber IRLS fit ``y ~ b + a * u``."""
+    w0 = np.ones_like(u) if w_base is None else w_base
+    sw0 = np.sqrt(w0)
+    y_ref = float(np.sqrt(np.mean((y * sw0) ** 2)))
+    floor = 1e-14 * max(y_ref, 1e-300)
+
+    def _wls2(wt: FloatArray) -> tuple[float, float]:
+        s0 = float(np.sum(wt))
+        if s0 <= 0.0:
+            return 0.0, 0.0
+        su = float(np.dot(wt, u))
+        sy = float(np.dot(wt, y))
+        u_bar = su / s0
+        y_bar = sy / s0
+        du = u - u_bar
+        s_uu = float(np.dot(wt * du, du))
+        if s_uu <= 1e-30 * s0:
+            return y_bar, 0.0
+        a = float(np.dot(wt * du, y - y_bar)) / s_uu
+        return y_bar - a * u_bar, a
+
+    b, a = _wls2(w0)
+    rw = (y - (b + a * u)) * sw0
+    scale = float(1.482602218505602 * np.median(np.abs(rw)))
+    if scale <= floor:
+        scale = float(1.2533141373155001 * np.mean(np.abs(rw)))
+        if scale <= floor:
+            return b, a
+
+    for it in range(1, max_iter + 1):
+        au = np.abs(rw) / scale
+        wh = np.where(au <= k, 1.0, k / au)
+        nb, na = _wls2(w0 * wh)
+        rw = (y - (nb + na * u)) * sw0
+        if it <= 3:
+            ns = float(1.482602218505602 * np.median(np.abs(rw)))
+            if ns > floor:
+                scale = ns
+        diff = max(abs(nb - b), abs(na - a))
+        ref = max(abs(nb), abs(na), 1e-300)
+        b, a = nb, na
+        if diff <= tol * ref:
+            break
+    return b, a
+
+
+def _huber_slope_1param(
+    d: FloatArray,
+    y: FloatArray,
+    w_base: FloatArray | None,
+    k: float,
+    max_iter: int = 12,
+    tol: float = 1e-6,
+) -> float:
+    """Closed-form weighted 1-parameter zero-intercept Huber IRLS fit ``y ~ a * d``."""
+    w0 = np.ones_like(d) if w_base is None else w_base
+    sw0 = np.sqrt(w0)
+    y_ref = float(np.sqrt(np.mean((y * sw0) ** 2)))
+    floor = 1e-14 * max(y_ref, 1e-300)
+    d2 = d * d
+
+    den0 = float(np.dot(w0, d2))
+    if den0 <= 0.0:
+        return 0.0
+    a = float(np.dot(w0 * d, y)) / den0
+    rw = (y - a * d) * sw0
+    scale = float(1.482602218505602 * np.median(np.abs(rw)))
+    if scale <= floor:
+        scale = float(1.2533141373155001 * np.mean(np.abs(rw)))
+        if scale <= floor:
+            return a
+
+    for it in range(1, max_iter + 1):
+        au = np.abs(rw) / scale
+        wh = np.where(au <= k, 1.0, k / au)
+        wt = w0 * wh
+        den = float(np.dot(wt, d2))
+        if den <= 0.0:
+            break
+        na = float(np.dot(wt * d, y)) / den
+        rw = (y - na * d) * sw0
+        if it <= 3:
+            ns = float(1.482602218505602 * np.median(np.abs(rw)))
+            if ns > floor:
+                scale = ns
+        if abs(na - a) <= tol * max(abs(na), 1e-300):
+            a = na
+            break
+        a = na
+    return a
+
+
+def _fit_two_piece_sequential_huber(
+    t: FloatArray,
+    y: FloatArray,
+    margin: int,
+    w: FloatArray | None,
+    huber_k: float,
+    method: RobustMethod = "huber",
+) -> tuple[int, float, float, float, float, FloatArray]:
+    """Huber/MM-IRLS asymmetric sequential two-piece scan preserving STPD NDRI geometry."""
+    n = int(t.size)
+    span = float(t[-1] - t[0])
+    if span <= 0.0:
+        raise InsufficientDataError("Window time span must be strictly positive.")
+    u = (t - t[0]) / span
+    y_med = float(np.median(y))
+    y_c = y - y_med
+    sqrt_w = np.sqrt(w) if w is not None else None
+
+    cands: list[tuple[int, float, float, float, FloatArray]] = []
+    min_mad = np.inf
+
+    for ind in range(margin, n - margin):
+        u1 = u[: ind + 1]
+        w1 = w[: ind + 1] if w is not None else None
+        b1_c, a1_u = _huber_line_2param(u1, y_c[: ind + 1], w1, huber_k)
+        y_anchor = b1_c + a1_u * float(u[ind])
+
+        d2_u = u[ind:] - u[ind]
+        w2 = w[ind:] if w is not None else None
+        a2_u = _huber_slope_1param(d2_u, y_c[ind:] - y_anchor, w2, huber_k)
+
+        y_fit_c = np.empty(n, dtype=np.float64)
+        y_fit_c[: ind + 1] = b1_c + a1_u * u1
+        y_fit_c[ind:] = y_anchor + a2_u * d2_u
+        r_j = y_c - y_fit_c
+        rw_j = r_j * sqrt_w if sqrt_w is not None else r_j
+        mad_j = float(1.482602218505602 * np.median(np.abs(rw_j)))
+        if mad_j < min_mad:
+            min_mad = mad_j
+        cands.append((ind, b1_c, a1_u, a2_u, rw_j))
+
+    y_ref = float(np.sqrt(np.mean((y_c * sqrt_w if sqrt_w is not None else y_c) ** 2)))
+    s_win = min_mad if min_mad > 1e-14 * max(y_ref, 1e-300) else 0.0
+
+    best_loss = np.inf
+    best_ind = margin
+    best_b1 = 0.0
+    best_a1 = 0.0
+    best_a2 = 0.0
+    best_rw = np.zeros(n, dtype=np.float64)
+
+    for ind, b1_c, a1_u, a2_u, rw_j in cands:
+        loss_j = (
+            float(np.sum(huber_rho(rw_j / s_win, huber_k)))
+            if s_win > 0.0
+            else float(np.dot(rw_j, rw_j))
+        )
+        if loss_j < best_loss:
+            best_loss = loss_j
+            best_ind = ind
+            best_b1 = y_med + b1_c
+            best_a1 = a1_u / span
+            best_a2 = a2_u / span
+            best_rw = rw_j
+
+    if s_win > 0.0:
+        u_signed = best_rw / s_win
+        u_abs = np.abs(u_signed)
+        is_ext = u_abs >= 4.685061
+        ext_frac = float(np.mean(is_ext))
+        max_run = 0
+        cur_run = 0
+        for flag in is_ext:
+            if flag:
+                cur_run += 1
+                if cur_run > max_run:
+                    max_run = cur_run
+            else:
+                cur_run = 0
+        if method == "mm" and ext_frac <= 0.20 and max_run < 3:
+            # Isolated spikes only: zero extreme spikes without masking contiguous step cliffs
+            w_huber = np.maximum(tukey_weight(u_signed), 1e-12)
+        else:
+            w_huber = np.where(u_abs <= huber_k, 1.0, huber_k / u_abs)
+    else:
+        w_huber = np.ones(n, dtype=np.float64)
+
+    return best_ind, best_b1, best_a1, best_a2, best_loss, w_huber
+
+
 def _tpd_window(
     t: FloatArray,
     y: FloatArray,
@@ -532,48 +731,96 @@ def _tpd_window(
     w: FloatArray | None = None,
     *,
     parity_mode: bool = False,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> _WindowTpdStats:
     """Run forward and backward sequential turning-point detection on one window."""
     n = int(t.size)
     t_fwd = t - t[0]
-    ind_f, b1_f, a1_f, a2_f, norm_f = _fit_two_piece_sequential_scan(t_fwd, y, margin, w)
-    pval_f = _stpd_pvalue(t_fwd, y, ind_f, b1_f, a1_f, a2_f, w, parity_mode=parity_mode)
+    eff_robust: RobustMethod = "none" if parity_mode else robust
 
-    t_rev = t_fwd[-1] - t_fwd[::-1]
-    y_rev = y[::-1]
-    w_rev = w[::-1] if w is not None else None
-    ind_b_rev, b1_b, a1_b, a2_b, norm_b = _fit_two_piece_sequential_scan(
-        t_rev, y_rev, margin, w_rev
-    )
-    ind_b = n - 1 - ind_b_rev
-    pval_b = _stpd_pvalue(t_rev, y_rev, ind_b_rev, b1_b, a1_b, a2_b, w_rev, parity_mode=parity_mode)
+    if eff_robust != "none":
+        ind_f, b1_f, a1_f, a2_f, norm_f, wh_f = _fit_two_piece_sequential_huber(
+            t_fwd, y, margin, w, huber_k, method=eff_robust
+        )
+        t_rev = t_fwd[-1] - t_fwd[::-1]
+        y_rev = y[::-1]
+        w_rev = w[::-1] if w is not None else None
+        ind_b_rev, b1_b, a1_b, a2_b, norm_b, wh_b_rev = _fit_two_piece_sequential_huber(
+            t_rev, y_rev, margin, w_rev, huber_k, method=eff_robust
+        )
+        ind_b = n - 1 - ind_b_rev
+        fb_diff = abs(ind_b - ind_f)
+        fb_time_diff = float(abs(t_fwd[ind_b] - t_fwd[ind_f]))
 
-    fb_diff = abs(ind_b - ind_f)
-    fb_time_diff = float(abs(t_fwd[ind_b] - t_fwd[ind_f]))
+        y_fit = np.empty(n, dtype=np.float64)
+        if norm_f <= norm_b:
+            tp = ind_f
+            y_fit[: tp + 1] = b1_f + a1_f * t_fwd[: tp + 1]
+            y_fit[tp:] = a2_f * (t_fwd[tp:] - t_fwd[tp]) + b1_f + a1_f * t_fwd[tp]
+            slope_before = a1_f
+            slope_after = a2_f
+            w_h_win = wh_f
+        else:
+            tp_rev = ind_b_rev
+            y_fit_rev = np.empty(n, dtype=np.float64)
+            y_fit_rev[: tp_rev + 1] = b1_b + a1_b * t_rev[: tp_rev + 1]
+            y_fit_rev[tp_rev:] = a2_b * (t_rev[tp_rev:] - t_rev[tp_rev]) + b1_b + a1_b * t_rev[tp_rev]
+            y_fit = y_fit_rev[::-1]
+            tp = ind_b
+            slope_before = -a2_b
+            slope_after = -a1_b
+            w_h_win = wh_b_rev[::-1]
 
-    y_fit = np.empty(n, dtype=np.float64)
-    if norm_f <= norm_b:
-        tp = ind_f
-        g1 = b1_f + a1_f * t_fwd[: tp + 1]
-        g2 = a2_f * (t_fwd[tp:] - t_fwd[tp]) + b1_f + a1_f * t_fwd[tp]
-        y_fit[: tp + 1] = g1
-        y_fit[tp:] = g2
-        slope_before = a1_f
-        slope_after = a2_f
-        pval = pval_f
+        span_w = float(t_fwd[-1]) if float(t_fwd[-1]) > 0.0 else 1.0
+        u_w = t_fwd / span_w
+        D_null = np.column_stack([np.ones(n, dtype=np.float64), u_w])
+        D_hinge = np.column_stack([np.ones(n, dtype=np.float64), u_w, np.maximum(0.0, u_w - u_w[tp])])
+        pw_w = prepare_weights(w, n)
+        _, pval, _, _ = huber_nested_ftest(
+            D_null, D_hinge, y, pw_w, method=eff_robust, k=huber_k
+        )
+        w_stat: FloatArray | None = w_h_win if w is None else (w * w_h_win)
     else:
-        tp_rev = ind_b_rev
-        g1_r = b1_b + a1_b * t_rev[: tp_rev + 1]
-        g2_r = a2_b * (t_rev[tp_rev:] - t_rev[tp_rev]) + b1_b + a1_b * t_rev[tp_rev]
-        y_fit_rev = np.empty(n, dtype=np.float64)
-        y_fit_rev[: tp_rev + 1] = g1_r
-        y_fit_rev[tp_rev:] = g2_r
-        y_fit = y_fit_rev[::-1]
-        tp = ind_b
-        # Reversing time flips slope signs and swaps before/after segments
-        slope_before = -a2_b
-        slope_after = -a1_b
-        pval = pval_b
+        ind_f, b1_f, a1_f, a2_f, norm_f = _fit_two_piece_sequential_scan(t_fwd, y, margin, w)
+        pval_f = _stpd_pvalue(t_fwd, y, ind_f, b1_f, a1_f, a2_f, w, parity_mode=parity_mode)
+
+        t_rev = t_fwd[-1] - t_fwd[::-1]
+        y_rev = y[::-1]
+        w_rev = w[::-1] if w is not None else None
+        ind_b_rev, b1_b, a1_b, a2_b, norm_b = _fit_two_piece_sequential_scan(
+            t_rev, y_rev, margin, w_rev
+        )
+        ind_b = n - 1 - ind_b_rev
+        pval_b = _stpd_pvalue(t_rev, y_rev, ind_b_rev, b1_b, a1_b, a2_b, w_rev, parity_mode=parity_mode)
+
+        fb_diff = abs(ind_b - ind_f)
+        fb_time_diff = float(abs(t_fwd[ind_b] - t_fwd[ind_f]))
+
+        y_fit = np.empty(n, dtype=np.float64)
+        if norm_f <= norm_b:
+            tp = ind_f
+            g1 = b1_f + a1_f * t_fwd[: tp + 1]
+            g2 = a2_f * (t_fwd[tp:] - t_fwd[tp]) + b1_f + a1_f * t_fwd[tp]
+            y_fit[: tp + 1] = g1
+            y_fit[tp:] = g2
+            slope_before = a1_f
+            slope_after = a2_f
+            pval = pval_f
+        else:
+            tp_rev = ind_b_rev
+            g1_r = b1_b + a1_b * t_rev[: tp_rev + 1]
+            g2_r = a2_b * (t_rev[tp_rev:] - t_rev[tp_rev]) + b1_b + a1_b * t_rev[tp_rev]
+            y_fit_rev = np.empty(n, dtype=np.float64)
+            y_fit_rev[: tp_rev + 1] = g1_r
+            y_fit_rev[tp_rev:] = g2_r
+            y_fit = y_fit_rev[::-1]
+            tp = ind_b
+            # Reversing time flips slope signs and swaps before/after segments
+            slope_before = -a2_b
+            slope_after = -a1_b
+            pval = pval_b
+        w_stat = w
 
     res_all = y - y_fit
     r1 = res_all[: tp + 1]
@@ -581,7 +828,7 @@ def _tpd_window(
     n_left = tp + 1
     n_right = n - tp
 
-    if w is None:
+    if w_stat is None:
         res_norm = float(np.linalg.norm(res_all))
         fit_norm = float(np.linalg.norm(y_fit))
         fit_cent_norm = float(np.linalg.norm(y_fit - np.mean(y_fit)))
@@ -590,13 +837,13 @@ def _tpd_window(
         rmse1 = nr1 / np.sqrt(n_left)
         rmse2 = nr2 / np.sqrt(n_right)
     else:
-        w1 = w[: tp + 1]
-        w2 = w[tp:]
-        w_sum = float(np.sum(w))
-        y_fit_wmean = float(np.sum(w * y_fit) / w_sum)
-        res_norm = float(np.sqrt(np.sum(w * res_all * res_all)))
-        fit_norm = float(np.sqrt(np.sum(w * y_fit * y_fit)))
-        fit_cent_norm = float(np.sqrt(np.sum(w * (y_fit - y_fit_wmean) ** 2)))
+        w1 = w_stat[: tp + 1]
+        w2 = w_stat[tp:]
+        w_sum = float(np.sum(w_stat))
+        y_fit_wmean = float(np.sum(w_stat * y_fit) / w_sum)
+        res_norm = float(np.sqrt(np.sum(w_stat * res_all * res_all)))
+        fit_norm = float(np.sqrt(np.sum(w_stat * y_fit * y_fit)))
+        fit_cent_norm = float(np.sqrt(np.sum(w_stat * (y_fit - y_fit_wmean) ** 2)))
         nr1 = float(np.sqrt(np.sum(w1 * r1 * r1)))
         nr2 = float(np.sqrt(np.sum(w2 * r2 * r2)))
         rmse1 = nr1 / np.sqrt(float(np.sum(w1)))
@@ -716,8 +963,9 @@ def _fit_piecewise_core(
     *,
     w: FloatArray | None = None,
     mode: RefitMode = "sequential",
+    huber_k: float = 1.345,
 ) -> PiecewiseTrendResult:
-    """Internal piecewise connected linear trend fitter (sequential or joint hinge-spline)."""
+    """Internal piecewise connected linear trend fitter (sequential, joint, L1, or Huber)."""
     n = int(t_num.size)
     tp_sorted = np.sort(np.unique(tp_valid.astype(np.intp)))
     m = int(tp_sorted.size)
@@ -727,7 +975,10 @@ def _fit_piecewise_core(
     t0 = t_num - t_num[0]
     cond_num = 1.0
 
-    if mode == "joint":
+    if mode == "l1":
+        slopes, intercepts, y_fit, cond_num = fit_l1_piecewise(t_num, y, tp_sorted, w=w)
+        selected_dir: Literal["forward", "backward", "joint"] = "joint"
+    elif mode in ("joint", "huber"):
         # Continuous piecewise linear hinge basis scaled by span s_t for numerical conditioning:
         # [1, t0/s_t, ((t0 - tau_1)/s_t)_+, ..., ((t0 - tau_m)/s_t)_+]
         s_t = float(t0[-1]) if float(t0[-1]) > 0.0 else 1.0
@@ -738,7 +989,11 @@ def _fit_piecewise_core(
         for k, tp in enumerate(tp_sorted):
             D[:, 2 + k] = np.maximum(0.0, u - u[tp])
         pw = prepare_weights(w, n) if w is not None else prepare_weights(None, n)
-        ols = solve_weighted_ols(D, y, pw)
+        if mode == "huber":
+            hr = solve_huber_irls(D, y, pw, k=huber_k, compute_cov=False)
+            ols = hr.ols
+        else:
+            ols = solve_weighted_ols(D, y, pw)
         cond_num = float(ols.condition_number)
         y_fit = y - ols.residuals
         b0 = float(ols.coeff[0])
@@ -753,7 +1008,7 @@ def _fit_piecewise_core(
             cum_slope += float(deltas[k])
             slopes[k + 1] = cum_slope
             intercepts[k + 1] = float(y_fit[tp]) - cum_slope * float(t_num[tp])
-        selected_dir: Literal["forward", "backward", "joint"] = "joint"
+        selected_dir = "joint"
     else:
         slopes_f, intercepts_f, y_f = _chained_forward_fit(t0, y, tp_sorted, w)
         t_rev = t0[-1] - t0[::-1]
@@ -881,6 +1136,7 @@ def fit_piecewise_trend(
     *,
     weights: ArrayLike | None = None,
     mode: RefitMode = "sequential",
+    huber_k: float = 1.345,
 ) -> PiecewiseTrendResult:
     """Fit a global connected piecewise-linear trend across known turning points.
 
@@ -893,12 +1149,20 @@ def fit_piecewise_trend(
     weights:
         Optional 1D strictly positive observation weights.
     mode:
-        ``'sequential'`` (Ghaderpour et al., 2024 ``TPTR`` forward/backward
-        chained OLS) or ``'joint'`` (globally optimal simultaneous continuous
-        hinge-spline regression).
+        - ``'sequential'``: Ghaderpour et al. (2024) ``TPTR`` forward/backward chained OLS.
+        - ``'joint'``: globally optimal simultaneous continuous hinge-spline OLS.
+        - ``'l1'``: globally optimal continuous L1 (LAD) hinge-spline via linear
+          programming (50% vertical breakdown, strictly continuous at knots).
+        - ``'huber'``: globally optimal continuous Huber IRLS hinge-spline.
+    huber_k:
+        Huber tuning constant used when ``mode='huber'`` (default ``1.345``).
     """
-    if mode not in ("sequential", "joint"):
-        raise ValueError(f"Unknown `mode` {mode!r}. Options: 'sequential', 'joint'.")
+    if mode not in ("sequential", "joint", "l1", "huber"):
+        raise ValueError(
+            f"Unknown `mode` {mode!r}. Options: 'sequential', 'joint', 'l1', 'huber'."
+        )
+    if not np.isfinite(huber_k) or huber_k <= 0.0:
+        raise ValueError(f"`huber_k` must be finite and strictly positive; got {huber_k}.")
     series = prepare_numeric_series(t, y)
     w_arr: FloatArray | None = None
     if weights is not None:
@@ -935,6 +1199,7 @@ def fit_piecewise_trend(
         series.sampling_rate_ratio,
         w=w_arr,
         mode=mode,
+        huber_k=huber_k,
     )
 
 
@@ -955,6 +1220,8 @@ def _run_stpd_windows(
     max_fb_time_diff: float | None,
     *,
     parity_mode: bool = False,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
@@ -993,7 +1260,9 @@ def _run_stpd_windows(
         if m_eff < 2:
             continue
 
-        stats = _tpd_window(t_w, y_w, m_eff, w_w, parity_mode=parity_mode)
+        stats = _tpd_window(
+            t_w, y_w, m_eff, w_w, parity_mode=parity_mode, robust=robust, huber_k=huber_k
+        )
         ratio_lr = max(stats.n_left, stats.n_right) / max(1, min(stats.n_left, stats.n_right))
         if ratio_lr > 1.5:
             density_imbalanced = True
@@ -1068,7 +1337,9 @@ def detect_turning_points(
     margin: int | None = None,
     max_fb_diff: int = 3,
     max_fb_time_diff: float | None = None,
-    refit_mode: RefitMode = "sequential",
+    refit_mode: RefitMode | None = None,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
@@ -1076,10 +1347,11 @@ def detect_turning_points(
     """Detect continuous trend turning points via STPD (Ghaderpour et al., 2024).
 
     Fits connected two-piece linear trends forward and backward within sliding
-    windows, testing slope-change significance (Student t-test), forward/backward
-    agreement, signal-to-noise ratio (SNR), and the Normalized Difference
-    Residual Index (NDRI) to separate genuine continuous turning points
-    (``NDRI ≈ 0``) from abrupt datum jumps (``NDRI -> 1``).
+    windows, testing slope-change significance (Student t-test, or
+    Schrader–Hettmansperger robust F-test when ``robust='huber'``),
+    forward/backward agreement, signal-to-noise ratio (SNR), and the
+    Normalized Difference Residual Index (NDRI) to separate genuine continuous
+    turning points (``NDRI ≈ 0``) from abrupt datum jumps (``NDRI -> 1``).
 
     Parameters
     ----------
@@ -1101,7 +1373,7 @@ def detect_turning_points(
         unbiased under uneven sampling density) or ``'l2'`` (Ghaderpour 2024).
         ``parity_mode=True`` forces ``'l2'``.
     alpha:
-        Significance level for the two-sided Student t-test (default ``0.01``).
+        Significance level for the slope-change test (default ``0.01``).
     dir_th:
         Minimum absolute slope change ``|slope2 - slope1|`` (default ``0.0``).
     tp_th:
@@ -1113,12 +1385,22 @@ def detect_turning_points(
         Maximum allowed index difference (default ``3``, matching upstream ``< 4``)
         or time difference between forward and backward turning-point estimates.
     refit_mode:
-        Global piecewise trend refit mode: ``'sequential'`` (TPTR) or ``'joint'``.
+        Global piecewise trend refit mode: ``'sequential'`` (TPTR), ``'joint'``,
+        ``'l1'`` (continuous LAD hinge-spline), or ``'huber'`` (continuous Huber
+        hinge-spline). Defaults to ``'huber'`` when ``robust='huber'`` and
+        ``'sequential'`` otherwise.
+    robust:
+        ``'none'`` (default WLS/OLS), ``'huber'`` (Huber-weighted asymmetric
+        sequential scan + Schrader–Hettmansperger robust test), or ``'mm'``
+        (Huber-initialized Tukey biweight MM test). Forced to ``'none'`` when
+        ``parity_mode=True``.
+    huber_k:
+        Huber tuning constant (default ``1.345``).
     censor_status, censoring:
         Optional censoring indicator array and :class:`CensoredConfig`.
     parity_mode:
         If ``True``, uses exact Ghaderpour et al. (2024) conventions
-        (``snr_mode='raw'``, ``ndri_mode='l2'``).
+        (``snr_mode='raw'``, ``ndri_mode='l2'``, ``robust='none'``).
     """
     if window_mode not in ("count", "duration"):
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
@@ -1126,8 +1408,17 @@ def detect_turning_points(
         raise ValueError(f"Unknown `snr_mode` {snr_mode!r}. Options: 'raw', 'centered'.")
     if ndri_mode not in ("l2", "rmse"):
         raise ValueError(f"Unknown `ndri_mode` {ndri_mode!r}. Options: 'l2', 'rmse'.")
-    if refit_mode not in ("sequential", "joint"):
-        raise ValueError(f"Unknown `refit_mode` {refit_mode!r}. Options: 'sequential', 'joint'.")
+    eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
+    eff_refit_mode: RefitMode = (
+        ("huber" if eff_robust != "none" else "sequential")
+        if refit_mode is None
+        else refit_mode
+    )
+    if eff_refit_mode not in ("sequential", "joint", "l1", "huber"):
+        raise ValueError(
+            f"Unknown `refit_mode` {eff_refit_mode!r}. "
+            "Options: 'sequential', 'joint', 'l1', 'huber'."
+        )
     if snr_th <= 0.0:
         raise ValueError("`snr_th` must be strictly positive.")
     if not (0.0 <= ndri_th <= 1.0):
@@ -1277,6 +1568,8 @@ def detect_turning_points(
         max_fb_diff,
         max_fb_time_diff,
         parity_mode=parity_mode,
+        robust=eff_robust,
+        huber_k=huber_k,
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
@@ -1349,6 +1642,8 @@ def detect_turning_points(
                 max_fb_diff,
                 max_fb_time_diff,
                 parity_mode=parity_mode,
+                robust=eff_robust,
+                huber_k=huber_k,
                 provenance=prov if cfg.scope == "windowed" else None,
                 censor_cfg=cfg_draw,
                 rng=draw_rng,
@@ -1372,7 +1667,8 @@ def detect_turning_points(
         series.n_dropped_nan,
         series.sampling_rate_ratio,
         w=w_valid,
-        mode=refit_mode,
+        mode=eff_refit_mode,
+        huber_k=huber_k,
     )
 
     tp_events: list[TurningPointEvent] = []

@@ -26,6 +26,7 @@
 - **JUSTmonitor (v1.1)** — Near-Real-Time (NRT) abrupt & phenological disturbance monitoring (`just_monitor`) with Šidák, Pocock, O'Brien–Fleming, and $k$-consecutive repeated-testing controls (Ghaderpour & Vujadinovic, 2020b)
 - **STPD & TPTR** — *Sequential Turning Point Detection* (`detect_turning_points` / `stpd`) with RMSE-NDRI jump discrimination and connected piecewise linear trend fitting (`fit_piecewise_trend`) (Ghaderpour et al., 2024)
 - **Censored Time-Series Workflows** — First-class handling of `<LOD`, `>UL`, mixed, and `[L, R]` interval observations via [`ndimpute`](https://github.com/LukeAFullard/ndimpute) with automated temporal-order protection, lab detection-limit shift warnings, and multi-draw stability reporting.
+- **Robust Estimation & Non-Parametric Segment Slopes** — Outlier-resistant convex **Huber IRLS** (`robust="huber"`) and **Yohai MM-biweight** (`robust="mm"`) with Schrader–Hettmansperger robust $F$-tests, exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
 
 All algorithms work natively on **irregular, gappy timestamps with zero interpolation**.
 
@@ -70,7 +71,8 @@ fig, axes = result.plot()
 | *"I have a stable historical baseline and want to catch a new disturbance as incoming observations arrive."* | `just_monitor()` | Forecasts the historical model and runs sequential LSSA with built-in repeated-testing control (Šidák + Pocock / O'Brien–Fleming / consecutive-$k$). |
 | *"My series has seasonality, maybe a sudden jump, AND maybe a smooth trend bend later — where do I start?"* | `analyze_series()` | Runs the guided two-stage JUST → STPD workflow automatically with scale-free defaults. |
 | *"My lab data contains `<0.05`, `>10`, or `[L, R]` censored values."* | Pass strings or `censor_status` + `CensoredConfig` to any function above | Imputes via `ndimpute` without `DL/2` bias and warns if a lab detection-limit upgrade mimics a jump. |
-| *"I only want one overall monotonic up/down trend (no breakpoints)."* | Mann–Kendall / Sen's slope (external) | Simpler and higher power when you don't need to locate breakpoints. |
+| *"My record has extreme spikes or heavy-tailed noise, and I want robust / Theil–Sen / Akritas–Theil–Sen segment slopes."* | Add `robust="huber"` or `robust="mm"` (and `slope_estimator="sen"` / `"l1"` / `"huber"` in `analyze_series()`) | Neutralizes isolated spikes without masking real jumps and reports exact per-segment Theil–Sen / ATS slopes, 95% CIs, and Mann–Kendall $p$-values. |
+| *"I only want one overall monotonic up/down trend (no breakpoints)."* | Mann–Kendall / Sen's slope (`MannKS` or `analyze_series(..., detect_jumps=False, detect_turning_points=False, slope_estimator="sen")`) | Simpler and higher power when you don't need to locate breakpoints. |
 
 ---
 
@@ -150,9 +152,9 @@ pip install --no-deps tspec
 `tspec` is verified across four automated validation tiers (full reports in [`validation/reports/`](validation/reports/)):
 
 - **Tier 1 — Upstream Numerical Parity:** **41 / 41 checks PASSED** against `Ghaderpour/LSWAVE-SignalProcessing` (`LSSA`, `ALLSSA`, `JUSTjumps`, `JUSTdecompose`, `JUSTmonitor`, `STPD`, `TPTR`; continuous max diffs `~1e-15`, exact discrete indices).
-- **Tier 2 — Monte Carlo Benchmarks:** **22 / 22 statistical gates PASSED** across JUST (including null-selected `season="allssa"` at `5.0%` FPR), STPD (exact negative-covariance SE, NDRI ROC AUC `1.000`; 3:1 density imbalance false-rejection rate dropped from `42.0%` → `0.0%`), censored data (`ndimpute` ROS vs `DL/2`, `100%` DL-shift defense, zero causal NRT leakage), AR(1) red-noise calibration, and `just_monitor` sequential-peeking & long-horizon forecast-drift control (`72.5%` unadjusted → `0.0%` Šidák+Pocock; `25.0%` → `0.0%` with predictive covariance).
-- **Tier 3 — Unit, Property & Docs Tests:** 75 `pytest` + Hypothesis invariance & audit-regression tests plus automated execution of every tutorial code block and unpacked PyPI sdist verification.
-- **Tier 4 — Speed & $O(n)$ Memory:** `allssa(decimal=4)` **7.4× faster** than upstream Python; **1,000-series STPD batch in 4.83 s**; 1D diagonal weights scale strictly in $O(n)$ memory (`19.4 MB` peak at $n = 10{,}000$).
+- **Tier 2 — Monte Carlo Benchmarks:** **26 / 26 statistical gates PASSED** across JUST (including null-selected `season="allssa"` at `5.0%` FPR), STPD (exact negative-covariance SE, NDRI ROC AUC `1.000`; 3:1 density imbalance false-rejection rate dropped from `42.0%` → `0.0%`), censored data (`ndimpute` ROS vs `DL/2`, `100%` DL-shift defense, zero causal NRT leakage), AR(1) red-noise calibration, `just_monitor` sequential-peeking & forecast-drift control (`72.5%` → `0.0%` Šidák+Pocock; `25.0%` → `0.0%` with predictive covariance), and **robust estimation (`RB1–RB4`)**: 5% $12\sigma$ spikes JUST (`40%` → `12%` FPR, `100%` jump recall), heavy-tailed $t_3$ + spikes STPD (`96%` TP recall, `4.4×` lower $L_1$ slope MAE, `100%` NDRI jump separation), outlier pipeline slopes (`8.105` OLS → `0.017` MM+Sen), and 25% censored Akritas–Theil–Sen (`0.104` OLS → `0.012` ATS).
+- **Tier 3 — Unit, Property & Docs Tests:** 99 `pytest` + Hypothesis invariance, robust estimation, & audit-regression tests plus automated execution of every tutorial code block and unpacked PyPI sdist verification.
+- **Tier 4 — Speed & $O(n)$ Memory:** `allssa(decimal=4)` **6.4× faster** than upstream Python; **1,000-series STPD batch in 4.74 s**; 1D diagonal weights scale strictly in $O(n)$ memory (`19.4 MB` peak at $n = 10{,}000$).
 
 ---
 
@@ -169,4 +171,4 @@ mkdocs serve
 
 ## License & Citation
 
-Released under the **MIT License**. Written as a strict clean-room implementation directly from the peer-reviewed literature (see [`CITATION.cff`](CITATION.cff) for full BibTeX and DOI records for Ghaderpour et al., 2017–2024; Lan & DeMets, 1983; Helsel, 2012; Turnbull, 1976; and `ndimpute`).
+Released under the **MIT License**. Written as a strict clean-room implementation directly from the peer-reviewed literature (see [`CITATION.cff`](CITATION.cff) for full BibTeX and DOI records for Ghaderpour et al., 2017–2024; Lan & DeMets, 1983; Huber, 1981; Schrader & Hettmansperger, 1980; Yohai, 1987; Sen, 1968; Akritas et al., 1995; Gilbert, 1987; Helsel, 2012; Turnbull, 1976; and `ndimpute`).

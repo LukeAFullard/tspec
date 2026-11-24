@@ -33,3 +33,11 @@
 
 9. **Sequential Alpha-Spending Boundaries (`just_monitor`):**  
    - Lan, K. K. G., & DeMets, D. L. (1983). Discrete sequential boundaries for clinical trials. *Biometrika*, 70(3), 659–663. https://doi.org/10.1093/biomet/70.3.659
+
+10. **Robust M/MM-Estimation & Non-Parametric Trend Slopes (`robust="huber" | "mm"`, `slope_estimator="sen" | "l1" | "huber"`):**  
+    - Huber, P. J. (1981). *Robust Statistics*. John Wiley & Sons. https://doi.org/10.1002/0471725250
+    - Schrader, R. M., & Hettmansperger, T. P. (1980). Improving analysis of variance by using M-estimators. *Biometrika*, 67(1), 93–101. https://doi.org/10.1093/biomet/67.1.93
+    - Yohai, V. J. (1987). High breakdown-point and high efficiency robust estimates for regression. *The Annals of Statistics*, 15(2), 642–656. https://doi.org/10.1214/aos/1176350366
+    - Sen, P. K. (1968). Estimates of the regression coefficient based on Kendall's tau. *Journal of the American Statistical Association*, 63(324), 1379–1389. https://doi.org/10.1080/01621459.1968.10480934
+    - Akritas, M. G., Murphy, S. A., & LaValley, M. P. (1995). The Theil-Sen estimator with doubly censored data and applications to astronomy. *Journal of the American Statistical Association*, 90(429), 170–177. https://doi.org/10.1080/01621459.1995.10476499
+    - Gilbert, R. O. (1987). *Statistical Methods for Environmental Pollution Monitoring*. Van Nostrand Reinhold.

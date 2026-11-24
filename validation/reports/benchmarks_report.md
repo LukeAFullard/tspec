@@ -1,6 +1,6 @@
 # Tier 2 Synthetic Ground-Truth & Monte Carlo Benchmarks Report
 
-- **Summary:** **22 / 22 benchmark gates PASSED** in 153.4s
+- **Summary:** **26 / 26 benchmark gates PASSED** in 368.4s
 
 | ID | Benchmark Scenario | Status | Measured Metrics |
 | :--- | :--- | :---: | :--- |
@@ -26,3 +26,7 @@
 | **M1** | JUSTmonitor Sequential-Peeking Null FPR (25 steps, alpha=0.05) | **PASS** | Unadjusted parity FPR=72.5% vs Sidak+Pocock=0.0%, Sidak+OBF=0.0%, Sidak+Consec2=2.5% |
 | **M2** | JUSTmonitor NRT Disturbance Recall (Abrupt & Phenological, Sidak+Pocock) | **PASS** | Abrupt recall=100.0% (median delay=0.160 yr); Phenological recall=100.0% |
 | **M3** | JUSTmonitor Long-Horizon Forecast-Drift Null Calibration (n_his=48, D=96) | **PASS** | Without forecast cov=25.0%; With predictive cov=0.0% (alpha=0.05) |
+| **RB1** | 5% 12-sigma Spike-Contaminated JUST Null FPR & Jump Recall (OLS vs MM) | **PASS** | Null FPR: OLS=40.0% vs MM=12.0%; MM jump recall under spikes=100.0% |
+| **RB2** | Heavy-Tailed (t3) + Spike STPD Recovery, L1 Slope MAE & MM NDRI Separation | **PASS** | MM TP recall=96.0%; Slope MAE: OLS=0.209 vs L1=0.047; MM NDRI jump separation=100.0% |
+| **RB3** | Outlier-Contaminated Pipeline Segment Slopes (OLS vs MM+Theil-Sen vs MM+Huber) | **PASS** | Segment slope MAE: OLS=8.105 vs MM+Sen=0.017, MM+Huber=0.024; Sen 95% CI coverage=88.0% |
+| **RB4** | Censored Akritas-Theil-Sen vs OLS (25% Left Censoring + Outliers) | **PASS** | Slope MAE: OLS=0.104 vs ATS=0.012; ATS auto-selected=25/25 |

@@ -104,3 +104,37 @@ When monitoring incoming observations one by one (`just_monitor()`), you are **p
 3. **Out-of-sample predictive covariance (`account_for_forecast_uncertainty=True`):** propagates finite-sample historical trend and seasonal parameter uncertainty into the monitoring window weights so extrapolating beyond a short historical baseline does not trigger spurious drift alarms.
 
 ![Near-real-time monitoring sequential boundary](../assets/figures/tutorial_nrt_monitoring.png)
+
+---
+
+## 7. Robust Estimation Against Outliers & Heavy Tails (`robust="huber" | "mm"`, `slope_estimator="sen" | "l1" | "huber"`)
+
+Real environmental and geophysical records often contain isolated sensor glitches, stormflow turbidity spikes, or heavy-tailed errors. Under plain OLS, even a handful of extreme spikes can bias segment slopes, distort seasonal fits, or trigger false jumps. `tspec` addresses this with a **two-layer robust architecture** requiring zero extra dependencies:
+
+1. **Outlier-resistant Phase 1 detection & decomposition (`robust="huber"` or `robust="mm"`):**
+   - **`robust="huber"`**: convex **Huber IRLS** ($k = 1.345$, 95% Gaussian efficiency, monotone $\psi$) + **Schrader–Hettmansperger (1980) robust nested $F$-tests**. Ideal for heavy-tailed noise (e.g., Student-$t_3$/$t_5$) and moderate outliers.
+   - **`robust="mm"`**: **Yohai (1987) MM-estimation** — initializes from convex Huber IRLS (so genuine sustained jumps are never masked) and refines with Tukey's bisquare weight ($c = 4.685$, 95% Gaussian efficiency, **zero influence** for extreme $>4.685\sigma$ isolated spikes). Recommended when records contain extreme isolated spikes (e.g., $10\sigma$–$50\sigma$ sensor glitches) and discontinuous jump detection is enabled.
+   - **No jump masking & NDRI preserved:** Both modes evaluate candidate splits on a shared window scale, keep incoming monitoring observations in `just_monitor` at full weight `1.0`, and preserve STPD's asymmetric forward/backward geometry so its NDRI jump-vs-turning-point alarm stays sharp.
+2. **Robust Phase 2 segment slopes & continuous piecewise fits:**
+   - `fit_piecewise_trend(..., mode="l1")` fits an exact globally optimal continuous **$L_1$ (LAD) hinge-spline** via sparse HiGHS linear programming (50% vertical breakdown, strictly continuous at every turning point). `mode="huber"` fits a continuous Huber hinge-spline.
+   - `analyze_series(..., robust="mm", slope_estimator="sen")` computes per-segment **Theil–Sen** slopes, intercepts, distribution-free 95% confidence intervals, and Mann–Kendall $p$-values on `result.segments` (and `result.segments_to_dataframe()`). When a segment contains left- or right-censored data (`<DL` / `>UL`), `tspec` automatically switches to **Akritas–Theil–Sen (ATS)**!
+
+```python
+import numpy as np
+import tspec
+
+rng = np.random.default_rng(11)
+t = np.linspace(2016.0, 2024.0, 160)
+y = (
+    1.0 + 0.6 * (t - 2016.0) - 1.4 * np.maximum(0.0, t - 2020.0)
+    + 0.7 * np.sin(2 * np.pi * t) + rng.normal(0.0, 0.15, t.size)
+)
+y[[18, 55, 110, 145]] += np.array([9.0, -10.0, 11.0, -9.0])  # isolated 60-sigma spikes
+
+res = tspec.analyze_series(
+    t, y,
+    robust="mm",            # Huber-init MM-biweight for extreme isolated spikes
+    slope_estimator="sen",  # Theil-Sen (or Akritas-Theil-Sen when censored)
+)
+print(res.summary())
+```

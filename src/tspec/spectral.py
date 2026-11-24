@@ -26,6 +26,7 @@ from ._linalg import (
     prepare_weights,
     solve_weighted_ols,
 )
+from ._robust import RobustMethod, solve_robust_irls, validate_robust_args
 from ._time import prepare_numeric_series
 from ._types import ArrayLike, FloatArray, IntArray, TimeLike, WeightLike
 from .exceptions import InsufficientDataError
@@ -224,6 +225,8 @@ def _lssa_core(
     known_freqs: FloatArray,
     *,
     compute_cov: bool = True,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> _LssaCoreOutput:
     """Fast internal LSSA kernel operating on pre-validated, zero-shifted ``t0``."""
     n = int(t0.size)
@@ -237,14 +240,22 @@ def _lssa_core(
         )
 
     D, col_scales = build_design_matrix(t0, trend, jump_indices, shared_slope, known_freqs)
-    ols = solve_weighted_ols(
-        D, y, pw, col_scales=col_scales, allow_rank_deficient=True, compute_cov=compute_cov
-    )
+    if robust != "none":
+        hr = solve_robust_irls(
+            D, y, pw, method=robust, k=huber_k, col_scales=col_scales, compute_cov=compute_cov
+        )
+        ols = hr.ols
+        pw_spec = hr.pw_effective
+    else:
+        ols = solve_weighted_ols(
+            D, y, pw, col_scales=col_scales, allow_rank_deficient=True, compute_cov=compute_cov
+        )
+        pw_spec = pw
     eff_nc = ols.rank if ols.rank_deficient else nc
     crit = critical_value_lss(n, eff_nc, alpha)
 
     if omega.size > 0:
-        spec, cs = compute_lss_vectorized(t0, omega, ols, pw, known_freqs=known_freqs)
+        spec, cs = compute_lss_vectorized(t0, omega, ols, pw_spec, known_freqs=known_freqs)
         pvals = _lss_pvalues(spec, n, eff_nc)
     else:
         spec = np.empty(0, dtype=np.float64)
@@ -294,8 +305,11 @@ def _allssa_core(
     *,
     parity_mode: bool = False,
     compute_cov: bool = True,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> _AllssaCoreOutput:
     """Fast internal ALLSSA iterative anti-leakage kernel."""
+    eff_robust: RobustMethod = "none" if parity_mode else robust
     inc = 10**decimal
     step = 1.0 / inc
     min_positive_freq = step
@@ -321,6 +335,8 @@ def _allssa_core(
         shared_slope,
         np.empty(0, dtype=np.float64),
         compute_cov=False,
+        robust=eff_robust,
+        huber_k=huber_k,
     )
     cond_max = max(cond_max, res.condition_number)
     any_rank_def = any_rank_def or res.rank_deficient
@@ -371,6 +387,8 @@ def _allssa_core(
             shared_slope,
             np.asarray(selected, dtype=np.float64),
             compute_cov=False,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
         cond_max = max(cond_max, res_fine.condition_number)
         any_rank_def = any_rank_def or res_fine.rank_deficient
@@ -401,6 +419,8 @@ def _allssa_core(
                 shared_slope,
                 np.asarray(selected, dtype=np.float64),
                 compute_cov=compute_cov,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             converged = True
             break
@@ -418,6 +438,8 @@ def _allssa_core(
                 shared_slope,
                 np.asarray(selected, dtype=np.float64),
                 compute_cov=compute_cov,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             converged = True
             break
@@ -433,6 +455,8 @@ def _allssa_core(
             shared_slope,
             np.asarray(selected, dtype=np.float64),
             compute_cov=False,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
         cond_max = max(cond_max, res.condition_number)
         any_rank_def = any_rank_def or res.rank_deficient
@@ -450,6 +474,8 @@ def _allssa_core(
             shared_slope,
             freq_arr,
             compute_cov=True,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
     n_freq = int(freq_arr.size)
     if n_freq > 0:
@@ -672,11 +698,14 @@ def lssa(
     trend: TrendType = "linear",
     shared_slope: bool = False,
     known_freqs: Sequence[float] | None = None,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> LssaResult:
     """Compute the weighted Least-Squares Spectrum (LSSA) of an unevenly sampled series.
 
     Simultaneously fits known trend/jump/sinusoid constituents via whitened QR
-    weighted least squares and evaluates the normalized percentage-variance
+    weighted least squares (or optional Huber IRLS M-estimation when
+    ``robust='huber'``) and evaluates the normalized percentage-variance
     spectrum across candidate cyclic frequencies ``omega`` with zero interpolation.
 
     Parameters
@@ -702,6 +731,12 @@ def lssa(
         If ``True``, piecewise linear segments share a single global slope.
     known_freqs:
         Known cyclic frequencies removed simultaneously with the trend.
+    robust:
+        ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS
+        M-estimation), or ``'mm'`` (Yohai 1987 Huber-initialized Tukey
+        biweight MM-estimation with zero weight on extreme isolated spikes).
+    huber_k:
+        Huber tuning constant (default ``1.345``, 95% Gaussian efficiency).
 
     Returns
     -------
@@ -710,6 +745,7 @@ def lssa(
         ``.to_dataframe()``, and ``.plot()``.
     """
     trend_l = _validate_spectral_common(trend, alpha)
+    robust_m = validate_robust_args(robust, huber_k)
     series = prepare_numeric_series(t, y)
     pw_full = prepare_weights(weights, series.n_input)
     pw = pw_full.subset(series.valid_mask) if series.n_dropped_nan else pw_full
@@ -740,7 +776,17 @@ def lssa(
 
     t0 = series.times_numeric - series.times_numeric[0]
     core = _lssa_core(
-        t0, series.values, pw, om_arr, j_valid, alpha, trend_l, shared_slope, kf_arr
+        t0,
+        series.values,
+        pw,
+        om_arr,
+        j_valid,
+        alpha,
+        trend_l,
+        shared_slope,
+        kf_arr,
+        robust=robust_m,
+        huber_k=huber_k,
     )
     amps, phases = _amplitudes_and_phases(core.cos_sin_coeffs)
 
@@ -812,6 +858,8 @@ def allssa(
     shared_slope: bool = False,
     decimal: int = 1,
     max_iter: int | None = None,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     parity_mode: bool = False,
 ) -> AllssaResult:
     """Antileakage Least-Squares Spectral Analysis (ALLSSA).
@@ -822,7 +870,7 @@ def allssa(
 
     Parameters
     ----------
-    t, y, weights, jump_indices, alpha, trend, shared_slope:
+    t, y, weights, jump_indices, alpha, trend, shared_slope, robust, huber_k:
         See :func:`lssa`.
     omega:
         Initial coarse cyclic-frequency search grid. Defaults to integer
@@ -832,10 +880,11 @@ def allssa(
     max_iter:
         Maximum iterations (defaults to ``max(20, 2 * len(omega))``).
     parity_mode:
-        If ``True``, uses un-clamped fine grids around rounded integer centers
-        to match legacy upstream behavior during Tier 1 verification.
+        If ``True``, disables robust reweighting and uses un-clamped fine grids
+        around rounded integer centers to match legacy upstream behavior.
     """
     trend_l = _validate_spectral_common(trend, alpha)
+    robust_m = validate_robust_args(robust, huber_k)
     if not isinstance(decimal, (int, np.integer)) or decimal < 0 or decimal > 4:
         raise ValueError("`decimal` must be an integer between 0 and 4.")
     decimal_int = int(decimal)
@@ -875,6 +924,8 @@ def allssa(
         decimal_int,
         iter_cap,
         parity_mode=parity_mode,
+        robust=robust_m,
+        huber_k=huber_k,
     )
     amps, phases = _amplitudes_and_phases(core.cos_sin_coeffs)
 

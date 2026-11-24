@@ -7,6 +7,7 @@ censored-data support via ``ndimpute``.
 from __future__ import annotations
 
 from ._diagnostics import DiagnosticReport, RedNoiseDiagnostics, WarningItem
+from ._robust import RobustMethod, SlopeEstimator
 from .censored import CensoredConfig, CensoringProvenance, DlShiftEvent
 from .exceptions import (
     CensoringError,
@@ -23,7 +24,7 @@ from .just import (
     just_jumps,
 )
 from .monitor import MonitorResult, MonitorStep, just_monitor
-from .pipeline import PipelineResult, analyze_series
+from .pipeline import PipelineResult, SegmentSummary, analyze_series
 from .spectral import AllssaResult, LssaResult, allssa, lssa
 from .stpd import (
     FlaggedJumpCandidate,
@@ -49,7 +50,9 @@ __all__ = [
     "stpd",
     "fit_piecewise_trend",
     "analyze_series",
-    # Config & Result classes
+    # Type aliases & config/result classes
+    "RobustMethod",
+    "SlopeEstimator",
     "CensoredConfig",
     "CensoringProvenance",
     "DlShiftEvent",
@@ -68,6 +71,7 @@ __all__ = [
     "FlaggedJumpCandidate",
     "PiecewiseTrendResult",
     "StpdResult",
+    "SegmentSummary",
     "PipelineResult",
     # Exceptions
     "TspecError",

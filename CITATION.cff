@@ -163,6 +163,77 @@ references:
     end: 663
     year: 1983
     doi: "10.1093/biomet/70.3.659"
+  - type: book
+    title: "Robust Statistics"
+    authors:
+      - family-names: Huber
+        given-names: Peter J.
+    publisher:
+      name: "John Wiley & Sons"
+    year: 1981
+    doi: "10.1002/0471725250"
+  - type: article
+    title: "Improving analysis of variance by using M-estimators"
+    authors:
+      - family-names: Schrader
+        given-names: Ronald M.
+      - family-names: Hettmansperger
+        given-names: Thomas P.
+    journal: "Biometrika"
+    volume: 67
+    issue: 1
+    start: 93
+    end: 101
+    year: 1980
+    doi: "10.1093/biomet/67.1.93"
+  - type: article
+    title: "High Breakdown-Point and High Efficiency Robust Estimates for Regression"
+    authors:
+      - family-names: Yohai
+        given-names: Víctor J.
+    journal: "The Annals of Statistics"
+    volume: 15
+    issue: 2
+    start: 642
+    end: 656
+    year: 1987
+    doi: "10.1214/aos/1176350366"
+  - type: article
+    title: "Estimates of the regression coefficient based on Kendall's tau"
+    authors:
+      - family-names: Sen
+        given-names: Pranab Kumar
+    journal: "Journal of the American Statistical Association"
+    volume: 63
+    issue: 324
+    start: 1379
+    end: 1389
+    year: 1968
+    doi: "10.1080/01621459.1968.10480934"
+  - type: article
+    title: "The Theil-Sen estimator with doubly censored data and applications to astronomy"
+    authors:
+      - family-names: Akritas
+        given-names: Michael G.
+      - family-names: Murphy
+        given-names: Susan A.
+      - family-names: LaValley
+        given-names: Michael P.
+    journal: "Journal of the American Statistical Association"
+    volume: 90
+    issue: 429
+    start: 170
+    end: 177
+    year: 1995
+    doi: "10.1080/01621459.1995.10476499"
+  - type: book
+    title: "Statistical Methods for Environmental Pollution Monitoring"
+    authors:
+      - family-names: Gilbert
+        given-names: Richard O.
+    publisher:
+      name: "Van Nostrand Reinhold"
+    year: 1987
   - type: software
     title: "ndimpute: Unbiased statistical imputation for censored data"
     authors:

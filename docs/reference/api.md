@@ -24,4 +24,5 @@
 ::: tspec.MonitorResult
 ::: tspec.StpdResult
 ::: tspec.PiecewiseTrendResult
+::: tspec.SegmentSummary
 ::: tspec.PipelineResult
