@@ -17,6 +17,7 @@ from .results import require_matplotlib
 if TYPE_CHECKING:
     from .censored import CensoringProvenance
     from .just import JustDecomposeResult, JustJumpResult
+    from .monitor import MonitorResult
     from .pipeline import PipelineResult
     from .spectral import AllssaResult, LssaResult
     from .stpd import PiecewiseTrendResult, StpdResult
@@ -385,3 +386,118 @@ def plot_pipeline(result: PipelineResult, ax: Any = None, **kwargs: Any) -> tupl
         a.grid(True, alpha=0.3)
     fig.tight_layout()
     return fig, axes
+
+
+def plot_monitor(result: MonitorResult, ax: Any = None, **kwargs: Any) -> tuple[Any, Any]:
+    """Plot 2-panel Near-Real-Time (NRT) monitoring diagnostic figure."""
+    plt = require_matplotlib()
+    if ax is None:
+        fig, axes = plt.subplots(
+            2,
+            1,
+            figsize=kwargs.pop("figsize", (9.5, 5.8)),
+            sharex=True,
+            gridspec_kw={"height_ratios": [1.5, 1.0]},
+        )
+    else:
+        axes = ax
+        fig = axes[0].figure
+
+    ax_top, ax_bot = axes[0], axes[1]
+    n_act = len(result.values)
+
+    # Slice censoring provenance to the active [history:] tail if present
+    cen_slice: CensoringProvenance | None = None
+    if result.censoring is not None:
+        from dataclasses import replace
+
+        c = result.censoring
+        sl = slice(len(c.is_censored) - n_act, len(c.is_censored))
+        cen_slice = replace(
+            c,
+            is_censored=c.is_censored[sl],
+            status_codes=c.status_codes[sl],
+            original_values=c.original_values[sl],
+            original_left=c.original_left[sl] if c.original_left is not None else None,
+            original_right=c.original_right[sl] if c.original_right is not None else None,
+            imputed_values=c.imputed_values[sl],
+        )
+
+    # Shade monitoring zone on both panels
+    t_end = result.times[-1]
+    ax_top.axvspan(result.start_time, t_end, color=_SKY, alpha=0.14, label="Monitoring period")
+    ax_bot.axvspan(result.start_time, t_end, color=_SKY, alpha=0.14)
+    ax_top.axvline(result.start_time, color=_BLUE, ls=":", lw=1.2)
+    ax_bot.axvline(result.start_time, color=_BLUE, ls=":", lw=1.2)
+
+    _plot_observations_with_censoring(ax_top, result.times, result.values, cen_slice)
+
+    # Split forecast into historical fit (solid) and forward forecast (dashed)
+    n_his = int(np.searchsorted(result.time_years, float(result.steps[0].time_year), side="left")) if result.steps else n_act
+    if n_his > 0:
+        ax_top.plot(
+            result.times[:n_his],
+            result.forecast[:n_his],
+            color=_BLUE,
+            lw=1.8,
+            label="Historical model",
+        )
+    if n_his < n_act:
+        s0 = max(0, n_his - 1)
+        ax_top.plot(
+            result.times[s0:],
+            result.forecast[s0:],
+            color=_BLUE,
+            lw=1.8,
+            ls="--",
+            label="Forecast",
+        )
+
+    if result.detected and result.disturbance_time is not None and result.disturbance_time_year is not None:
+        pos = int(np.argmin(np.abs(result.time_years - result.disturbance_time_year)))
+        col = _ORANGE if result.disturbance_type == "abrupt" else _PURPLE
+        lbl = (
+            f"Abrupt disturbance (mag={result.magnitude:+.3g})"
+            if result.disturbance_type == "abrupt" and result.magnitude is not None
+            else f"{result.disturbance_type.capitalize()} disturbance"
+        )
+        ax_top.plot(
+            result.times[pos],
+            result.values[pos],
+            "*",
+            color=col,
+            markersize=13,
+            markeredgecolor="white",
+            markeredgewidth=0.7,
+            zorder=6,
+            label=lbl,
+        )
+        ax_top.axvline(result.disturbance_time, color=col, ls="--", lw=1.2, alpha=0.8)
+        ax_bot.axvline(result.disturbance_time, color=col, ls="--", lw=1.2, alpha=0.8)
+
+    ax_top.set_ylabel("Value")
+    ax_top.set_title(
+        f"JUST Near-Real-Time Monitoring ({result.freq_correction} / {result.sequential_control}, "
+        f"alpha={result.alpha:g})"
+    )
+    ax_top.legend(frameon=False, loc="best", ncol=2, fontsize=8.5)
+    ax_top.grid(True, alpha=0.3)
+
+    # Bottom panel: per-step low-freq & high-freq max LSS vs critical boundary
+    if result.steps:
+        st_times = [s.time for s in result.steps]
+        low_s = [s.max_low_freq_spec for s in result.steps]
+        high_s = [s.max_high_freq_spec for s in result.steps]
+        crits = [s.critical_value for s in result.steps]
+        ax_bot.plot(st_times, low_s, "-o", color=_ORANGE, ms=4.0, lw=1.6, label="Low-freq max LSS (<1 cy/yr, abrupt)")
+        ax_bot.plot(st_times, high_s, "-s", color=_PURPLE, ms=3.5, lw=1.3, alpha=0.85, label="High-freq max LSS (>=1 cy/yr, phenological)")
+        ax_bot.plot(st_times, crits, "--", color=_DARK, lw=1.5, label="Sequential critical boundary")
+    ax_bot.set_ylabel("Max Residual LSS")
+    ax_bot.set_xlabel("Time")
+    ax_bot.set_ylim(0.0, 1.02)
+    ax_bot.legend(frameon=False, loc="best", fontsize=8.5)
+    ax_bot.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    return fig, axes
+

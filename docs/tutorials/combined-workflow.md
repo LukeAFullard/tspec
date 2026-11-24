@@ -10,6 +10,8 @@ Following Ghaderpour et al. (2024), `analyze_series()` automates the recommended
 - **Stage 1 (JUST):** Isolates statistically significant abrupt vertical jumps (`step_alpha` + `bonferroni_window=True`) and extracts seasonal harmonics (`just_decompose`).
 - **Stage 2 (STPD):** Removes seasonality and vertical step offsets, then detects continuous turning points on the adjusted series.
 
+![Guided JUST -> STPD combined workflow result](../assets/figures/hero_combined_workflow.png)
+
 ```python
 import numpy as np
 import tspec

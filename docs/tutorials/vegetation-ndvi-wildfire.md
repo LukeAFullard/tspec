@@ -2,6 +2,8 @@
 
 Satellite vegetation indices (Landsat/MODIS/Sentinel-2) are heavily affected by clouds and snow, producing **unevenly spaced records with multi-month gaps** plus multi-harmonic phenology (annual + semi-annual cycles).
 
+![Satellite NDVI wildfire detection and regrowth decomposition](../assets/figures/tutorial_ndvi_wildfire.png)
+
 ## Step 1: Build an Irregular Cloud-Gapped NDVI Record with a Wildfire Drop
 
 ```python

@@ -1,7 +1,7 @@
 # Tier 1 Numerical Parity & Divergence Report
 
 - **Upstream Oracle:** `Ghaderpour/LSWAVE-SignalProcessing` @ `bd15923b1d4880b799b14fe016de4c1252259013`
-- **Summary:** **33 / 33 checks PASSED** (0 failures)
+- **Summary:** **41 / 41 checks PASSED** (0 failures)
 - **Tolerances:** `rtol=1e-6, atol=1e-8` on continuous arrays; exact `==` on discrete indices and frequencies.
 
 ## Parity Verification Matrix
@@ -41,6 +41,14 @@
 | `Synthetic (1D vector P)` | `just_jumps(OLS, parity)` | jump indices | **PASS** | idx=[6, 70, 88] vs [6, 70, 88] |
 | `Synthetic (2D SPD P)` | `lssa` | spec, coeff, cov | **PASS** | spec_abs=1.55e-15, cov_abs=1.65e-16 |
 | `Synthetic (2D SPD P)` | `just_jumps(OLS, parity)` | jump indices | **PASS** | idx=[6, 33, 70, 88] vs [6, 33, 70, 88] |
+| `EVIA_AB.dat` | `just_monitor(ALLSSA, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=1 vs 1, Loc=2019.3900, Mag=-0.4886 vs -0.4886, Dir=1.0837 vs 1.0837 |
+| `EVIA_AB.dat` | `just_monitor(OLS, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=1 vs 1, Loc=2019.3900, Mag=-0.4872 vs -0.4872, Dir=1.1107 vs 1.1107 |
+| `EVIB_AB.dat` | `just_monitor(ALLSSA, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=1 vs 1, Loc=2019.6340, Mag=0.0000 vs 0.0000, Dir=0.0000 vs 0.0000 |
+| `EVIB_AB.dat` | `just_monitor(OLS, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=1 vs 1, Loc=2019.6340, Mag=0.0000 vs 0.0000, Dir=0.0000 vs 0.0000 |
+| `EVIC_AB.dat` | `just_monitor(ALLSSA, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=0 vs 0, Loc=2019.8280, Mag=0.0000 vs 0.0000, Dir=0.0000 vs 0.0000 |
+| `EVIC_AB.dat` | `just_monitor(OLS, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=0 vs 0, Loc=2019.8280, Mag=0.0000 vs 0.0000, Dir=0.0000 vs 0.0000 |
+| `EVIA_CA.dat` | `just_monitor(ALLSSA, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=1 vs 1, Loc=2017.8183, Mag=-0.0508 vs -0.0508, Dir=0.0083 vs 0.0083 |
+| `EVIA_CA.dat` | `just_monitor(OLS, parity)` | Type, Loc, Mag, Dir | **PASS** | Type=1 vs 1, Loc=2017.8183, Mag=-0.0490 vs -0.0490, Dir=0.0074 vs 0.0074 |
 
 ## Documented Intentional Divergences (Default Mode vs. `parity_mode=True`)
 
@@ -52,6 +60,7 @@
 | `JUSTjumps.py:168` / `JUSTdecompose.py:194` duplicate last window when `(n - size) % step == 0` | Reproduces upstream `stop > n` loop | Stops cleanly at `stop >= n` so final window is never double-counted |
 | `JUSTjumps.py:283` premature 2-decimal rounding of `Mag`/`Dir` before thresholding | Rounds `Mag`/`Dir` to 2 decimals | Preserves full `float64` precision + computes nested partial $F$-test `jump_pvalue` |
 | `JUSTdecompose.py:42` off-by-one `+1` shift in `TrendComponent` regularization | Reproduces `+1` grid index shift | Uses exact `np.searchsorted(tt, t[j], side='left')` |
+| `JUSTmonitor.py:215` unadjusted repeated LSS testing across 35 freqs × $D$ monitoring steps | Uses `freq_correction='none'`, `sequential_control='none'` | Defaults to `freq_correction='sidak'` + `sequential_control='pocock'` (also supports `obrien_fleming` & `consecutive_k`) to bound familywise false alarms |
 | `STPD.py:58, 181` default `margin=1` causes `0/0 = NaN` in `SE1` | Clamps `margin >= 2` safely | Defaults to `max(2, min(M, size // 5))` and enforces `margin >= 2` |
 | `STPD.py:161, 164` non-shift-invariant `SNR` & density-biased L2 `NDRI` | Uses `snr_mode='raw'`, `ndri_mode='l2'` | Defaults to `snr_mode='centered'`, `ndri_mode='rmse'` (both variants always stored on `StpdResult`) |
 | `TPTR.py:53, 126` rounds stats to 2 decimals & drops initial segment slope | Preserves sequential TPTR ordering | Returns full-precision `PiecewiseTrendResult` with all `m + 1` slopes + optional `mode='joint'` |

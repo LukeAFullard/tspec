@@ -48,7 +48,24 @@ ALLSSA iteratively extracts significant sinusoids simultaneously with the trend 
 
 ---
 
-## 4. STPD & Piecewise Linear Trend Estimation (TPTR)
+## 4. Near-Real-Time Monitoring (`JUSTmonitor`, v1.1)
+
+*Primary sources: Ghaderpour & Vujadinovic (2020b); Lan & DeMets (1983).*
+
+1. **Historical Model & Forecast:** Fit a linear trend plus seasonal harmonics (`ALLSSA`, `OLS`, or `none`) on the stable historical segment $t[\text{history}:\text{start}]$ and evaluate the forecast $\hat{f}(t)$ forward through the monitoring period, yielding forecast residuals $e(t) = f(t) - \hat{f}(t)$.
+2. **Sequential Residual LSSA:** At each incoming observation $d = 1, \dots, D$, compute the constant-detrended normalized LSS of $e$ over the rolling window $[L_h, L_{\text{his}} + d)$ (expanding or sliding) across $K = 35$ frequencies $\Omega_{\text{mon}} = \{0.1, 0.2, \dots, 3.5\}$ cy/yr:
+   - Low-frequency peak ($\max_{\omega < 1} s(\omega) > s_{\text{crit}}$) $\implies$ **abrupt disturbance** (`type=1`).
+   - High-frequency peak exclusively ($\max_{\omega \ge 1} s(\omega) > s_{\text{crit}}$) $\implies$ **phenological disturbance** (`type=2`).
+3. **Multiplicity & Sequential-Peeking Control:**
+   - **Per-step across-time budget $\alpha_d$** over horizon $H$:
+     - `pocock`: $\alpha_d = 1 - (1 - \alpha)^{1/H}$ (constant Šidák allocation).
+     - `obrien_fleming`: Lan–DeMets incremental alpha-spending $\alpha_d = \alpha^*(d/H) - \alpha^*((d-1)/H)$ where $\alpha^*(u) = 2\bigl(1 - \Phi(z_{\alpha/2}/\sqrt{u})\bigr)$.
+     - `consecutive_k`: $\alpha_d = \alpha$, requiring $k$ consecutive exceedances (open-ended streams).
+   - **Per-step multi-frequency adjustment** across $K$ scanned frequencies: Šidák $\alpha_{\text{adj}} = 1 - (1 - \alpha_d)^{1/K}$ or Bonferroni $\alpha_{\text{adj}} = \alpha_d / K$, applied to the exact Beta threshold $s_{\text{crit}}(\alpha_{\text{adj}}) = 1 - \alpha_{\text{adj}}^{2/\nu}$.
+
+---
+
+## 5. STPD & Piecewise Linear Trend Estimation (TPTR)
 
 *Primary source: Ghaderpour et al. (2024).*
 
@@ -63,7 +80,7 @@ ALLSSA iteratively extracts significant sinusoids simultaneously with the trend 
 
 ---
 
-## 5. Censored Imputation (`ndimpute`)
+## 6. Censored Imputation (`ndimpute`)
 
 *Primary sources: Helsel (2012); Turnbull (1976); Fullard (2026).*
 

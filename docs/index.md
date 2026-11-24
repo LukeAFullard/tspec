@@ -1,15 +1,22 @@
+<p align="center">
+  <img src="assets/tspec-logo.png" alt="tspec logo" width="460">
+</p>
+
 # tspec
 
-**Unevenly sampled time-series change detection, turning points, and spectral decomposition — with first-class censored-data support via [`ndimpute`](https://github.com/LukeAFullard/ndimpute).**
+**Unevenly sampled time-series change detection, turning points, near-real-time monitoring, and spectral decomposition — with first-class censored-data support via [`ndimpute`](https://github.com/LukeAFullard/ndimpute).**
 
 Real-world environmental, hydrological, remote-sensing, and geotechnical time series are rarely neat, evenly spaced spreadsheets. They have missing months, changing sampling schedules, strong seasonal waves, sudden disturbances, gradual shifts in trend speed, and laboratory non-detects like `<0.05 mg/L`.
 
 `tspec` handles all of these natively **without interpolating gaps**:
 
-- **JUST** (*Jumps Upon Spectrum and Trend*) finds abrupt jumps and separates trend, seasonality, and remainder on irregular records.
-- **STPD** (*Sequential Turning Point Detection*) finds smooth, continuous changes in trend rate and uses **NDRI** to distinguish true bends from disguised jumps.
+- **JUST** (*Jumps Upon Spectrum and Trend*) finds abrupt jumps (`just_jumps`) and separates trend, seasonality, and remainder (`just_decompose`) on irregular records.
+- **JUSTmonitor (v1.1)** detects abrupt and phenological disturbances in near-real time (`just_monitor`) with Šidák, Pocock, O'Brien–Fleming, and consecutive-$k$ repeated-testing controls.
+- **STPD** (*Sequential Turning Point Detection*) finds smooth, continuous changes in trend rate (`detect_turning_points`) and uses **NDRI** to distinguish true bends from disguised jumps.
 - **`analyze_series()`** chains JUST and STPD together automatically in the recommended two-stage workflow.
 - **Built-in `ndimpute` integration** handles `<LOD`, `>UL`, mixed, and `[L, R]` censored data safely — with automated detection-limit upgrade warnings and multi-draw stability checks.
+
+![Guided JUST -> STPD combined workflow result](assets/figures/hero_combined_workflow.png)
 
 ## Installation
 
@@ -33,7 +40,7 @@ Real-world environmental, hydrological, remote-sensing, and geotechnical time se
     pip install numpy scipy
     pip install --no-deps tspec
     ```
-    Core `lssa`, `allssa`, `just_jumps`, `just_decompose`, and `detect_turning_points` work with zero `pandas` or `ndimpute` imports.
+    Core `lssa`, `allssa`, `just_jumps`, `just_decompose`, `just_monitor`, and `detect_turning_points` work with zero `pandas` or `ndimpute` imports.
 
 ## 5-Line Quickstart
 
@@ -53,6 +60,7 @@ print(result.explain())
 ## Where to Go Next
 
 - **Not sure which method to pick?** Start with [Which Method Should I Use?](guide/which-method.md).
+- **Monitoring incoming observations in real time?** Read the [Near-Real-Time Monitoring Tutorial](tutorials/near-real-time-monitoring.md).
 - **Have `<0.05` lab non-detects?** Read [Censored Lab Data (`<DL` / `>UL`)](guide/censored-data.md).
-- **Want runnable examples?** Explore the [Domain Tutorials](tutorials/water-quality-censored.md).
+- **Want runnable examples with figures?** Explore the [Domain Tutorials](tutorials/water-quality-censored.md).
 - **Looking for exact equations?** See the [Mathematical Reference](reference/math.md).

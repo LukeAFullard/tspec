@@ -9,6 +9,8 @@ Every concept below starts in plain English. Expand the collapsible **Mathematic
 - An **abrupt jump** is a sudden vertical step (and possibly a new slope afterward): think of a wildfire burning a forest canopy, a chemical spill, or swapping a field sensor for a newly calibrated one. The line *breaks* vertically. **JUST** is built for this.
 - A **continuous turning point** is a smooth change in speed with **no sudden vertical cliff**: think of a slow-moving landslide accelerating after a wet winter, or river nitrate concentrations leveling off and slowly declining after agricultural reforms. The line *bends* without breaking. **STPD** is built for this.
 
+![Abrupt step jump vs continuous turning point](../assets/figures/concept_jump_vs_tp.png)
+
 ??? note "Mathematical details: 2-piece discontinuous vs. connected models"
     - **JUST** fits a 4-parameter discontinuous 2-piece linear trend inside each window:
       $$T(t) = \begin{cases} b_1 + a_1 t, & t < t_j \\ b_2 + a_2 t, & t \ge t_j \end{cases}$$
@@ -61,6 +63,8 @@ Suppose a 10-year water-quality program sampled **monthly** for years 1–5 (12 
 - With **`window_mode="count"`** (default, matches Ghaderpour's papers), every sliding window grabs a fixed *number of points* (e.g., 36 observations). During the monthly era, 36 points = **3 full years** (great for estimating annual seasonality). During the weekly era, 36 points = **8 months** (less than one full year — too short to separate seasonality from trend!).
 - With **`window_mode="duration"`** (`window_duration=3.0, step_duration=1.0`), every sliding window spans **3 calendar years**, whether it holds 36 monthly samples or 156 weekly samples.
 
+![Count vs duration windowing when sampling density changes](../assets/figures/concept_count_vs_duration.png)
+
 ```python
 import numpy as np
 import tspec
@@ -83,3 +87,19 @@ print(res_dur.explain())
 ```
 
 **Rule of thumb:** Keep the default `window_mode="count"` when sampling density is roughly steady over time. Switch to `window_mode="duration"` whenever `tspec` emits a `VARIABLE_SAMPLING_RATE` hint or you know your sampling frequency changed substantially.
+
+---
+
+## 6. Near-Real-Time Monitoring & Why Repeated Testing Needs Guardrails
+
+When monitoring incoming observations one by one (`just_monitor()`), you are **peeking repeatedly** at the data — and at *35 candidate frequencies* every single time a new point arrives. If you test at an unadjusted $\alpha = 0.05$ on every new observation, even completely normal white noise will eventually trigger a false alarm (**72.5%** of stable series falsely trigger over 25 monitoring steps!).
+
+`tspec` solves this out of the box with two complementary layers:
+
+1. **Per-step frequency correction (`freq_correction="sidak"`):** adjusts for scanning all 35 frequencies simultaneously at each step.
+2. **Across-time sequential control (`sequential_control`):**
+   - `"pocock"` *(default)*: distributes your $\alpha$ budget evenly across a planned monitoring horizon so the total false-alarm probability stays $\le \alpha$.
+   - `"obrien_fleming"`: spends very little $\alpha$ early and saves statistical power for later monitoring steps.
+   - `"consecutive_k"` *(e.g. `k=2`)*: ideal for open-ended streams without a fixed end date; requires two consecutive exceedances before sounding the alarm.
+
+![Near-real-time monitoring sequential boundary](../assets/figures/tutorial_nrt_monitoring.png)

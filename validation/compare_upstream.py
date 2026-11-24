@@ -29,6 +29,7 @@ from tspec import (  # noqa: E402
     fit_piecewise_trend,
     just_decompose,
     just_jumps,
+    just_monitor,
     lssa,
 )
 
@@ -97,6 +98,7 @@ def main() -> int:
     up_allssa = _load_upstream_module(JUST_DIR, "ALLSSA")
     up_just = _load_upstream_module(JUST_DIR, "JUSTjumps")
     up_decomp = _load_upstream_module(JUST_DIR, "JUSTdecompose")
+    up_monitor = _load_upstream_module(JUST_DIR, "JUSTmonitor")
     up_stpd = _load_upstream_module(STPD_DIR, "STPD")
     up_tptr = _load_upstream_module(STPD_DIR, "TPTR")
 
@@ -320,6 +322,56 @@ def main() -> int:
             f"idx={o_ji} vs {u_ji}",
         )
 
+    # ------------------------------------------------------------------
+    # 5. JUSTmonitor NRT Parity (Ghaderpour & Vujadinovic, 2020b)
+    # ------------------------------------------------------------------
+    nrt_cases = [
+        ("EVIA_AB.dat", 72, 17),
+        ("EVIB_AB.dat", 71, 30),
+        ("EVIC_AB.dat", 71, 15),
+        ("EVIA_CA.dat", 140, 13),
+    ]
+    for fn, start_i, hist_i in nrt_cases:
+        t_m, f_m, P_m = _load_dat(JUST_DIR / fn)
+        w_m = P_m if isinstance(P_m, np.ndarray) else None
+        for seas in ("ALLSSA", "OLS"):
+            u_loc, u_mag, u_dir, u_type = up_monitor.JUSTmonitor(
+                t_m.copy(),
+                f_m.copy(),
+                P=P_m,
+                start=start_i,
+                history=hist_i,
+                season=seas,
+                level=0.01,
+            )
+            o_m = just_monitor(
+                t_m,
+                f_m,
+                weights=w_m,
+                start=start_i,
+                history=hist_i,
+                season=seas.lower(),  # type: ignore[arg-type]
+                alpha=0.01,
+                parity_mode=True,
+            )
+            o_type = o_m.type_code
+            o_loc = o_m.disturbance_time_year if o_m.detected else float(t_m[-1])
+            o_mag = o_m.magnitude if o_m.magnitude is not None else 0.0
+            o_dir = o_m.direction if o_m.direction is not None else 0.0
+            ok_m = (
+                o_type == int(u_type)
+                and (o_type == 0 or np.isclose(o_loc, u_loc, rtol=1e-6, atol=1e-8))
+                and np.isclose(o_mag, u_mag, rtol=1e-6, atol=1e-8)
+                and np.isclose(o_dir, u_dir, rtol=1e-6, atol=1e-8)
+            )
+            record(
+                fn,
+                f"just_monitor({seas}, parity)",
+                "Type, Loc, Mag, Dir",
+                ok_m,
+                f"Type={o_type} vs {int(u_type)}, Loc={o_loc:.4f}, Mag={o_mag:.4f} vs {u_mag:.4f}, Dir={o_dir:.4f} vs {u_dir:.4f}",
+            )
+
     # Write Parity & Divergence Report
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     n_pass = sum(1 for r in rows if r["status"] == "PASS")
@@ -353,6 +405,7 @@ def main() -> int:
             "| `JUSTjumps.py:168` / `JUSTdecompose.py:194` duplicate last window when `(n - size) % step == 0` | Reproduces upstream `stop > n` loop | Stops cleanly at `stop >= n` so final window is never double-counted |",
             "| `JUSTjumps.py:283` premature 2-decimal rounding of `Mag`/`Dir` before thresholding | Rounds `Mag`/`Dir` to 2 decimals | Preserves full `float64` precision + computes nested partial $F$-test `jump_pvalue` |",
             "| `JUSTdecompose.py:42` off-by-one `+1` shift in `TrendComponent` regularization | Reproduces `+1` grid index shift | Uses exact `np.searchsorted(tt, t[j], side='left')` |",
+            "| `JUSTmonitor.py:215` unadjusted repeated LSS testing across 35 freqs × $D$ monitoring steps | Uses `freq_correction='none'`, `sequential_control='none'` | Defaults to `freq_correction='sidak'` + `sequential_control='pocock'` (also supports `obrien_fleming` & `consecutive_k`) to bound familywise false alarms |",
             "| `STPD.py:58, 181` default `margin=1` causes `0/0 = NaN` in `SE1` | Clamps `margin >= 2` safely | Defaults to `max(2, min(M, size // 5))` and enforces `margin >= 2` |",
             "| `STPD.py:161, 164` non-shift-invariant `SNR` & density-biased L2 `NDRI` | Uses `snr_mode='raw'`, `ndri_mode='l2'` | Defaults to `snr_mode='centered'`, `ndri_mode='rmse'` (both variants always stored on `StpdResult`) |",
             "| `TPTR.py:53, 126` rounds stats to 2 decimals & drops initial segment slope | Preserves sequential TPTR ordering | Returns full-precision `PiecewiseTrendResult` with all `m + 1` slopes + optional `mode='joint'` |",
