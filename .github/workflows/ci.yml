@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and dev dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint with ruff
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: ruff check src tests
+
+      - name: Type-check with mypy
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: mypy src
+
+      - name: Run pytest
+        env:
+          MPLBACKEND: Agg
+        run: pytest
+
+  lite-env:
+    name: Lite Install (numpy + scipy only, no ndimpute/pandas)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install lite environment
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy pytest hypothesis
+          pip install --no-deps -e .
+
+      - name: Verify core modules work without ndimpute or pandas
+        run: |
+          python -c "
+          import importlib.util
+          assert importlib.util.find_spec('ndimpute') is None
+          assert importlib.util.find_spec('pandas') is None
+          "
+          pytest tests/test_time_adapter.py tests/test_linalg.py tests/test_spectral.py tests/test_just.py tests/test_stpd.py -k "not pandas and not censored and not plot"
+
+  packaging-hygiene:
+    name: Verify sdist & wheel clean-room hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+
+      - name: Check no upstream files in archives
+        run: |
+          python -c "
+          import glob, tarfile, zipfile
+          for whl in glob.glob('dist/*.whl'):
+              with zipfile.ZipFile(whl) as zf:
+                  names = zf.namelist()
+                  assert not any('upstream_ref' in n or 'LSWAVE' in n for n in names), names
+          for sdist in glob.glob('dist/*.tar.gz'):
+              with tarfile.open(sdist) as tf:
+                  names = tf.getnames()
+                  assert not any('upstream_ref' in n or 'LSWAVE' in n for n in names), names
+          print('Clean-room packaging check passed.')
+          "
