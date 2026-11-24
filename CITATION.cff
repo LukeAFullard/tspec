@@ -1,0 +1,159 @@
+cff-version: 1.2.0
+title: "tspec: Unevenly Sampled Time-Series Spectral Analysis, Change Detection, and Decomposition"
+message: "If you use tspec in academic work, please cite this software alongside the primary methodological references below."
+type: software
+authors:
+  - family-names: Fullard
+    given-names: Luke A.
+repository-code: "https://github.com/LukeAFullard/tspec"
+license: MIT
+version: "0.1.0"
+keywords:
+  - time-series
+  - change-point-detection
+  - least-squares-spectral-analysis
+  - JUST
+  - STPD
+  - censored-data
+  - unevenly-sampled
+references:
+  - type: article
+    title: "Change Detection within Remotely Sensed Satellite Image Time Series via Spectral Analysis"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Vujadinovic
+        given-names: Tijana
+    journal: "Remote Sensing"
+    volume: 12
+    issue: 23
+    pages: "4001"
+    year: 2020
+    doi: "10.3390/rs12234001"
+  - type: article
+    title: "The Potential of the Least-Squares Spectral and Cross-Wavelet Analyses for Near-Real-Time Disturbance Detection"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Vujadinovic
+        given-names: Tijana
+    journal: "Remote Sensing"
+    volume: 12
+    issue: 15
+    pages: "2446"
+    year: 2020
+    doi: "10.3390/rs12152446"
+  - type: article
+    title: "JUST: MATLAB and Python Software for Change Detection and Time Series Analysis"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+    journal: "GPS Solutions"
+    volume: 25
+    issue: 3
+    pages: "85"
+    year: 2021
+    doi: "10.1007/s10291-021-01118-x"
+  - type: article
+    title: "A fast and robust method for detecting trend turning points in InSAR displacement time series"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Antonielli
+        given-names: Benedetta
+      - family-names: Bozzano
+        given-names: Francesca
+      - family-names: Scarascia Mugnozza
+        given-names: Gabriele
+      - family-names: Mazzanti
+        given-names: Paolo
+    journal: "Computers & Geosciences"
+    volume: 185
+    pages: "105546"
+    year: 2024
+    doi: "10.1016/j.cageo.2024.105546"
+  - type: article
+    title: "Antileakage least-squares spectral analysis for seismic data regularization and random noise attenuation"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Liao
+        given-names: Wenyuan
+      - family-names: Lamoureux
+        given-names: Michael P.
+    journal: "Geophysics"
+    volume: 83
+    issue: 3
+    start: "V157"
+    end: "V170"
+    year: 2018
+    doi: "10.1190/geo2017-0284.1"
+  - type: article
+    title: "Least-Squares Wavelet Analysis of Unequally Spaced and Non-stationary Time Series and Its Applications"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Pagiatakis
+        given-names: Spiros D.
+    journal: "Mathematical Geosciences"
+    volume: 49
+    issue: 7
+    start: 819
+    end: 844
+    year: 2017
+    doi: "10.1007/s11004-017-9691-0"
+  - type: article
+    title: "LSWAVE: a MATLAB software for the least-squares wavelet and cross-wavelet analyses"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Pagiatakis
+        given-names: Spiros D.
+    journal: "GPS Solutions"
+    volume: 23
+    issue: 2
+    pages: "50"
+    year: 2019
+    doi: "10.1007/s10291-019-0841-3"
+  - type: article
+    title: "Application of the Least-Squares Wavelet software in hydrology: Athabasca River Basin"
+    authors:
+      - family-names: Ghaderpour
+        given-names: Ebrahim
+      - family-names: Vujadinovic
+        given-names: Tijana
+      - family-names: Hassan
+        given-names: Quazi K.
+    journal: "Journal of Hydrology: Regional Studies"
+    volume: 36
+    pages: "100847"
+    year: 2021
+    doi: "10.1016/j.ejrh.2021.100847"
+  - type: book
+    title: "Statistics for Censored Environmental Data Using Minitab and R"
+    edition: "2nd"
+    authors:
+      - family-names: Helsel
+        given-names: Dennis R.
+    publisher:
+      name: "John Wiley & Sons"
+    year: 2012
+  - type: article
+    title: "The empirical distribution function with arbitrarily grouped, censored and truncated data"
+    authors:
+      - family-names: Turnbull
+        given-names: Bruce W.
+    journal: "Journal of the Royal Statistical Society: Series B (Methodological)"
+    volume: 38
+    issue: 3
+    start: 290
+    end: 295
+    year: 1976
+  - type: software
+    title: "ndimpute: Unbiased statistical imputation for censored data"
+    authors:
+      - family-names: Fullard
+        given-names: Luke A.
+    repository-code: "https://github.com/LukeAFullard/ndimpute"
+    license: MIT
+    year: 2026

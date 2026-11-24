@@ -1,0 +1,114 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tspec"
+version = "0.1.0"
+description = "Clean-room JUST, STPD, and least-squares spectral analysis for unevenly sampled and censored time series."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Luke A. Fullard" },
+]
+keywords = [
+    "time-series",
+    "change-point-detection",
+    "spectral-analysis",
+    "lssa",
+    "allssa",
+    "just",
+    "stpd",
+    "censored-data",
+    "unevenly-sampled",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.13",
+    "ndimpute>=0.1.1,<1.0",
+]
+
+[project.optional-dependencies]
+plot = [
+    "matplotlib>=3.7",
+]
+all = [
+    "matplotlib>=3.7",
+]
+dev = [
+    "pytest>=8.0",
+    "hypothesis>=6.100",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "matplotlib>=3.7",
+    "pandas-stubs>=2.0",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.26",
+]
+
+[project.urls]
+Homepage = "https://github.com/LukeAFullard/tspec"
+Repository = "https://github.com/LukeAFullard/tspec"
+Issues = "https://github.com/LukeAFullard/tspec/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tspec"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src/tspec",
+    "/tests",
+    "/LICENSE",
+    "/README.md",
+    "/CITATION.cff",
+    "/pyproject.toml",
+]
+exclude = [
+    "/validation",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+packages = ["tspec"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["scipy.*", "ndimpute.*", "matplotlib.*", "pandas.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: marks tests that take longer to run",
+]
