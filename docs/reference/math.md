@@ -106,3 +106,24 @@ ALLSSA iteratively extracts significant sinusoids simultaneously with the trend 
 - **Theil–Sen & Akritas–Theil–Sen (`slope_estimator="sen"`):**
   - *Uncensored segments:* Pairwise median slope $\hat{\beta} = \text{median}_{i < j}\frac{y_j - y_i}{t_j - t_i}$, median intercept $\hat{\alpha} = \text{median}_i(y_i - \hat{\beta} t_i)$, tie-adjusted Gilbert (1987, Eq. 16.8) order-statistic 95% confidence interval, and two-sided Mann–Kendall $p$-value.
   - *Left/right-censored segments (`<DL` / `>UL`):* Automatically computes the **Akritas–Theil–Sen (ATS)** slope solving $S_{\text{cen}}(\beta) = 0$ on censored residual concordances $r_i(\beta) = y_i - \beta t_i$, with score-inverted confidence bounds $S_{\text{cen}}(\beta_{\text{lo}}) = +z_{1-\alpha/2}\sqrt{\text{Var}(S)}$ and $S_{\text{cen}}(\beta_{\text{hi}}) = -z_{1-\alpha/2}\sqrt{\text{Var}(S)}$.
+
+---
+
+## 8. Analytical Pointwise Confidence & Prediction Intervals
+
+All pointwise intervals at nominal level $1 - \alpha = \text{ci\_level}$ are conditional on the detected breakpoints and selected harmonic frequencies and assume independent residuals unless a full inverse-covariance weight matrix $P = C_f^{-1}$ is supplied:
+
+1. **JUST Decomposition (`just_decompose`):** Within each local window $m$ with unscaled parameter covariance $\hat{\Sigma}_m$ (from WLS or Huber/MM IRLS), default mode (`parity_mode=False`) keeps the fitted pure sinusoids $\hat{S}_m(t) = D_{\text{seas}} \hat{c}_S$ unshifted (preventing seasonal-balance bias on irregular timestamps where windows contain unequal summer/winter counts), giving exact block variances:
+   $$\widehat{\text{Var}}(\hat{T}_m(t_i)) = \bigl(D_{\text{tr}} \hat{\Sigma}_{m,TT} D_{\text{tr}}^T\bigr)_{ii}, \qquad \widehat{\text{Var}}(\hat{S}_m(t_i)) = \bigl(D_{\text{seas}} \hat{\Sigma}_{m,SS} D_{\text{seas}}^T\bigr)_{ii}.$$
+   In `parity_mode=True` (Ghaderpour's within-window sample-mean centering $\hat{T}_m \leftarrow \hat{T}_m + \bar{s}_m$, $\hat{S}_m \leftarrow \hat{S}_m - \bar{s}_m$), the variance uses the centered seasonal basis $D_{\text{seas}}^{\text{cent}} = D_{\text{seas}} - \mathbf{1}\bar{\mathbf{d}}_{\text{seas}}^T$ and shifted trend basis $D_{\text{tr,eff}} = [D_{\text{tr}},\, \mathbf{1}\bar{\mathbf{d}}_{\text{seas}}^T]$.
+   Because adjacent Gaussian windows share overlapping observations (positive correlation), per-window half-widths $\text{hw}_m(t_i) = t_{1-\alpha/2,\, n_w - n_c}\sqrt{\widehat{\text{Var}}_m(t_i)}$ are combined using the conservative **Cauchy–Schwarz upper-bound blend**:
+   $$\text{hw}(t_i) = \frac{\sum_m g_m(t_i)\,\text{hw}_m(t_i)}{\sum_m g_m(t_i)},$$
+   preventing artificial variance shrinkage across correlated windows.
+2. **Connected Piecewise Linear Trends (`fit_piecewise_trend` & `detect_turning_points`):**
+   - *`mode="joint"` / `"huber"`:* Exact $\widehat{\text{Var}}(\hat{y}_i) = \mathbf{d}_i^T \widehat{\text{Cov}}(\hat{c})\,\mathbf{d}_i$ with $t_{1-\alpha/2,\, n - \text{rank}}$.
+   - *`mode="sequential"` (TPTR):* For segment $0$ ($i \le \tau_1$), $V_i = S_{w,0}^{-1} + (t_i - \bar{t}_0)^2 / S_{tt,0}$. For each anchored segment $k \ge 1$ ($i \in [\tau_k, \tau_{k+1}]$) with $d_i = t_i - t_{\tau_k}$, $S_{dd,k} = \sum w_j d_j^2$, and $\gamma_k = (\sum w_j d_j) / S_{dd,k}$, the slope estimator is supported strictly on $\{\tau_k + 1, \dots, \tau_{k+1}\}$ (disjoint from the anchor $\hat{y}_{\tau_k}$), giving the exact $O(n)$ recursion:
+     $$V_i = (1 - d_i \gamma_k)^2 V_{\tau_k} + \frac{d_i^2}{S_{dd,k}}, \qquad \text{SE}(\hat{y}_i) = \sqrt{\frac{\text{RSS}_W}{n - (m + 2)} V_i}.$$
+   - *`mode="l1"`:* Returns `None` (no closed-form finite-sample SE for LP $L_1$ regression).
+3. **Near-Real-Time Monitoring (`just_monitor`):** From the historical fit covariance $\hat{\Sigma}_{\text{his}}$ and base observation residual variance $\hat{\sigma}_{\text{his}}^2$ (weighted RSS / $\text{dof}_{\text{his}}$ for WLS; df-adjusted $\text{MAD}^2$ for `robust != "none"`), the mean forecast CI and out-of-sample observation prediction interval are:
+   $$\text{CI}(t_i) = \hat{f}(t_i) \pm t_{1-\alpha/2,\, \text{dof}_{\text{his}}} \sqrt{\mathbf{d}_i^T \hat{\Sigma}_{\text{his}} \mathbf{d}_i}, \qquad \text{PI}(t_i) = \hat{f}(t_i) \pm t_{1-\alpha/2,\, \text{dof}_{\text{his}}} \sqrt{\mathbf{d}_i^T \hat{\Sigma}_{\text{his}} \mathbf{d}_i + \hat{\sigma}_{\text{his}}^2 (P^{-1})_{ii}}.$$
+4. **Theil–Sen / Akritas–Theil–Sen Slope-CI Fan (`analyze_series(..., slope_estimator="sen")`):** Each segment plots the median-pivoted slope-CI envelope around $(t_{\text{med}},\, \hat{\alpha} + \hat{\beta}\, t_{\text{med}})$ bounded by $\hat{y}_{\text{med}} + \hat{\beta}_{\text{lo}}(t_i - t_{\text{med}})$ and $\hat{y}_{\text{med}} + \hat{\beta}_{\text{hi}}(t_i - t_{\text{med}})$ (Helsel, 2012).

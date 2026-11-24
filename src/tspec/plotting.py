@@ -195,8 +195,63 @@ def plot_just_jumps(result: JustJumpResult, ax: Any = None, **kwargs: Any) -> tu
     return fig, ax
 
 
+def _ci_pct(level: float) -> str:
+    """Format confidence level (e.g. 0.95 -> '95%')."""
+    return f"{100.0 * level:g}%"
+
+
+def _plot_ci_band(
+    ax: Any,
+    t: Any,
+    lo: np.ndarray[Any, Any] | None,
+    hi: np.ndarray[Any, Any] | None,
+    *,
+    color: str,
+    alpha: float = 0.22,
+    label: str | None = None,
+    zorder: int = 2,
+    split_indices: list[int] | None = None,
+) -> bool:
+    """Shade a pointwise confidence/prediction interval ribbon, breaking cleanly at jumps."""
+    if lo is None or hi is None:
+        return False
+    n = len(t)
+    if n == 0 or len(lo) != n or len(hi) != n:
+        return False
+    valid = np.isfinite(lo) & np.isfinite(hi)
+    if not np.any(valid):
+        return False
+
+    cuts = sorted({i for i in (split_indices or []) if 0 < i < n})
+    bounds = [0, *cuts, n]
+    labeled = False
+    for a, b in zip(bounds[:-1], bounds[1:], strict=True):
+        if b - a < 2:
+            continue
+        sub_valid = valid[a:b]
+        if not np.any(sub_valid):
+            continue
+        ax.fill_between(
+            t[a:b],
+            lo[a:b],
+            hi[a:b],
+            where=sub_valid,
+            color=color,
+            alpha=alpha,
+            linewidth=0.0,
+            label=(label if not labeled else None),
+            zorder=zorder,
+        )
+        labeled = True
+    return labeled
+
+
 def plot_just_decompose(
-    result: JustDecomposeResult, ax: Any = None, **kwargs: Any
+    result: JustDecomposeResult,
+    ax: Any = None,
+    *,
+    show_ci: bool = True,
+    **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Plot 4-panel JUST decomposition: observations, trend, seasonal, remainder."""
     plt = require_matplotlib()
@@ -208,23 +263,71 @@ def plot_just_decompose(
         axes = ax
         fig = axes[0].figure
 
+    pct = _ci_pct(result.ci_level)
+
     _plot_observations_with_censoring(axes[0], result.times_raw, result.values, result.censoring)
     axes[0].set_ylabel("Value")
     axes[0].set_title("JUST Decomposition")
     axes[0].legend(frameon=False, loc="best", ncol=3)
 
     if result.trend_reg is not None and result.eval_times_raw is not None:
-        axes[1].plot(result.eval_times_raw, result.trend_reg, color=_BLUE, lw=1.6, label="Trend (reg)")
+        if show_ci:
+            _plot_ci_band(
+                axes[1],
+                result.eval_times_raw,
+                result.trend_reg_ci_low,
+                result.trend_reg_ci_high,
+                color=_BLUE,
+                alpha=0.22,
+                label=f"{pct} CI",
+            )
+        axes[1].plot(
+            result.eval_times_raw, result.trend_reg, color=_BLUE, lw=1.6, label="Trend (reg)"
+        )
     else:
+        if show_ci:
+            _plot_ci_band(
+                axes[1],
+                result.times_raw,
+                result.trend_ci_low,
+                result.trend_ci_high,
+                color=_BLUE,
+                alpha=0.22,
+                label=f"{pct} CI",
+            )
         axes[1].plot(result.times_raw, result.trend, color=_BLUE, lw=1.6, label="Trend")
     axes[1].set_ylabel("Trend")
+    axes[1].legend(frameon=False, loc="best")
 
     if result.seasonal_reg is not None and result.eval_times_raw is not None:
-        axes[2].plot(result.eval_times_raw, result.seasonal_reg, color=_GREEN, lw=1.3)
+        if show_ci:
+            _plot_ci_band(
+                axes[2],
+                result.eval_times_raw,
+                result.seasonal_reg_ci_low,
+                result.seasonal_reg_ci_high,
+                color=_GREEN,
+                alpha=0.22,
+                label=f"{pct} CI",
+            )
+        axes[2].plot(
+            result.eval_times_raw, result.seasonal_reg, color=_GREEN, lw=1.3, label="Seasonal (reg)"
+        )
     else:
-        axes[2].plot(result.times_raw, result.seasonal, color=_GREEN, lw=1.3)
+        if show_ci:
+            _plot_ci_band(
+                axes[2],
+                result.times_raw,
+                result.seasonal_ci_low,
+                result.seasonal_ci_high,
+                color=_GREEN,
+                alpha=0.22,
+                label=f"{pct} CI",
+            )
+        axes[2].plot(result.times_raw, result.seasonal, color=_GREEN, lw=1.3, label="Seasonal")
     axes[2].axhline(0.0, color=_GRAY, lw=0.7, ls=":")
     axes[2].set_ylabel("Seasonal")
+    axes[2].legend(frameon=False, loc="best")
 
     axes[3].plot(result.times_raw, result.remainder, "o-", color=_GRAY, lw=0.7, ms=2.5)
     axes[3].axhline(0.0, color=_DARK, lw=0.7, ls=":")
@@ -238,7 +341,11 @@ def plot_just_decompose(
 
 
 def plot_piecewise_trend(
-    result: PiecewiseTrendResult, ax: Any = None, **kwargs: Any
+    result: PiecewiseTrendResult,
+    ax: Any = None,
+    *,
+    show_ci: bool = True,
+    **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Plot connected piecewise-linear trend and turning points."""
     plt = require_matplotlib()
@@ -249,6 +356,16 @@ def plot_piecewise_trend(
 
     y_obs = result.fitted_trend + result.residuals
     ax.plot(result.times_raw, y_obs, "o", color=_DARK, ms=3.5, alpha=0.7, label="Series")
+    if show_ci:
+        _plot_ci_band(
+            ax,
+            result.times_raw,
+            result.trend_ci_low,
+            result.trend_ci_high,
+            color=_BLUE,
+            alpha=0.22,
+            label=f"{_ci_pct(result.ci_level)} CI",
+        )
     ax.plot(result.times_raw, result.fitted_trend, color=_BLUE, lw=2.0, label="Piecewise trend")
     if result.tp_valid_indices.size > 0:
         ax.plot(
@@ -267,7 +384,13 @@ def plot_piecewise_trend(
     return fig, ax
 
 
-def plot_stpd(result: StpdResult, ax: Any = None, **kwargs: Any) -> tuple[Any, Any]:
+def plot_stpd(
+    result: StpdResult,
+    ax: Any = None,
+    *,
+    show_ci: bool = True,
+    **kwargs: Any,
+) -> tuple[Any, Any]:
     """Plot STPD series, connected piecewise trend, turning points, and NDRI badges."""
     plt = require_matplotlib()
     if ax is None:
@@ -276,16 +399,27 @@ def plot_stpd(result: StpdResult, ax: Any = None, **kwargs: Any) -> tuple[Any, A
         fig = ax.figure
 
     _plot_observations_with_censoring(ax, result.times_raw, result.values, result.censoring)
+    pw = result.piecewise_trend
+    if show_ci:
+        _plot_ci_band(
+            ax,
+            result.times_raw,
+            pw.trend_ci_low,
+            pw.trend_ci_high,
+            color=_BLUE,
+            alpha=0.22,
+            label=f"{_ci_pct(pw.ci_level)} CI",
+        )
     ax.plot(
         result.times_raw,
-        result.piecewise_trend.fitted_trend,
+        pw.fitted_trend,
         color=_BLUE,
         lw=2.0,
         label="STPD trend",
     )
 
     for k, tp in enumerate(result.turning_points):
-        y_tp = float(result.piecewise_trend.fitted_trend[tp.valid_index])
+        y_tp = float(pw.fitted_trend[tp.valid_index])
         ax.plot(
             tp.time,
             y_tp,
@@ -323,7 +457,13 @@ def plot_stpd(result: StpdResult, ax: Any = None, **kwargs: Any) -> tuple[Any, A
     return fig, ax
 
 
-def plot_pipeline(result: PipelineResult, ax: Any = None, **kwargs: Any) -> tuple[Any, Any]:
+def plot_pipeline(
+    result: PipelineResult,
+    ax: Any = None,
+    *,
+    show_ci: bool = True,
+    **kwargs: Any,
+) -> tuple[Any, Any]:
     """Plot 2- or 3-panel summary of the guided JUST -> STPD pipeline."""
     plt = require_matplotlib()
     has_season = result.decomposition is not None
@@ -336,8 +476,29 @@ def plot_pipeline(result: PipelineResult, ax: Any = None, **kwargs: Any) -> tupl
         axes = ax
         fig = axes[0].figure
 
+    pct = _ci_pct(result.ci_level)
+    jump_splits = (
+        [int(j.valid_index) for j in result.jumps.jumps] if result.jumps is not None else []
+    )
+
     # Panel 1: Observed series + combined trend + jumps + TPs
     _plot_observations_with_censoring(axes[0], result.times_raw, result.values, result.censoring)
+    if show_ci:
+        ci_lbl = (
+            f"{pct} Sen slope CI"
+            if result.slope_estimator == "sen"
+            else f"{pct} CI"
+        )
+        _plot_ci_band(
+            axes[0],
+            result.times_raw,
+            result.trend_ci_low,
+            result.trend_ci_high,
+            color=_BLUE,
+            alpha=0.22,
+            label=ci_lbl,
+            split_indices=jump_splits,
+        )
     axes[0].plot(result.times_raw, result.combined_trend, color=_BLUE, lw=2.0, label="Combined trend")
     if result.jumps is not None:
         for k, j in enumerate(result.jumps.jumps):
@@ -364,9 +525,21 @@ def plot_pipeline(result: PipelineResult, ax: Any = None, **kwargs: Any) -> tupl
         result.times_raw, result.adjusted_series, "o", color=_DARK, ms=3.0, alpha=0.65, label="Adjusted"
     )
     if result.turning_points is not None:
+        pw = result.turning_points.piecewise_trend
+        if show_ci:
+            _plot_ci_band(
+                axes[1],
+                result.times_raw,
+                pw.trend_ci_low,
+                pw.trend_ci_high,
+                color=_GREEN,
+                alpha=0.20,
+                label=f"{_ci_pct(pw.ci_level)} CI",
+                split_indices=(jump_splits if result.jump_adjustment == "segment" else None),
+            )
         axes[1].plot(
             result.times_raw,
-            result.turning_points.piecewise_trend.fitted_trend,
+            pw.fitted_trend,
             color=_GREEN,
             lw=1.8,
             label="STPD trend",
@@ -375,10 +548,23 @@ def plot_pipeline(result: PipelineResult, ax: Any = None, **kwargs: Any) -> tupl
     axes[1].legend(frameon=False, loc="best")
 
     if has_season and result.decomposition is not None:
-        axes[2].plot(result.times_raw, result.decomposition.seasonal, color=_PURPLE, lw=1.3)
+        if show_ci:
+            _plot_ci_band(
+                axes[2],
+                result.times_raw,
+                result.decomposition.seasonal_ci_low,
+                result.decomposition.seasonal_ci_high,
+                color=_PURPLE,
+                alpha=0.20,
+                label=f"{_ci_pct(result.decomposition.ci_level)} CI",
+            )
+        axes[2].plot(
+            result.times_raw, result.decomposition.seasonal, color=_PURPLE, lw=1.3, label="Seasonal"
+        )
         axes[2].axhline(0.0, color=_GRAY, lw=0.7, ls=":")
         axes[2].set_ylabel("Seasonal")
         axes[2].set_xlabel("Time")
+        axes[2].legend(frameon=False, loc="best")
     else:
         axes[1].set_xlabel("Time")
 
@@ -388,7 +574,13 @@ def plot_pipeline(result: PipelineResult, ax: Any = None, **kwargs: Any) -> tupl
     return fig, axes
 
 
-def plot_monitor(result: MonitorResult, ax: Any = None, **kwargs: Any) -> tuple[Any, Any]:
+def plot_monitor(
+    result: MonitorResult,
+    ax: Any = None,
+    *,
+    show_ci: bool = True,
+    **kwargs: Any,
+) -> tuple[Any, Any]:
     """Plot 2-panel Near-Real-Time (NRT) monitoring diagnostic figure."""
     plt = require_matplotlib()
     if ax is None:
@@ -405,6 +597,7 @@ def plot_monitor(result: MonitorResult, ax: Any = None, **kwargs: Any) -> tuple[
 
     ax_top, ax_bot = axes[0], axes[1]
     n_act = len(result.values)
+    pct = _ci_pct(result.ci_level)
 
     # Slice censoring provenance to the active [history:] tail if present
     cen_slice: CensoringProvenance | None = None
@@ -428,10 +621,32 @@ def plot_monitor(result: MonitorResult, ax: Any = None, **kwargs: Any) -> tuple[
 
     # Shade monitoring zone on both panels
     t_end = result.times[-1]
-    ax_top.axvspan(result.start_time, t_end, color=_SKY, alpha=0.14, label="Monitoring period")
+    ax_top.axvspan(result.start_time, t_end, color=_SKY, alpha=0.12, label="Monitoring period")
     ax_bot.axvspan(result.start_time, t_end, color=_SKY, alpha=0.14)
     ax_top.axvline(result.start_time, color=_BLUE, ls=":", lw=1.2)
     ax_bot.axvline(result.start_time, color=_BLUE, ls=":", lw=1.2)
+
+    if show_ci:
+        _plot_ci_band(
+            ax_top,
+            result.times,
+            result.forecast_pi_low,
+            result.forecast_pi_high,
+            color=_SKY,
+            alpha=0.22,
+            label=f"{pct} prediction interval",
+            zorder=1,
+        )
+        _plot_ci_band(
+            ax_top,
+            result.times,
+            result.forecast_ci_low,
+            result.forecast_ci_high,
+            color=_BLUE,
+            alpha=0.24,
+            label=f"{pct} forecast CI",
+            zorder=2,
+        )
 
     _plot_observations_with_censoring(ax_top, result.times, result.values, cen_slice)
 

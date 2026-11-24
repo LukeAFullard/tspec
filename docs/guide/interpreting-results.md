@@ -41,12 +41,88 @@ How `tspec` handles this transparently:
 
 ---
 
+## Confidence & Prediction Intervals (with Examples)
+
+Every trend, seasonal, and forecast estimator in `tspec` computes fast analytical pointwise confidence intervals controlled by `ci_level` (default `0.95`) and renders them automatically as semi-transparent shaded ribbons in `.plot()` (toggle with `show_ci=False`):
+
+![Analytical pointwise confidence and prediction intervals across JUST decomposition, robust Theil–Sen pipeline, and near-real-time monitoring](../assets/figures/example_confidence_intervals.png)
+
+| Function / Mode | Output Fields | Interval Formula |
+| :--- | :--- | :--- |
+| `just_decompose()` | `trend_ci_low/high`, `seasonal_ci_low/high` (plus `*_reg_ci_*` for `eval_times`) | Exact within-window Student-$t$ half-widths (keeping pure zero-cycle-mean harmonics in default mode to avoid irregular-grid centering bias), blended across overlapping Gaussian windows via the conservative **Cauchy–Schwarz half-width blend**. |
+| `fit_piecewise_trend()` & `detect_turning_points()` | `trend_ci_low/high` on `PiecewiseTrendResult` | Exact $O(n)$ disjoint-support variance recursion for `mode="sequential"` (TPTR); exact $\mathbf{d}_i^T \widehat{\text{Cov}}\,\mathbf{d}_i$ for `mode="joint"` / `"huber"`; `None` for `mode="l1"`. |
+| `analyze_series()` | `trend_ci_low/high`, `decomposition.seasonal_ci_low/high`, and per-segment `slope_ci_low/high` | Exact analytical ribbons for `"ols"` and `"huber"`; **median-pivoted Sen/ATS slope-CI fans** (`MannKS` / Helsel convention) for `"sen"`; `None` for `"l1"`. |
+| `just_monitor()` | `forecast_ci_low/high` **and** `forecast_pi_low/high` | Inner band: mean forecast uncertainty (widens quadratically as forecast extrapolates past `start`). Outer band: out-of-sample observation **prediction interval** adding $\hat{\sigma}_{\text{his}}^2 / w_i$. |
+
+!!! note "Statistical Interpretation & Caveats"
+    - **Conditional pointwise bands:** Analytical intervals are **conditional on the detected breakpoints and selected seasonal frequencies** (post-selection breakpoint-location uncertainty is not folded into the analytical band). For heavily censored records, pair with `CensoredConfig(n_stability_draws=20)` to assess breakpoint stability.
+    - **Autocorrelation:** Standard intervals assume independent residuals unless you supply an inverse-covariance weight matrix `weights = C_f^{-1}`. If `tspec` emits `MODERATE_AUTOCORRELATION` or `STRONG_AUTOCORRELATION`, analytical bands are optimistic (too narrow).
+    - **Theil–Sen bowtie fan (`slope_estimator="sen"`):** The plotted median-pivoted fan shows **slope uncertainty** (`seg.slope_ci_low/high`) around each segment's median point $(t_{\text{med}}, \hat{y}_{\text{med}})$—pinching to zero width at $t_{\text{med}}$—rather than vertical intercept uncertainty.
+    - **Why `mode="l1"` returns `None`:** Exact linear-programming $L_1$ (LAD) regression has no closed-form finite-sample covariance without density estimation or resampling. Rather than showing misleading parametric error bars, `tspec` returns `None`—use `slope_estimator="sen"` or `"huber"` when you want robust CIs.
+
+### Example 1: JUST Decomposition Trend & Seasonal 95% CIs
+
+```python
+import numpy as np
+import tspec
+
+rng = np.random.default_rng(42)
+t = np.sort(rng.uniform(2016.0, 2023.0, size=170))
+y = 8.0 + 0.45 * (t - 2016.0) + 1.1 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.35, t.size)
+
+dec = tspec.just_decompose(t, y, season="ols", ci_level=0.95)
+df = dec.to_dataframe()  # includes trend_ci_low/high & seasonal_ci_low/high
+assert {"trend_ci_low", "trend_ci_high", "seasonal_ci_low", "seasonal_ci_high"} <= set(df.columns)
+
+fig, axes = dec.plot(show_ci=True)  # shaded 95% ribbons on trend & seasonal panels
+```
+
+### Example 2: Robust Pipeline with Theil–Sen Slope-CI Fans (`robust="mm"`, `slope_estimator="sen"`)
+
+```python
+t_b = np.sort(rng.uniform(2015.0, 2024.0, size=190))
+tr_b = np.where(t_b < 2019.2, 5.0 + 0.2 * (t_b - 2015.0), 8.2 - 0.55 * (t_b - 2019.2))
+y_b = tr_b + 0.65 * np.cos(2 * np.pi * t_b) + rng.normal(0.0, 0.28, t_b.size)
+y_b[[22, 65, 130, 165]] += np.array([5.5, -4.8, 5.2, -5.0])  # isolated spikes
+
+pipe = tspec.analyze_series(
+    t_b,
+    y_b,
+    robust="mm",
+    slope_estimator="sen",
+    ci_level=0.95,
+    just_kwargs={"season": "ols", "jump_alpha": 0.01},
+    decompose_kwargs={"season": "ols"},
+)
+for seg in pipe.segments:
+    print(f"Seg {seg.segment_index}: slope={seg.slope:+.3f} 95% CI=[{seg.slope_ci_low:+.3f}, {seg.slope_ci_high:+.3f}]")
+
+fig, axes = pipe.plot(show_ci=True)  # plots Sen slope-CI fans & seasonal 95% CI
+```
+
+### Example 3: Near-Real-Time Monitoring Forecast CI vs. Prediction Interval
+
+```python
+t_c = np.linspace(2017.0, 2024.0, 150)
+y_c = 2.0 + 0.12 * (t_c - 2017.0) + 0.45 * np.cos(2 * np.pi * t_c) + rng.normal(0.0, 0.14, t_c.size)
+y_c = np.where(t_c >= 2023.15, y_c - 0.85, y_c)
+
+mon = tspec.just_monitor(t_c, y_c, start=2021.8, season="ols", ci_level=0.95, stop_on_first=False)
+assert np.all(mon.forecast_pi_low < mon.forecast_ci_low)
+assert np.all(mon.forecast_ci_high < mon.forecast_pi_high)
+
+fig, axes = mon.plot(show_ci=True)  # inner forecast CI cone + outer observation PI
+```
+
+---
+
 ## Visual Legend for `.plot()`
 
 - **Solid dark dots (`●`):** Measured (uncensored) observations.
 - **Hollow downward orange triangles (`▽`):** Imputed left-censored observations (`<DL`).
 - **Hollow upward purple triangles (`△`):** Imputed right-censored observations (`>UL`).
 - **Hollow squares with whiskers (`□`):** Imputed interval-censored observations (`[L, R]`).
+- **Semi-transparent shaded ribbons:** Pointwise confidence intervals (`ci_level=0.95` by default; toggle with `show_ci=False`). On `plot_monitor()`, the darker inner ribbon is the mean forecast CI and the lighter outer ribbon is the observation prediction interval.
 - **Vertical dashed orange lines:** JUST abrupt jumps (with `Δ` magnitude badge and `(DL shift!)` flag if coinciding).
 - **Vertical dotted gray lines:** Detected laboratory detection-limit shifts.
 - **Green diamonds (`◆`):** STPD continuous turning points (with `Δslope` and `NDRI` badges).
