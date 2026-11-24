@@ -741,6 +741,198 @@ def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
     return rows
 
 
+def run_robust_matrix(n_rep: int = 25) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+
+    # RB1: 5% 12-sigma spike-contaminated JUST null FPR & jump recall (OLS vs MM-biweight)
+    rng = np.random.default_rng(701)
+    fp_ols = 0
+    fp_mm = 0
+    hit_mm = 0
+    for _ in range(n_rep):
+        t = np.linspace(0.0, 6.0, 180)
+        sigma = 0.18
+        base = 2.0 + 0.25 * t + 0.7 * np.sin(2 * np.pi * t) + rng.normal(0.0, sigma, size=t.size)
+        y_null = base.copy()
+        sp = rng.choice(t.size, size=9, replace=False)
+        y_null[sp] += rng.choice([-1.0, 1.0], size=9) * (12.0 * sigma)
+
+        r_o = just_jumps(
+            t, y_null, size=60, step=30, season="ols",
+            jump_alpha=0.05, bonferroni_window=True, mag_th=0.0, dir_th=0.0, robust="none",
+        )
+        r_m = just_jumps(
+            t, y_null, size=60, step=30, season="ols",
+            jump_alpha=0.05, bonferroni_window=True, mag_th=0.0, dir_th=0.0, robust="mm",
+        )
+        if len(r_o.jumps) > 0:
+            fp_ols += 1
+        if len(r_m.jumps) > 0:
+            fp_mm += 1
+
+        y_jmp = y_null.copy()
+        y_jmp[t >= 3.0] += 3.0
+        r_mj = just_jumps(
+            t, y_jmp, size=60, step=30, season="ols",
+            jump_alpha=0.05, bonferroni_window=True, mag_th=0.0, dir_th=0.0, robust="mm",
+        )
+        if any(abs(j.time_year - 3.0) <= 0.35 for j in r_mj.jumps):
+            hit_mm += 1
+
+    rows.append(
+        {
+            "id": "RB1",
+            "scenario": "5% 12-sigma Spike-Contaminated JUST Null FPR & Jump Recall (OLS vs MM)",
+            "pass": (fp_mm / n_rep <= 0.16) and (fp_mm < fp_ols) and (hit_mm / n_rep >= 0.90),
+            "summary": (
+                f"Null FPR: OLS={fp_ols/n_rep:.1%} vs MM={fp_mm/n_rep:.1%}; "
+                f"MM jump recall under spikes={hit_mm/n_rep:.1%}"
+            ),
+        }
+    )
+
+    # RB2: Heavy-tailed (t3) + spike-contaminated STPD TP recovery, slope MAE & NDRI jump flag
+    rng = np.random.default_rng(702)
+    tp_hit_rob = 0
+    err_ols_list: list[float] = []
+    err_l1_list: list[float] = []
+    ndri_jump_flagged = 0
+    for _ in range(n_rep):
+        t = np.linspace(0.0, 10.0, 180)
+        noise = 0.14 * rng.standard_t(df=3, size=t.size)
+        y_tp = 1.0 + 0.6 * t - 1.4 * np.maximum(0.0, t - 5.0) + noise
+        sp = rng.choice(t.size, size=9, replace=False)
+        y_tp[sp] += rng.choice([-1.0, 1.0], size=9) * 8.0
+
+        r_ols = detect_turning_points(t, y_tp, size=60, step=20, robust="none", refit_mode="sequential")
+        r_rob = detect_turning_points(t, y_tp, size=60, step=20, robust="mm", refit_mode="l1")
+        if any(abs(tp.time_year - 5.0) <= 0.5 for tp in r_rob.turning_points):
+            tp_hit_rob += 1
+        if len(r_ols.piecewise_trend.slopes) >= 2:
+            err_ols_list.append(
+                abs(r_ols.piecewise_trend.slopes[0] - 0.6) + abs(r_ols.piecewise_trend.slopes[-1] - (-0.8))
+            )
+        if len(r_rob.piecewise_trend.slopes) >= 2:
+            err_l1_list.append(
+                abs(r_rob.piecewise_trend.slopes[0] - 0.6) + abs(r_rob.piecewise_trend.slopes[-1] - (-0.8))
+            )
+
+        y_step = 1.0 + 0.1 * t + np.where(t >= 5.0, 3.5, 0.0) + rng.normal(0.0, 0.15, size=t.size)
+        r_st = detect_turning_points(t, y_step, size=60, step=20, robust="mm")
+        if len(r_st.flagged_jumps) >= 1 and all(abs(tp.time_year - 5.0) > 0.5 for tp in r_st.turning_points):
+            ndri_jump_flagged += 1
+
+    mae_ols = float(np.mean(err_ols_list)) if err_ols_list else float("inf")
+    mae_l1 = float(np.mean(err_l1_list)) if err_l1_list else float("inf")
+    rows.append(
+        {
+            "id": "RB2",
+            "scenario": "Heavy-Tailed (t3) + Spike STPD Recovery, L1 Slope MAE & MM NDRI Separation",
+            "pass": (tp_hit_rob / n_rep >= 0.85) and (mae_l1 < 0.5 * mae_ols) and (ndri_jump_flagged / n_rep >= 0.90),
+            "summary": (
+                f"MM TP recall={tp_hit_rob/n_rep:.1%}; Slope MAE: OLS={mae_ols:.3f} vs L1={mae_l1:.3f}; "
+                f"MM NDRI jump separation={ndri_jump_flagged/n_rep:.1%}"
+            ),
+        }
+    )
+
+    # RB3: Outlier-contaminated pipeline segment slopes (OLS vs MM+Theil-Sen vs MM+Huber)
+    rng = np.random.default_rng(703)
+    n_p = 25
+    mae_p_ols: list[float] = []
+    mae_p_sen: list[float] = []
+    mae_p_hub: list[float] = []
+    sen_ci_cov = 0
+    sen_ci_tot = 0
+    for _ in range(n_p):
+        t = np.linspace(0.0, 8.0, 160)
+        y = (
+            1.0
+            + 0.6 * t
+            - 1.4 * np.maximum(0.0, t - 4.0)
+            + 0.6 * np.sin(2 * np.pi * t)
+            + rng.normal(0.0, 0.15, size=t.size)
+        )
+        sp = rng.choice(t.size, size=8, replace=False)
+        y[sp] += rng.choice([-1.0, 1.0], size=8) * 6.0
+
+        kw_j = {"size": 60, "step": 25, "season": "ols"}
+        kw_d = {"size": 60, "step": 25, "season": "ols"}
+        kw_s = {"size": 60, "step": 15}
+
+        ro = analyze_series(t, y, robust="none", slope_estimator="ols", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s)
+        rs = analyze_series(t, y, robust="mm", slope_estimator="sen", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s)
+        rh = analyze_series(t, y, robust="mm", slope_estimator="huber", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s)
+
+        if len(ro.segments) >= 2:
+            mae_p_ols.append(0.5 * (abs(ro.segments[0].slope - 0.6) + abs(ro.segments[-1].slope - (-0.8))))
+        if len(rs.segments) >= 2:
+            mae_p_sen.append(0.5 * (abs(rs.segments[0].slope - 0.6) + abs(rs.segments[-1].slope - (-0.8))))
+            for seg, true_s in ((rs.segments[0], 0.6), (rs.segments[-1], -0.8)):
+                if seg.slope_ci_low is not None and seg.slope_ci_high is not None:
+                    sen_ci_tot += 1
+                    if seg.slope_ci_low <= true_s <= seg.slope_ci_high:
+                        sen_ci_cov += 1
+        if len(rh.segments) >= 2:
+            mae_p_hub.append(0.5 * (abs(rh.segments[0].slope - 0.6) + abs(rh.segments[-1].slope - (-0.8))))
+
+    m_ols = float(np.mean(mae_p_ols)) if mae_p_ols else float("inf")
+    m_sen = float(np.mean(mae_p_sen)) if mae_p_sen else float("inf")
+    m_hub = float(np.mean(mae_p_hub)) if mae_p_hub else float("inf")
+    cov_rate = sen_ci_cov / max(1, sen_ci_tot)
+    rows.append(
+        {
+            "id": "RB3",
+            "scenario": "Outlier-Contaminated Pipeline Segment Slopes (OLS vs MM+Theil-Sen vs MM+Huber)",
+            "pass": (m_sen < 0.25 * m_ols) and (m_hub < 0.25 * m_ols) and (cov_rate >= 0.75),
+            "summary": (
+                f"Segment slope MAE: OLS={m_ols:.3f} vs MM+Sen={m_sen:.3f}, MM+Huber={m_hub:.3f}; "
+                f"Sen 95% CI coverage={cov_rate:.1%}"
+            ),
+        }
+    )
+
+    # RB4: Censored Akritas-Theil-Sen vs OLS under 25% left censoring + outliers
+    rng = np.random.default_rng(704)
+    n_c = 25
+    err_c_ols: list[float] = []
+    err_c_ats: list[float] = []
+    ats_used = 0
+    for s in range(n_c):
+        t = np.linspace(0.0, 10.0, 90)
+        y_lat = 1.0 + 0.5 * t + rng.normal(0.0, 0.25, size=t.size)
+        sp = rng.choice(t.size, size=5, replace=False)
+        y_lat[sp] += rng.choice([-1.0, 1.0], size=5) * 8.0
+        dl = float(np.quantile(y_lat, 0.25))
+        cen = y_lat < dl
+        y_obs = np.where(cen, dl, y_lat)
+        cfg = CensoredConfig(method="ros", dist="normal", impute_type="stochastic", n_stability_draws=0, random_state=s)
+        ro = analyze_series(
+            t, y_obs, remove_seasonality=False, detect_jumps=False, detect_turning_points=False,
+            censor_status=cen, censoring=cfg, robust="none", slope_estimator="ols",
+        )
+        ra = analyze_series(
+            t, y_obs, remove_seasonality=False, detect_jumps=False, detect_turning_points=False,
+            censor_status=cen, censoring=cfg, robust="huber", slope_estimator="sen",
+        )
+        err_c_ols.append(abs(ro.segments[0].slope - 0.5))
+        err_c_ats.append(abs(ra.segments[0].slope - 0.5))
+        if ra.segments[0].estimator == "ats":
+            ats_used += 1
+
+    mc_ols = float(np.mean(err_c_ols))
+    mc_ats = float(np.mean(err_c_ats))
+    rows.append(
+        {
+            "id": "RB4",
+            "scenario": "Censored Akritas-Theil-Sen vs OLS (25% Left Censoring + Outliers)",
+            "pass": (mc_ats < 0.5 * mc_ols) and (ats_used == n_c),
+            "summary": f"Slope MAE: OLS={mc_ols:.3f} vs ATS={mc_ats:.3f}; ATS auto-selected={ats_used}/{n_c}",
+        }
+    )
+    return rows
+
+
 def main() -> int:
     t0 = time.perf_counter()
     all_rows: list[dict[str, Any]] = []
@@ -749,6 +941,7 @@ def main() -> int:
     all_rows.extend(run_censored_matrix())
     all_rows.extend(run_rednoise_and_pipeline())
     all_rows.extend(run_monitor_matrix())
+    all_rows.extend(run_robust_matrix())
     elapsed = time.perf_counter() - t0
 
     n_pass = sum(1 for r in all_rows if r["pass"])

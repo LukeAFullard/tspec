@@ -14,11 +14,20 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
+from scipy.stats import t as t_dist
 
 from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
-from ._linalg import prepare_weights
+from ._linalg import PreparedWeights, prepare_weights, solve_weighted_ols
+from ._robust import (
+    RobustMethod,
+    SlopeEstimator,
+    fit_l1_piecewise,
+    fit_theil_sen_segment,
+    solve_huber_irls,
+    validate_robust_args,
+)
 from ._time import format_timestamp
-from ._types import ArrayLike, FloatArray, TimeLike, ValueLike, WeightLike
+from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike, WeightLike
 from .censored import (
     CensoredConfig,
     CensoringProvenance,
@@ -37,6 +46,7 @@ from .spectral import _lssa_core
 from .stpd import (
     FlaggedJumpCandidate,
     PiecewiseTrendResult,
+    RefitMode,
     StpdResult,
     TurningPointEvent,
     fit_piecewise_trend,
@@ -44,6 +54,29 @@ from .stpd import (
 from .stpd import (
     detect_turning_points as _detect_turning_points,
 )
+
+
+@dataclass(frozen=True)
+class SegmentSummary:
+    """Per-segment linear trend estimate across detected jumps and turning points."""
+
+    segment_index: int
+    start_index: int
+    end_index: int
+    start_valid_index: int
+    end_valid_index: int
+    start_time: Any
+    end_time: Any
+    start_time_year: float
+    end_time_year: float
+    n_obs: int
+    n_censored: int
+    estimator: Literal["ols", "sen", "ats", "l1", "huber"]
+    slope: float
+    intercept: float
+    slope_ci_low: float | None
+    slope_ci_high: float | None
+    pvalue: float | None
 
 
 @dataclass(frozen=True)
@@ -63,14 +96,19 @@ class PipelineResult(BaseResult):
     jump_adjustment: str
     censoring: CensoringProvenance | None
     diagnostics: DiagnosticReport
+    segments: tuple[SegmentSummary, ...] = ()
+    robust: str = "none"
+    slope_estimator: str = "ols"
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
         n_tp = len(self.turning_points.turning_points) if self.turning_points is not None else 0
         lines = [
-            f"tspec Guided Pipeline Result (jump_adjustment={self.jump_adjustment!r})",
+            f"tspec Guided Pipeline Result (jump_adjustment={self.jump_adjustment!r}, "
+            f"robust={self.robust!r}, slope_estimator={self.slope_estimator!r})",
             f"Abrupt jumps (JUST)     : {n_j}",
             f"Turning points (STPD)   : {n_tp}",
+            f"Trend segments          : {len(self.segments)}",
         ]
         if self.censoring is not None:
             lines.append(
@@ -95,13 +133,29 @@ class PipelineResult(BaseResult):
                     f"slope {tp.slope_before:+.4f} -> {tp.slope_after:+.4f} "
                     f"NDRI={tp.ndri_rmse:.2f} p={tp.pvalue:.2e}"
                 )
+        if self.segments:
+            lines.append("--- Segment Trend Estimates ---")
+            for seg in self.segments:
+                t0_s = format_timestamp(seg.start_time, self.is_datetime)
+                t1_s = format_timestamp(seg.end_time, self.is_datetime)
+                ci_s = (
+                    f"[{seg.slope_ci_low:+.4f}, {seg.slope_ci_high:+.4f}]"
+                    if (seg.slope_ci_low is not None and seg.slope_ci_high is not None)
+                    else "n/a"
+                )
+                p_s = f"{seg.pvalue:.2e}" if seg.pvalue is not None else "n/a"
+                lines.append(
+                    f"  seg={seg.segment_index:<2d} [{t0_s}..{t1_s}] n={seg.n_obs:<4d} "
+                    f"({seg.estimator}) slope={seg.slope:+.4f} CI95={ci_s} p={p_s}"
+                )
         lines.extend(format_diagnostics_block(self.diagnostics))
         return "\n".join(lines)
 
     def explain(self) -> str:
         lines: list[str] = [
             f"Analyzed {self.diagnostics.n_valid} unevenly spaced observations using the "
-            "guided JUST -> STPD workflow (with zero gap interpolation)."
+            f"guided JUST -> STPD workflow (robust={self.robust!r}, "
+            f"slope_estimator={self.slope_estimator!r}, zero gap interpolation)."
         ]
         if self.censoring is not None and self.censoring.n_censored > 0:
             lines.append(
@@ -145,6 +199,21 @@ class PipelineResult(BaseResult):
                     "Stage 2 (STPD) found no additional continuous trend turning points."
                 )
 
+        if self.segments:
+            lines.append(f"Segment trend slopes ({len(self.segments)} segment(s)):")
+            for seg in self.segments:
+                t0_s = format_timestamp(seg.start_time, self.is_datetime)
+                t1_s = format_timestamp(seg.end_time, self.is_datetime)
+                msg = (
+                    f"  - Segment {seg.segment_index} ({t0_s} to {t1_s}, n={seg.n_obs}, "
+                    f"{seg.estimator}): slope = {seg.slope:+.4g}/unit time"
+                )
+                if seg.slope_ci_low is not None and seg.slope_ci_high is not None:
+                    msg += f" (95% CI [{seg.slope_ci_low:+.4g}, {seg.slope_ci_high:+.4g}])"
+                if seg.pvalue is not None:
+                    msg += f", p={seg.pvalue:.2e}"
+                lines.append(msg + ".")
+
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
 
@@ -168,6 +237,31 @@ class PipelineResult(BaseResult):
             data["original_value"] = self.censoring.original_values
         return pd.DataFrame(data)
 
+    def segments_to_dataframe(self) -> Any:
+        """Return per-segment trend slopes, CIs, and p-values as a pandas DataFrame."""
+        pd = require_pandas()
+        rows = [
+            {
+                "segment_index": s.segment_index,
+                "start_index": s.start_index,
+                "end_index": s.end_index,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "start_time_year": s.start_time_year,
+                "end_time_year": s.end_time_year,
+                "n_obs": s.n_obs,
+                "n_censored": s.n_censored,
+                "estimator": s.estimator,
+                "slope": s.slope,
+                "intercept": s.intercept,
+                "slope_ci_low": s.slope_ci_low,
+                "slope_ci_high": s.slope_ci_high,
+                "pvalue": s.pvalue,
+            }
+            for s in self.segments
+        ]
+        return pd.DataFrame(rows)
+
     def plot(self, ax: Any = None, **kwargs: Any) -> tuple[Any, Any]:
         from .plotting import plot_pipeline
 
@@ -179,8 +273,11 @@ def _estimate_vertical_step_offsets(
     y_deseas: FloatArray,
     jump_valid_indices: list[int],
     weights_valid: Any,
+    *,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
 ) -> FloatArray:
-    """Estimate cumulative vertical step offsets at JUST jump indices via piecewise OLS."""
+    """Estimate cumulative vertical step offsets at JUST jump indices."""
     n = int(t_valid.size)
     offsets = np.zeros(n, dtype=np.float64)
     if not jump_valid_indices:
@@ -199,6 +296,8 @@ def _estimate_vertical_step_offsets(
         "linear",
         False,
         np.empty(0, dtype=np.float64),
+        robust=robust,
+        huber_k=huber_k,
     )
     m = int(j_arr.size)
     intercepts = fit.coeff[: m + 1]
@@ -213,6 +312,231 @@ def _estimate_vertical_step_offsets(
     return offsets
 
 
+def _build_segment_summaries(
+    t_valid: FloatArray,
+    t_raw_valid: np.ndarray[Any, Any],
+    valid_to_orig: IntArray,
+    y_deseas: FloatArray,
+    seasonal_part: FloatArray,
+    jump_valid_indices: list[int],
+    tp_valid_indices: list[int],
+    w_stpd: Any,
+    *,
+    slope_estimator: SlopeEstimator,
+    huber_k: float,
+    prov: CensoringProvenance | None,
+    alpha: float = 0.05,
+) -> tuple[tuple[SegmentSummary, ...], FloatArray | None]:
+    """Compute per-segment trend slopes, CIs, and p-values across detected breakpoints."""
+    n = int(t_valid.size)
+    if n == 0:
+        return (), None
+
+    jump_bps = sorted({j for j in jump_valid_indices if 0 < j < n})
+    tp_bps = sorted({tp for tp in tp_valid_indices if 0 < tp < n and tp not in jump_bps})
+    epoch_bounds = [0, *jump_bps, n]
+
+    segments: list[SegmentSummary] = []
+    override_trend: FloatArray | None = (
+        np.empty(n, dtype=np.float64) if slope_estimator in ("sen", "l1", "huber") else None
+    )
+    seg_counter = 0
+
+    def _slice_w(a: int, b: int) -> Any:
+        if w_stpd is not None and np.ndim(w_stpd) == 1:
+            return w_stpd[a:b]
+        return w_stpd
+
+    def _make_seg(
+        s0: int,
+        s1: int,
+        est: Literal["ols", "sen", "ats", "l1", "huber"],
+        slope: float,
+        intercept: float,
+        ci_low: float | None,
+        ci_high: float | None,
+        pval: float | None,
+    ) -> SegmentSummary:
+        nonlocal seg_counter
+        n_cen = int(np.sum(prov.is_censored[s0:s1])) if prov is not None else 0
+        seg = SegmentSummary(
+            segment_index=seg_counter,
+            start_index=int(valid_to_orig[s0]),
+            end_index=int(valid_to_orig[s1 - 1]),
+            start_valid_index=s0,
+            end_valid_index=s1 - 1,
+            start_time=t_raw_valid[s0],
+            end_time=t_raw_valid[s1 - 1],
+            start_time_year=float(t_valid[s0]),
+            end_time_year=float(t_valid[s1 - 1]),
+            n_obs=s1 - s0,
+            n_censored=n_cen,
+            estimator=est,
+            slope=slope,
+            intercept=intercept,
+            slope_ci_low=ci_low,
+            slope_ci_high=ci_high,
+            pvalue=pval,
+        )
+        seg_counter += 1
+        return seg
+
+    for ep_i in range(len(epoch_bounds) - 1):
+        e0, e1 = epoch_bounds[ep_i], epoch_bounds[ep_i + 1]
+        if e1 <= e0:
+            continue
+        tp_epoch = [tp for tp in tp_bps if e0 < tp < e1]
+        sub_bounds = [e0, *tp_epoch, e1]
+
+        if slope_estimator == "sen":
+            assert override_trend is not None
+            for k in range(len(sub_bounds) - 1):
+                s0, s1 = sub_bounds[k], sub_bounds[k + 1]
+                seg_codes = prov.status_codes[s0:s1] if prov is not None else None
+                seg_orig = (
+                    prov.original_values[s0:s1] - seasonal_part[s0:s1]
+                    if prov is not None
+                    else None
+                )
+                ts_fit = fit_theil_sen_segment(
+                    t_valid[s0:s1],
+                    y_deseas[s0:s1],
+                    alpha=alpha,
+                    status_codes=seg_codes,
+                    original_values=seg_orig,
+                )
+                override_trend[s0:s1] = ts_fit.intercept + ts_fit.slope * t_valid[s0:s1]
+                segments.append(
+                    _make_seg(
+                        s0,
+                        s1,
+                        ts_fit.estimator,
+                        ts_fit.slope,
+                        ts_fit.intercept,
+                        ts_fit.ci_low,
+                        ts_fit.ci_high,
+                        ts_fit.pvalue,
+                    )
+                )
+        elif slope_estimator == "l1":
+            assert override_trend is not None
+            n_ep = e1 - e0
+            if n_ep < 2 or float(t_valid[e1 - 1] - t_valid[e0]) <= 0.0:
+                med_y = float(np.median(y_deseas[e0:e1]))
+                override_trend[e0:e1] = med_y
+                segments.append(_make_seg(e0, e1, "l1", 0.0, med_y, None, None, None))
+            else:
+                tp_rel = np.array([tp - e0 for tp in tp_epoch], dtype=np.intp)
+                w_ep = _slice_w(e0, e1)
+                w_vec = np.asarray(w_ep, dtype=np.float64) if (w_ep is not None and np.ndim(w_ep) == 1) else None
+                slopes_ep, intercepts_ep, y_fit_ep, _ = fit_l1_piecewise(
+                    t_valid[e0:e1], y_deseas[e0:e1], tp_rel, w=w_vec
+                )
+                override_trend[e0:e1] = y_fit_ep
+                for k in range(len(sub_bounds) - 1):
+                    s0, s1 = sub_bounds[k], sub_bounds[k + 1]
+                    segments.append(
+                        _make_seg(
+                            s0,
+                            s1,
+                            "l1",
+                            float(slopes_ep[k]),
+                            float(intercepts_ep[k]),
+                            None,
+                            None,
+                            None,
+                        )
+                    )
+        elif slope_estimator == "huber":
+            assert override_trend is not None
+            n_ep = e1 - e0
+            if n_ep < 2 or float(t_valid[e1 - 1] - t_valid[e0]) <= 0.0:
+                med_y = float(np.median(y_deseas[e0:e1]))
+                override_trend[e0:e1] = med_y
+                segments.append(_make_seg(e0, e1, "huber", 0.0, med_y, None, None, None))
+            else:
+                t_ep = t_valid[e0:e1]
+                y_ep = y_deseas[e0:e1]
+                t0_ep = t_ep - t_ep[0]
+                s_t = float(t0_ep[-1]) if float(t0_ep[-1]) > 0.0 else 1.0
+                u_ep = t0_ep / s_t
+                m_ep = len(tp_epoch)
+                D_ep = np.empty((n_ep, m_ep + 2), dtype=np.float64)
+                D_ep[:, 0] = 1.0
+                D_ep[:, 1] = u_ep
+                for k_i, tp in enumerate(tp_epoch):
+                    D_ep[:, 2 + k_i] = np.maximum(0.0, u_ep - u_ep[tp - e0])
+                pw_ep = prepare_weights(_slice_w(e0, e1), n_ep)
+                hr_ep = solve_huber_irls(D_ep, y_ep, pw_ep, k=huber_k, compute_cov=True)
+                coeff = hr_ep.ols.coeff
+                y_fit_ep = D_ep @ coeff
+                override_trend[e0:e1] = y_fit_ep
+                dof_ep = n_ep - hr_ep.ols.rank
+                for k in range(len(sub_bounds) - 1):
+                    s0, s1 = sub_bounds[k], sub_bounds[k + 1]
+                    v = np.zeros(m_ep + 2, dtype=np.float64)
+                    v[1 : 2 + k] = 1.0 / s_t
+                    slope_k = float(v @ coeff)
+                    anchor_idx = 0 if k == 0 else (tp_epoch[k - 1] - e0)
+                    intercept_k = float(y_fit_ep[anchor_idx]) - slope_k * float(t_ep[anchor_idx])
+                    ci_lo: float | None = None
+                    ci_hi: float | None = None
+                    pval_k: float | None = None
+                    if hr_ep.ols.cov is not None and dof_ep > 0:
+                        var_k = max(0.0, float(v @ hr_ep.ols.cov @ v))
+                        se_k = float(np.sqrt(var_k))
+                        if se_k > 0.0:
+                            t_crit = float(t_dist.ppf(1.0 - 0.5 * alpha, dof_ep))
+                            ci_lo = slope_k - t_crit * se_k
+                            ci_hi = slope_k + t_crit * se_k
+                            pval_k = float(2.0 * t_dist.sf(abs(slope_k) / se_k, dof_ep))
+                        else:
+                            ci_lo = slope_k
+                            ci_hi = slope_k
+                            pval_k = 0.0 if abs(slope_k) > 0.0 else 1.0
+                    segments.append(
+                        _make_seg(s0, s1, "huber", slope_k, intercept_k, ci_lo, ci_hi, pval_k)
+                    )
+        else:
+            # Default OLS per-segment slopes, 95% t-CIs, and p-values
+            for k in range(len(sub_bounds) - 1):
+                s0, s1 = sub_bounds[k], sub_bounds[k + 1]
+                n_s = s1 - s0
+                if n_s < 2 or float(t_valid[s1 - 1] - t_valid[s0]) <= 0.0:
+                    mean_y = float(np.mean(y_deseas[s0:s1])) if n_s > 0 else 0.0
+                    segments.append(_make_seg(s0, s1, "ols", 0.0, mean_y, None, None, None))
+                    continue
+                t_s = t_valid[s0:s1]
+                y_s = y_deseas[s0:s1]
+                t0_s = t_s - t_s[0]
+                s_t = float(t0_s[-1]) if float(t0_s[-1]) > 0.0 else 1.0
+                D_s = np.column_stack([np.ones(n_s, dtype=np.float64), t0_s / s_t])
+                pw_s: PreparedWeights = prepare_weights(_slice_w(s0, s1), n_s)
+                ols_s = solve_weighted_ols(D_s, y_s, pw_s, compute_cov=True)
+                slope_k = float(ols_s.coeff[1]) / s_t
+                intercept_k = float(ols_s.coeff[0]) - slope_k * float(t_s[0])
+                dof_s = n_s - ols_s.rank
+                ci_lo = None
+                ci_hi = None
+                pval_k = None
+                if ols_s.cov is not None and dof_s > 0:
+                    se_k = float(np.sqrt(max(0.0, float(ols_s.cov[1, 1])))) / s_t
+                    if se_k > 0.0:
+                        t_crit = float(t_dist.ppf(1.0 - 0.5 * alpha, dof_s))
+                        ci_lo = slope_k - t_crit * se_k
+                        ci_hi = slope_k + t_crit * se_k
+                        pval_k = float(2.0 * t_dist.sf(abs(slope_k) / se_k, dof_s))
+                    else:
+                        ci_lo = slope_k
+                        ci_hi = slope_k
+                        pval_k = 0.0 if abs(slope_k) > 0.0 else 1.0
+                segments.append(
+                    _make_seg(s0, s1, "ols", slope_k, intercept_k, ci_lo, ci_hi, pval_k)
+                )
+
+    return tuple(segments), override_trend
+
+
 def analyze_series(
     t: TimeLike,
     y: ValueLike,
@@ -222,6 +546,9 @@ def analyze_series(
     detect_turning_points: bool = True,
     remove_seasonality: bool = True,
     jump_adjustment: Literal["offset", "segment"] = "offset",
+    robust: RobustMethod = "none",
+    slope_estimator: SlopeEstimator = "ols",
+    huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     just_kwargs: dict[str, Any] | None = None,
@@ -241,11 +568,36 @@ def analyze_series(
     4. Removes seasonality and vertical jump offsets (or segments by epoch)
        and runs :func:`detect_turning_points` (STPD) to isolate smooth changes
        in trend slope.
+    5. Computes per-segment trend slopes, confidence intervals, and p-values
+       (:attr:`PipelineResult.segments`) using ``slope_estimator``:
+
+       - ``'ols'``: weighted ordinary least squares with Student-t CIs.
+       - ``'sen'``: exact **Theil–Sen** (uncensored) or **Akritas–Theil–Sen**
+         (left/right censored) with distribution-free CIs and Mann–Kendall
+         p-values.
+       - ``'huber'``: continuous **Huber IRLS** hinge-spline with Huber (1981)
+         asymptotic CIs.
+       - ``'l1'``: globally optimal continuous **L1 (LAD)** hinge-spline via
+         sparse HiGHS linear programming (50% vertical breakdown; CIs are
+         ``None``—use ``'sen'`` or ``'huber'`` for segment CIs).
+
+    Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'`` (Yohai
+    1987 Huber-initialized Tukey biweight MM-estimation, recommended for extreme
+    isolated spikes) switches Phase 1 detection and decomposition
+    (``just_jumps``, ``just_decompose``, step-offset estimation, and STPD) to
+    outlier-resistant M/MM-estimation with Schrader–Hettmansperger (1980) robust
+    nested F-tests.
     """
     from dataclasses import replace
 
     if jump_adjustment not in ("offset", "segment"):
         raise ValueError("`jump_adjustment` must be 'offset' or 'segment'.")
+    rob_method = validate_robust_args(robust, huber_k)
+    if slope_estimator not in ("ols", "sen", "l1", "huber"):
+        raise ValueError(
+            f"Unknown `slope_estimator` {slope_estimator!r}. "
+            "Options: 'ols', 'sen', 'l1', 'huber'."
+        )
 
     # Enable 20-draw censoring stability checks by default in the guided pipeline
     eff_censoring = censoring
@@ -274,6 +626,16 @@ def analyze_series(
     j_kw: dict[str, Any] = dict(just_kwargs or {})
     d_kw: dict[str, Any] = dict(decompose_kwargs or {})
     s_kw: dict[str, Any] = dict(stpd_kwargs or {})
+
+    # Propagate robust configuration unless explicitly overridden in stage kwargs
+    j_kw.setdefault("robust", rob_method)
+    j_kw.setdefault("huber_k", huber_k)
+    d_kw.setdefault("robust", rob_method)
+    d_kw.setdefault("huber_k", huber_k)
+    s_kw.setdefault("robust", rob_method)
+    s_kw.setdefault("huber_k", huber_k)
+    if slope_estimator in ("l1", "huber"):
+        s_kw.setdefault("refit_mode", slope_estimator)
 
     # Practitioner-friendly scale-free defaults in analyze_series unless overridden:
     # - Bonferroni-adjusted within-window screening p-values suppress post-selection noise.
@@ -379,16 +741,22 @@ def analyze_series(
             )
 
     # Stage 3: Deseasonalized & jump-adjusted series for STPD
-    y_deseas = (
-        y_work_valid - np.nan_to_num(decomp_res.seasonal, nan=0.0)
+    seasonal_part = (
+        np.nan_to_num(decomp_res.seasonal, nan=0.0)
         if (remove_seasonality and decomp_res is not None)
-        else y_work_valid.copy()
+        else np.zeros_like(y_work_valid)
     )
+    y_deseas = y_work_valid - seasonal_part
 
     step_offsets = np.zeros(series.n_valid, dtype=np.float64)
     if jump_valid_indices and jump_adjustment == "offset":
         step_offsets = _estimate_vertical_step_offsets(
-            t_valid, y_deseas, jump_valid_indices, w_valid_raw
+            t_valid,
+            y_deseas,
+            jump_valid_indices,
+            w_valid_raw,
+            robust=rob_method,
+            huber_k=huber_k,
         )
         y_adj = y_deseas - step_offsets
     else:
@@ -496,12 +864,16 @@ def analyze_series(
                         continue
                     except InsufficientDataError:
                         pass
+                eff_refit_mode: RefitMode = s_kw.get("refit_mode") or (
+                    "huber" if rob_method != "none" else "sequential"
+                )
                 pw_seg = fit_piecewise_trend(
                     t_raw_valid[s0:s1],
                     y_adj[s0:s1],
                     [],
                     weights=seg_w,
-                    mode=s_kw.get("refit_mode", "sequential"),
+                    mode=eff_refit_mode,
+                    huber_k=huber_k,
                 )
                 seg_fitted[s0:s1] = pw_seg.fitted_trend
                 seg_slopes_list.append(pw_seg.slopes)
@@ -525,6 +897,11 @@ def analyze_series(
                 if tp_valid_arr.size > 0
                 else np.empty(0, dtype=np.intp)
             )
+            eff_sel_dir: Literal["forward", "backward", "joint"] = (
+                "joint"
+                if (s_kw.get("refit_mode") in ("joint", "l1", "huber") or rob_method != "none")
+                else "forward"
+            )
             pw_global = PiecewiseTrendResult(
                 tp_indices=tp_orig_arr,
                 tp_valid_indices=tp_valid_arr,
@@ -538,7 +915,7 @@ def analyze_series(
                 local_ndri_l2=np.concatenate(seg_ndri_l2_list) if seg_ndri_l2_list else np.empty(0, dtype=np.float64),
                 local_ndri_rmse=np.concatenate(seg_ndri_rmse_list) if seg_ndri_rmse_list else np.empty(0, dtype=np.float64),
                 mode="segmented",
-                selected_direction="joint" if s_kw.get("refit_mode") == "joint" else "forward",
+                selected_direction=eff_sel_dir,
                 times_numeric=t_valid,
                 times_raw=t_raw_valid,
                 is_datetime=series.is_datetime,
@@ -583,12 +960,16 @@ def analyze_series(
                     )
                     if len(kept_tps) != len(raw_stpd.turning_points):
                         kept_valid_idx = [tp.valid_index for tp in kept_tps]
+                        eff_refit_mode_j: RefitMode = s_kw.get("refit_mode") or (
+                            "huber" if rob_method != "none" else "sequential"
+                        )
                         pw_refit = fit_piecewise_trend(
                             t_raw_valid,
                             y_adj,
                             kept_valid_idx,
                             weights=w_stpd,
-                            mode=s_kw.get("refit_mode", "sequential"),
+                            mode=eff_refit_mode_j,
+                            huber_k=huber_k,
                         )
                         updated_tps = tuple(
                             replace(
@@ -631,13 +1012,28 @@ def analyze_series(
         combined_trend = y_work_valid.copy()
         cond_max = jumps_res.diagnostics.condition_number_max if jumps_res is not None else 1.0
 
+    # Stage 5: Per-segment trend slopes, CIs, and p-values (OLS / Theil-Sen / ATS / L1 / Huber)
+    tp_valid_indices = (
+        [tp.valid_index for tp in stpd_res.turning_points] if stpd_res is not None else []
+    )
+    segments, override_trend = _build_segment_summaries(
+        t_valid,
+        t_raw_valid,
+        series.valid_to_orig,
+        y_deseas,
+        seasonal_part,
+        jump_valid_indices,
+        tp_valid_indices,
+        w_stpd,
+        slope_estimator=slope_estimator,
+        huber_k=huber_k,
+        prov=prov,
+    )
+    if override_trend is not None:
+        combined_trend = override_trend
+
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
-    seasonal_part = (
-        np.nan_to_num(decomp_res.seasonal, nan=0.0)
-        if (remove_seasonality and decomp_res is not None)
-        else np.zeros_like(y_work_valid)
-    )
     final_residuals = y_work_valid - combined_trend - seasonal_part
     rn_final, final_rn_warns = compute_red_noise_diagnostics(t_valid, final_residuals)
     filtered_warnings = [
@@ -671,4 +1067,7 @@ def analyze_series(
         jump_adjustment=jump_adjustment,
         censoring=prov,
         diagnostics=diag,
+        segments=segments,
+        robust=rob_method,
+        slope_estimator=slope_estimator,
     )

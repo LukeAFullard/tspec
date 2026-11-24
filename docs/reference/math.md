@@ -90,3 +90,19 @@ ALLSSA iteratively extracts significant sinusoids simultaneously with the trend 
 
 - **Left-censored ROS:** Hirsch–Stedinger / Helsel–Cohn plotting positions with OLS probability-plot regression (`NADA::ros`-exact). `tspec` permutes tied detection-limit groups in `'quantile'` mode and defaults to `'stochastic'` to eliminate chronological rank-order trend injection.
 - **Parametric MLE:** Full censored likelihood $L(\theta) = \prod_{\text{obs}} f(x_i) \prod_{\text{left}} F(L_i) \prod_{\text{right}} S(R_i) \prod_{\text{int}} [F(r_i) - F(l_i)]$ (`survival::survreg`-exact) with numerically stable truncated expectations and draws.
+
+---
+
+## 7. Robust M/MM-Estimation, Continuous $L_1$ Splines & Theil–Sen / ATS
+
+*Primary sources: Huber (1981); Schrader & Hettmansperger (1980); Yohai (1987); Sen (1968); Akritas, Murphy, & LaValley (1995); Gilbert (1987).*
+
+- **Huber IRLS (`robust="huber"`, $k = 1.345$):** Minimizes $\sum_{i=1}^n \rho_k(\tilde{r}_i / \hat{s})$ in base-whitened, median-centered coordinates where $\rho_k(u) = \tfrac{1}{2}u^2$ for $|u| \le k$ and $k|u| - \tfrac{1}{2}k^2$ otherwise, with finite-sample-adjusted MAD scale $\hat{s} = \sqrt{\frac{n}{n - p}} \cdot 1.4826\,\text{median}(|\tilde{r}_i|)$ and iterative weights $w_i = \min(1, k\hat{s}/|\tilde{r}_i|)$. Asymptotic parameter covariance follows Huber (1981, Eq. 7.6.11):
+  $$\widehat{\text{Cov}}(\hat{c}) = \hat{\tau}^2 (D^T P D)^+, \qquad \hat{\tau}^2 = \left(1 + \frac{p}{n}\frac{1 - m}{m}\right)^2 \frac{\hat{s}^2 \sum \psi(\tilde{r}_i/\hat{s})^2}{(n - p)\, m^2}, \qquad m = \frac{1}{n}\sum \psi'(\tilde{r}_i/\hat{s}).$$
+- **MM-Biweight (`robust="mm"`, $c = 4.685$, Yohai 1987):** Initializes from convex Huber IRLS (preserving sustained step jumps without masking) and refines at the fixed scale $\hat{s}$ using Tukey's bounded bisquare loss $\rho_c(u) = \frac{c^2}{6}\bigl(1 - (1 - \min(1, |u|/c)^2)^3\bigr)$ and redescending weights $w_i = \bigl(1 - (u_i/c)^2\bigr)_+^2$, giving 95% Gaussian efficiency with **zero influence** for extreme isolated spikes ($|u_i| \ge c$).
+- **Schrader–Hettmansperger (1980) Robust Nested $F$-Test:** For nested designs $D_{\text{null}} \subset D_{\text{full}}$ evaluated at the **shared full-model scale** $\hat{s}_1$:
+  $$F_{\text{rob}} = \frac{2\bigl(L_{\text{null}}(\hat{s}_1) - L_{\text{full}}(\hat{s}_1)\bigr) / q}{\hat{\lambda}}, \qquad \hat{\lambda} = K_{\text{corr}} \frac{\sum \psi(\tilde{r}_{1,i}/\hat{s}_1)^2}{(n - p_1)\, m_1}, \qquad p = 1 - F_{q,\, n - p_1}(F_{\text{rob}}).$$
+- **Exact Continuous $L_1$ (LAD) Hinge-Spline (`mode="l1"`):** Minimizes $\sum_{i=1}^n w_i \bigl|y_i - (b_0 + a_0 u_i + \sum_{k=1}^m \delta_k (u_i - u_{\tau_k})_+)\bigr|$ globally via sparse HiGHS linear programming (`scipy.optimize.linprog`), guaranteeing strict continuity at every turning point with 50% vertical breakdown.
+- **Theil–Sen & Akritas–Theil–Sen (`slope_estimator="sen"`):**
+  - *Uncensored segments:* Pairwise median slope $\hat{\beta} = \text{median}_{i < j}\frac{y_j - y_i}{t_j - t_i}$, median intercept $\hat{\alpha} = \text{median}_i(y_i - \hat{\beta} t_i)$, tie-adjusted Gilbert (1987, Eq. 16.8) order-statistic 95% confidence interval, and two-sided Mann–Kendall $p$-value.
+  - *Left/right-censored segments (`<DL` / `>UL`):* Automatically computes the **Akritas–Theil–Sen (ATS)** slope solving $S_{\text{cen}}(\beta) = 0$ on censored residual concordances $r_i(\beta) = y_i - \beta t_i$, with score-inverted confidence bounds $S_{\text{cen}}(\beta_{\text{lo}}) = +z_{1-\alpha/2}\sqrt{\text{Var}(S)}$ and $S_{\text{cen}}(\beta_{\text{hi}}) = -z_{1-\alpha/2}\sqrt{\text{Var}(S)}$.

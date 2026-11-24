@@ -51,3 +51,12 @@ A plain-English translation of every key parameter in `tspec`, its default value
 | `sequential_control` | Repeated-testing control across incoming monitoring steps. | `"pocock"` | `"pocock"` for fixed horizon; `"obrien_fleming"` to guard early peeks; `"consecutive_k"` (`k=2`) for open-ended live streams. |
 | `horizon` | Planned number of monitoring steps $D_{\max}$ for alpha-spending rules. | `n - start` | Set explicitly (e.g., `horizon=24` for 2 years of monthly updates) when running live sequential updates. |
 | `window_mode` | Whether the residual monitoring window grows (`"expanding"`) or slides (`"sliding"`). | `"expanding"` | `"expanding"` matches Ghaderpour & Vujadinovic (2020b); `"sliding"` keeps memory bounded over multi-year monitoring. |
+
+## Robust Estimation & Segment Slopes (All Core Functions & `analyze_series`)
+
+| Parameter | Plain-English Meaning | Default | Guidance |
+| :--- | :--- | :--- | :--- |
+| `robust` | Phase 1 outlier-resistance mode (`"none"`, `"huber"`, or `"mm"`). | `"none"` | Use `"huber"` for convex M-estimation under heavy tails ($t_3$/$t_5$); use `"mm"` (Huber-init Tukey biweight) for extreme isolated spikes ($>5\sigma$). Ignored in `parity_mode=True`. |
+| `huber_k` | Huber tuning threshold in MAD-scaled residual units. | `1.345` | `1.345` gives 95% Gaussian efficiency while bounding outlier influence; also initializes `"mm"`. |
+| `mode` / `refit_mode` | Piecewise linear trend refit mode in `fit_piecewise_trend()` / `detect_turning_points()`. | `"sequential"` (`"huber"` when `robust != "none"`) | `"sequential"` (asymmetric OLS), `"joint"` (continuous OLS hinge-spline), `"huber"` (continuous Huber hinge-spline), `"l1"` (exact continuous $L_1$/LAD LP hinge-spline, 50% vertical breakdown). |
+| `slope_estimator` | Per-segment trend estimator on `analyze_series()` (`result.segments`). | `"ols"` | `"ols"` (WLS + $t$-CI), `"sen"` (exact Theil–Sen / auto **Akritas–Theil–Sen** when censored + distribution-free CI & Mann–Kendall $p$), `"huber"` (continuous Huber + asymptotic CI), `"l1"` (exact continuous LAD). |

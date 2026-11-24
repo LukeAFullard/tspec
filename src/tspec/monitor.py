@@ -28,7 +28,8 @@ from ._diagnostics import (
     WarningItem,
     compute_red_noise_diagnostics,
 )
-from ._linalg import PreparedWeights, prepare_weights, whiten_matrix
+from ._linalg import PreparedWeights, prepare_weights, whiten_matrix, whiten_vector
+from ._robust import RobustMethod, tukey_weight, validate_robust_args
 from ._time import TimeSeriesInput, convert_eval_times
 from ._types import ArrayLike, FloatArray, TimeLike, ValueLike, WeightLike
 from .censored import (
@@ -472,6 +473,8 @@ def just_monitor(
     window_mode: MonitorWindowMode = "expanding",
     stop_on_first: bool = True,
     account_for_forecast_uncertainty: bool = True,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
@@ -565,6 +568,14 @@ def just_monitor(
         preventing finite-sample historical slope/seasonal estimation errors
         from triggering false alarms when forecasting far past ``start``.
         Forced to ``False`` when ``parity_mode=True``.
+    robust : {"none", "huber", "mm"}, default "none"
+        If ``"huber"`` or ``"mm"``, fits the stable historical baseline via
+        convex Huber IRLS or Yohai MM-biweight (down-weighting historical spikes
+        without ever down-weighting incoming monitoring observations so new
+        disturbances are never masked). Forced to ``"none"`` when
+        ``parity_mode=True``.
+    huber_k : float, default 1.345
+        Huber tuning constant used when ``robust`` is ``"huber"`` or ``"mm"``.
     censor_status : array-like, optional
         Optional censoring indicators (``-1`` left, ``0`` detected, ``+1`` right).
     censoring : CensoredConfig, optional
@@ -574,9 +585,9 @@ def just_monitor(
     parity_mode : bool, default False
         If ``True``, disables multiplicity controls (``freq_correction="none"``,
         ``sequential_control="none"``), disables predictive covariance weighting
-        (``account_for_forecast_uncertainty=False``), and forces
-        ``window_mode="expanding"`` for exact numerical parity with Ghaderpour &
-        Vujadinovic (2020b).
+        (``account_for_forecast_uncertainty=False``), disables robust
+        reweighting (``robust="none"``), and forces ``window_mode="expanding"``
+        for exact numerical parity with Ghaderpour & Vujadinovic (2020b).
 
     Returns
     -------
@@ -605,6 +616,7 @@ def just_monitor(
     eff_seq_ctrl: SequentialControl = "none" if parity_mode else sequential_control
     eff_win_mode: MonitorWindowMode = "expanding" if parity_mode else window_mode
     eff_forecast_cov = False if parity_mode else bool(account_for_forecast_uncertainty)
+    eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     def _causal_split(pre_series: TimeSeriesInput) -> tuple[int, int]:
         n_pre = pre_series.n_valid
@@ -710,6 +722,8 @@ def just_monitor(
             max_iter=200,
             parity_mode=parity_mode,
             compute_cov=False,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
         his_freqs = his_allssa.frequencies
         his_trend_coeff = his_allssa.trend_coeff
@@ -728,6 +742,8 @@ def just_monitor(
             False,
             om_hist,
             compute_cov=False,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
         his_freqs = om_hist.copy()
         his_trend_coeff = his_ols.coeff[:2]
@@ -746,12 +762,32 @@ def just_monitor(
             False,
             np.empty(0, dtype=np.float64),
             compute_cov=False,
+            robust=eff_robust,
+            huber_k=huber_k,
         )
         his_freqs = np.empty(0, dtype=np.float64)
         his_trend_coeff = his_none.coeff[:2]
         his_coeff = his_none.coeff
         his_residuals = his_none.residuals
         cond_max = max(cond_max, his_none.condition_number)
+
+    # Under robust='huber' or 'mm', down-weight historical baseline spikes in [history:start]
+    # while keeping all incoming monitoring observations at full weight 1.0 (zero masking).
+    if eff_robust != "none":
+        rw_his = whiten_vector(his_residuals, pw_his)
+        s_his = float(1.482602218505602 * np.median(np.abs(rw_his)))
+        if s_his > 1e-14 * max(float(np.sqrt(np.mean(rw_his * rw_his))), 1e-300):
+            u_his = np.abs(rw_his) / s_his
+            w_his_h = (
+                np.maximum(tukey_weight(rw_his / s_his), 1e-12)
+                if eff_robust == "mm"
+                else np.where(u_his <= huber_k, 1.0, huber_k / u_his)
+            )
+            act_factors = np.concatenate(
+                [w_his_h, np.ones(int(t_act.size) - n_his, dtype=np.float64)]
+            )
+            pw_act = pw_act.scale_entries(act_factors)
+            pw_his = pw_act.subset(his_local)
 
     # Forecast historical model across [hist_idx : n] (unscaling design columns to match his_coeff)
     D_act, col_scales_act = build_design_matrix(t_act, "linear", empty_j, False, his_freqs)
@@ -986,6 +1022,8 @@ def just_monitor(
                 max_iter=200,
                 parity_mode=parity_mode,
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             tr_c = j_res.trend_coeff
             cond_max = max(cond_max, j_res.condition_number_max)
@@ -1001,6 +1039,8 @@ def just_monitor(
                 False,
                 om_hist,
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             tr_c = j_ols.coeff
             cond_max = max(cond_max, j_ols.condition_number)
@@ -1016,6 +1056,8 @@ def just_monitor(
                 False,
                 np.empty(0, dtype=np.float64),
                 compute_cov=False,
+                robust=eff_robust,
+                huber_k=huber_k,
             )
             tr_c = j_none.coeff
             cond_max = max(cond_max, j_none.condition_number)
