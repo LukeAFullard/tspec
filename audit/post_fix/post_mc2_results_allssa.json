@@ -1,0 +1,29 @@
+{
+ "allssa,n=150,rate=24,gap=False": {
+  "R": 300,
+  "FP_default": 0.02,
+  "FP_analyze_filter": 0.02,
+  "MCSE": 0.012583057392117916
+ },
+ "allssa,n=150,rate=24,gap=False,jump=1.0": {
+  "R": 150,
+  "power_default": 0.07333333333333333,
+  "power_analyze_filter": 0.07333333333333333,
+  "loc_bias": 0.015694126843548227,
+  "loc_rmse": 0.11549112677477495
+ },
+ "allssa,n=150,rate=24,gap=False,jump=2.0": {
+  "R": 150,
+  "power_default": 0.58,
+  "power_analyze_filter": 0.54,
+  "loc_bias": 0.041716381802753576,
+  "loc_rmse": 0.101780359216553
+ },
+ "allssa,n=150,rate=24,gap=False,jump=4.0": {
+  "R": 150,
+  "power_default": 0.9666666666666667,
+  "power_analyze_filter": 0.9466666666666667,
+  "loc_bias": 0.046950798646625554,
+  "loc_rmse": 0.0839551791337351
+ }
+}

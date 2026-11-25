@@ -1,0 +1,20 @@
+{
+ "D=24": {
+  "R": 500,
+  "pocock_no_horizon": 0.002,
+  "pocock_horizon=D": 0.004,
+  "obf_no_horizon": 0.002,
+  "consecutive_k2": 0.028,
+  "PI95_cov": 0.9475,
+  "MCSE": 0.009746794344808964
+ },
+ "D=96": {
+  "R": 500,
+  "pocock_no_horizon": 0.002,
+  "pocock_horizon=D": 0.006,
+  "obf_no_horizon": 0.002,
+  "consecutive_k2": 0.108,
+  "PI95_cov": 0.9492916666666666,
+  "MCSE": 0.009746794344808964
+ }
+}
