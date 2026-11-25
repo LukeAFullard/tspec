@@ -19,7 +19,12 @@ import numpy as np
 from scipy.stats import f as f_dist
 from scipy.stats import t as t_dist
 
-from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
+from ._diagnostics import (
+    DiagnosticReport,
+    WarningItem,
+    compute_red_noise_diagnostics,
+    time_unit_warning,
+)
 from ._linalg import PreparedWeights, prepare_weights, whiten_matrix, whiten_vector
 from ._robust import (
     RobustMethod,
@@ -377,6 +382,12 @@ def _build_count_windows(
         raise InsufficientDataError(
             f"Default/requested window size ({win_size}) exceeds series length n={n}. "
             "Pass a smaller `size` or collect a longer record."
+        )
+    if size is None and rate < 2:
+        raise InsufficientDataError(
+            f"Default window size is 3 x samples per unit time, but the series has only "
+            f"{n / span:.3g} samples per unit time (window = {win_size}). Defaults assume time "
+            "in decimal years with at least ~2 samples per year; convert t to years or pass `size`."
         )
 
     if step is None:
@@ -1228,6 +1239,7 @@ def just_jumps(
     )
 
     warnings_list: list[WarningItem] = list(prep.warnings)
+    warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     if calib_warn is not None:
         warnings_list.append(calib_warn)
     if not parity_mode and eff_jump_alpha is None:
@@ -1904,6 +1916,7 @@ def just_decompose(
         tt_raw = series.times_raw
 
     warnings_list: list[WarningItem] = list(prep.warnings)
+    warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     t_origin = float(tt_num[0])
     t0 = series.times_numeric - t_origin
     tt0 = tt_num - t_origin

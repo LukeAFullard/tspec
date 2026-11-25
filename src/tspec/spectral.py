@@ -19,7 +19,12 @@ from typing import Any, Literal
 
 import numpy as np
 
-from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
+from ._diagnostics import (
+    DiagnosticReport,
+    WarningItem,
+    compute_red_noise_diagnostics,
+    time_unit_warning,
+)
 from ._linalg import (
     PreparedWeights,
     compute_lss_vectorized,
@@ -914,12 +919,16 @@ def lssa(
                 suggestion="Check for duplicate timestamps, overly narrow jump segments, or collinear frequencies.",
             )
         )
-    elif core.condition_number > 1e10:
+    elif core.condition_number > 1e6:
         extra_warns.append(
             WarningItem(
                 code="HIGH_CONDITION_NUMBER",
                 severity="caution",
-                message=f"High design-matrix condition number ({core.condition_number:.2e}).",
+                message=(
+                    f"High design-matrix condition number ({core.condition_number:.2e}); individual "
+                    "coefficients/amplitudes (e.g. of near-identical known frequencies) are unstable, "
+                    "although fitted values remain accurate."
+                ),
             )
         )
 
@@ -1067,6 +1076,8 @@ def allssa(
 
     rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, core.residuals)
     extra_warns = list(rn_warns)
+    if omega is None:
+        extra_warns.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     if om_arr.size <= 1 and omega is None:
         extra_warns.append(
             WarningItem(

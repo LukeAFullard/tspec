@@ -688,6 +688,33 @@ def _kendall_var_s_ties(y: FloatArray, t: FloatArray) -> float:
     return max(0.0, float(var_s))
 
 
+def hamed_rao_factor(t: FloatArray, y: FloatArray, slope: float, alpha_acf: float = 0.05) -> float:
+    """Hamed & Rao (1998) variance inflation factor ``n / n*`` for the Mann-Kendall S.
+
+    Ranks of the Sen-detrended series are autocorrelated at lags ``1..n-1`` and only
+    lags significant at ``alpha_acf`` contribute (as in ``pymannkendall``'s
+    ``hamed_rao_modification_test``). Lags are in observation order.
+    """
+    from scipy.stats import rankdata
+
+    n = int(y.size)
+    if n < 4:
+        return 1.0
+    ranks = rankdata(y - slope * t)
+    r = ranks - ranks.mean()
+    den = float(np.dot(r, r))
+    if den <= 0.0:
+        return 1.0
+    acf = np.correlate(r, r, mode="full")[n - 1 :] / den
+    bound = float(norm.ppf(1.0 - alpha_acf / 2.0) / np.sqrt(n))
+    lags = np.arange(1, n)
+    a = acf[1:]
+    sig = np.abs(a) > bound
+    sni = float(np.sum(((n - lags) * (n - lags - 1) * (n - lags - 2) * a)[sig]))
+    factor = 1.0 + 2.0 * sni / (n * (n - 1) * (n - 2))
+    return factor if factor > 0.0 else 1.0
+
+
 def _censored_kendall_score(
     t: FloatArray,
     vals: FloatArray,
@@ -767,6 +794,7 @@ def fit_theil_sen_segment(
     status_codes: IntArray | None = None,
     original_values: FloatArray | None = None,
     max_exact_n: int = 2000,
+    autocorr_correction: Literal["none", "hamed_rao"] = "none",
 ) -> RobustSegmentFit:
     """Estimate robust segment slope, intercept, CI, and Mann–Kendall p-value.
 
@@ -872,15 +900,17 @@ def fit_theil_sen_segment(
     n_p = int(slopes_sorted.size)
     slope = float(np.median(slopes_sorted))
     intercept = float(np.median(y - slope * t))
+    if autocorr_correction == "hamed_rao" and var_s > 0.0:
+        var_s *= hamed_rao_factor(t, y, slope)
 
     if n <= max_exact_n and var_s > 0.0:
         z_mk = (s_stat - np.sign(s_stat)) / np.sqrt(var_s) if abs(s_stat) > 0.0 else 0.0
         pval = float(2.0 * norm.sf(abs(z_mk)))
         c_alpha = float(norm.isf(0.5 * alpha) * np.sqrt(var_s))
-        m1 = int(np.floor((n_p - c_alpha) / 2.0))
-        m2 = int(np.ceil((n_p + c_alpha) / 2.0))
-        idx_lo = max(0, min(n_p - 1, m1 - 1))
-        idx_hi = max(0, min(n_p - 1, m2 - 1))
+        # Gilbert (1987, Sec. 16.4): lower = M1-th, upper = (M2 + 1)-th ordered slope
+        # with M1 = (N' - C)/2 and M2 = (N' + C)/2 (rounded, as in R trend::sens.slope).
+        idx_lo = max(0, min(n_p - 1, int(np.round((n_p - c_alpha) / 2.0)) - 1))
+        idx_hi = max(0, min(n_p - 1, int(np.round((n_p + c_alpha) / 2.0))))
         ci_low = float(slopes_sorted[idx_lo])
         ci_high = float(slopes_sorted[idx_hi])
     else:

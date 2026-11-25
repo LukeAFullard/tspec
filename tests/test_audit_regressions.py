@@ -309,6 +309,7 @@ def test_high09_monitor_true_sliding_and_consecutive_k_consistency() -> None:
         season="ols",
         window_mode="sliding",
         sequential_control="pocock",
+        horizon=40,
         stop_on_first=False,
     )
     crits = [s.critical_value for s in res.steps]

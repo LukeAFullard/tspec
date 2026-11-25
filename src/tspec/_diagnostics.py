@@ -202,3 +202,32 @@ def compute_red_noise_diagnostics(
         ),
         tuple(warnings_list),
     )
+
+
+def time_unit_warning(t_num: FloatArray, is_datetime: bool) -> tuple[WarningItem, ...]:
+    """Warn when a numeric time axis does not look like decimal years.
+
+    Defaults such as JUST/ALLSSA/monitor frequency grids (cycles/year), window sizes
+    derived from samples per unit time, ``jump_th`` / ``tp_th`` (years), and the
+    1 cycle/year abrupt/phenological split all assume decimal years.
+    """
+    if is_datetime or t_num.size < 2:
+        return ()
+    span = float(t_num[-1] - t_num[0])
+    if span <= 0.0:
+        return ()
+    rate = (t_num.size - 1) / span
+    if span > 300.0 or rate > 1000.0 or rate < 0.25:
+        return (
+            WarningItem(
+                code="TIME_UNIT_ASSUMPTION",
+                severity="warning",
+                message=(
+                    f"Numeric time axis spans {span:.4g} units at {rate:.3g} samples/unit; tspec "
+                    "defaults (frequency grids in cycles/year, window sizes, jump_th/tp_th in years, "
+                    "1 cy/yr monitoring split) assume decimal years."
+                ),
+                suggestion="Convert t to decimal years (or pass datetimes), or set omega/size/thresholds explicitly.",
+            ),
+        )
+    return ()

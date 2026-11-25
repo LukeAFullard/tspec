@@ -16,7 +16,12 @@ from typing import Any, Literal
 import numpy as np
 from scipy.stats import t as student_t
 
-from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
+from ._diagnostics import (
+    DiagnosticReport,
+    WarningItem,
+    compute_red_noise_diagnostics,
+    time_unit_warning,
+)
 from ._linalg import prepare_weights, solve_weighted_ols
 from ._robust import (
     RobustMethod,
@@ -256,7 +261,7 @@ class StpdResult(BaseResult):
                     f"  {k}. Around {t_str} (index {tp.index}): slope changed from "
                     f"{tp.slope_before:+.4g} to {tp.slope_after:+.4g} per unit time "
                     f"(change {tp.direction:+.4g}, screening t-test p={tp.pvalue:.2e}, "
-                    f"NDRI={ndri_disp:.2f} — low NDRI confirms a smooth bend)."
+                    f"NDRI={ndri_disp:.2f} — low NDRI is consistent with a smooth bend)."
                 )
                 if tp.stability_rate is not None:
                     desc += f" Recovered in {tp.stability_rate:.0%} of censoring stability draws."
@@ -1525,6 +1530,7 @@ def detect_turning_points(
         )
 
     warnings_list: list[WarningItem] = list(prep.warnings)
+    warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     n = series.n_valid
     span = float(series.times_numeric[-1] - series.times_numeric[0])
     if span <= 0.0:

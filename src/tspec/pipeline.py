@@ -71,7 +71,7 @@ class SegmentSummary:
     end_time_year: float
     n_obs: int
     n_censored: int
-    estimator: Literal["ols", "sen", "ats", "l1", "huber"]
+    estimator: Literal["ols", "ols_mi", "sen", "ats", "l1", "huber"]
     slope: float
     intercept: float
     slope_ci_low: float | None
@@ -102,6 +102,8 @@ class PipelineResult(BaseResult):
     ci_level: float = 0.95
     trend_ci_low: FloatArray | None = None
     trend_ci_high: FloatArray | None = None
+    slope_fan_low: FloatArray | None = None
+    slope_fan_high: FloatArray | None = None
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
@@ -235,6 +237,9 @@ class PipelineResult(BaseResult):
         if self.trend_ci_low is not None and self.trend_ci_high is not None:
             data["trend_ci_low"] = self.trend_ci_low
             data["trend_ci_high"] = self.trend_ci_high
+        if self.slope_fan_low is not None and self.slope_fan_high is not None:
+            data["slope_fan_low"] = self.slope_fan_low
+            data["slope_fan_high"] = self.slope_fan_high
         if self.decomposition is not None:
             data["just_trend"] = self.decomposition.trend
             data["seasonal"] = self.decomposition.seasonal
@@ -326,6 +331,63 @@ def _estimate_vertical_step_offsets(
     return offsets
 
 
+def _mi_segment_slope(
+    t_s: FloatArray,
+    prov: CensoringProvenance,
+    seasonal_part: FloatArray,
+    s0: int,
+    s1: int,
+    D_s: FloatArray,
+    s_t: float,
+    pw_s: PreparedWeights,
+    alpha: float,
+    m: int,
+    seed: int,
+) -> tuple[float, float, float, float, float] | None:
+    """Rubin-pooled OLS slope over proper multiple imputations of a censored segment.
+
+    Imputation model: normal censored linear regression in time on the deseasonalized
+    values and limits (congenial with the segment OLS analysis model).
+    Returns ``(slope, intercept, ci_low, ci_high, pvalue)`` or ``None`` on failure.
+    """
+    from ._cenreg import fit_censored_regression, impute_censored_regression, rubin_pool
+
+    codes = prov.status_codes[s0:s1]
+    seas = seasonal_part[s0:s1]
+    vals = prov.original_values[s0:s1] - seas
+    left = prov.original_left[s0:s1] - seas if prov.original_left is not None else None
+    right = prov.original_right[s0:s1] - seas if prov.original_right is not None else None
+    w = pw_s.vector if pw_s.kind == "vector" else None
+    n_s = int(t_s.size)
+    try:
+        fit = fit_censored_regression(vals, codes, D_s, left=left, right=right, weights=w, dist="normal")
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    if not fit.converged:
+        return None
+    rng = np.random.default_rng(seed)
+    slopes = np.empty(m)
+    vars_ = np.empty(m)
+    icpts = np.empty(m)
+    for i in range(m):
+        y_i = impute_censored_regression(
+            fit, vals, codes, D_s, rng, left=left, right=right, weights=w, draw_params=True
+        )
+        ols_i = solve_weighted_ols(D_s, y_i, pw_s, compute_cov=True)
+        slopes[i] = float(ols_i.coeff[1]) / s_t
+        vars_[i] = float(ols_i.cov[1, 1]) / (s_t * s_t)
+        icpts[i] = float(ols_i.coeff[0]) - slopes[i] * float(t_s[0])
+    if not (np.all(np.isfinite(slopes)) and np.all(np.isfinite(vars_))):
+        return None
+    q, t_var, df = rubin_pool(slopes, vars_, float(n_s - 2))
+    se = float(np.sqrt(max(t_var, 0.0)))
+    if se <= 0.0:
+        return q, float(np.mean(icpts)), q, q, (0.0 if q != 0.0 else 1.0)
+    t_crit = float(t_dist.ppf(1.0 - 0.5 * alpha, df))
+    pval = float(2.0 * t_dist.sf(abs(q) / se, df))
+    return q, float(np.mean(icpts)), q - t_crit * se, q + t_crit * se, pval
+
+
 def _build_segment_summaries(
     t_valid: FloatArray,
     t_raw_valid: np.ndarray[Any, Any],
@@ -340,8 +402,18 @@ def _build_segment_summaries(
     huber_k: float,
     prov: CensoringProvenance | None,
     alpha: float = 0.05,
+    mk_correction: Literal["none", "hamed_rao"] = "hamed_rao",
+    n_imputations: int = 20,
+    mi_seed: int = 0,
+    mi_warnings: list[WarningItem] | None = None,
 ) -> tuple[tuple[SegmentSummary, ...], FloatArray | None, FloatArray | None, FloatArray | None]:
-    """Compute per-segment trend slopes, CIs, p-values, and pointwise trend CI bands."""
+    """Compute per-segment trend slopes, CIs, p-values, and pointwise trend CI bands.
+
+    For ``slope_estimator="ols"`` segments containing censored observations, slopes,
+    CIs and p-values come from ``n_imputations`` proper multiple imputations under a
+    segment-congenial censored linear regression (deseasonalized values and limits),
+    pooled with Rubin's rules and Barnard-Rubin degrees of freedom (``estimator="ols_mi"``).
+    """
     n = int(t_valid.size)
     if n == 0:
         return (), None, None, None
@@ -370,7 +442,7 @@ def _build_segment_summaries(
     def _make_seg(
         s0: int,
         s1: int,
-        est: Literal["ols", "sen", "ats", "l1", "huber"],
+        est: Literal["ols", "ols_mi", "sen", "ats", "l1", "huber"],
         slope: float,
         intercept: float,
         ci_low: float | None,
@@ -428,6 +500,7 @@ def _build_segment_summaries(
                     alpha=alpha,
                     status_codes=seg_codes,
                     original_values=seg_orig,
+                    autocorr_correction=mk_correction,
                 )
                 t_seg = t_valid[s0:s1]
                 override_trend[s0:s1] = ts_fit.intercept + ts_fit.slope * t_seg
@@ -560,6 +633,29 @@ def _build_segment_summaries(
                 s_t = float(t0_s[-1]) if float(t0_s[-1]) > 0.0 else 1.0
                 D_s = np.column_stack([np.ones(n_s, dtype=np.float64), t0_s / s_t])
                 pw_s: PreparedWeights = prepare_weights(_slice_w(s0, s1), n_s)
+                if (
+                    prov is not None
+                    and n_imputations >= 2
+                    and bool(np.any(prov.status_codes[s0:s1] != 0))
+                ):
+                    mi = _mi_segment_slope(
+                        t_s, prov, seasonal_part, s0, s1, D_s, s_t, pw_s, alpha,
+                        n_imputations, mi_seed + 7919 * k,
+                    )
+                    if mi is not None:
+                        segments.append(_make_seg(s0, s1, "ols_mi", *mi))
+                        continue
+                    if mi_warnings is not None:
+                        mi_warnings.append(
+                            WarningItem(
+                                code="MI_SEGMENT_FALLBACK",
+                                severity="warning",
+                                message=(
+                                    f"Multiple imputation failed for censored segment {k}; its OLS "
+                                    "CI ignores imputation uncertainty."
+                                ),
+                            )
+                        )
                 ols_s = solve_weighted_ols(D_s, y_s, pw_s, compute_cov=True)
                 slope_k = float(ols_s.coeff[1]) / s_t
                 intercept_k = float(ols_s.coeff[0]) - slope_k * float(t_s[0])
@@ -598,6 +694,7 @@ def analyze_series(
     robust: RobustMethod = "none",
     slope_estimator: SlopeEstimator = "ols",
     huber_k: float = 1.345,
+    mk_correction: Literal["none", "hamed_rao"] = "hamed_rao",
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     just_kwargs: dict[str, Any] | None = None,
@@ -625,8 +722,11 @@ def analyze_series(
 
        - ``'ols'``: weighted ordinary least squares with Student-t CIs.
        - ``'sen'``: exact **Theil–Sen** (uncensored) or **Akritas–Theil–Sen**
-         (left/right censored) with distribution-free CIs, Mann–Kendall
-         p-values, and median-pivoted slope-CI fans.
+         (left/right censored) with distribution-free CIs and Mann–Kendall
+         p-values. For uncensored segments ``mk_correction="hamed_rao"``
+         (default) inflates Var(S) for serial correlation (Hamed & Rao, 1998).
+         The median-pivoted slope envelope is exported as ``slope_fan_low/high``
+         (it is not a pointwise trend CI; ``trend_ci_*`` is ``None``).
        - ``'huber'``: continuous **Huber IRLS** hinge-spline with Huber (1981)
          asymptotic CIs.
        - ``'l1'``: globally optimal continuous **L1 (LAD)** hinge-spline via
@@ -647,6 +747,8 @@ def analyze_series(
     if not (0.0 < ci_level < 1.0):
         raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     rob_method = validate_robust_args(robust, huber_k)
+    if mk_correction not in ("none", "hamed_rao"):
+        raise ValueError("`mk_correction` must be 'none' or 'hamed_rao'.")
     if slope_estimator not in ("ols", "sen", "l1", "huber"):
         raise ValueError(
             f"Unknown `slope_estimator` {slope_estimator!r}. "
@@ -1097,6 +1199,7 @@ def analyze_series(
         cond_max = jumps_res.diagnostics.condition_number_max if jumps_res is not None else 1.0
 
     # Stage 5: Per-segment trend slopes, CIs, and p-values (OLS / Theil-Sen / ATS / L1 / Huber)
+    mi_warns: list[WarningItem] = []
     tp_valid_indices = (
         [tp.valid_index for tp in stpd_res.turning_points] if stpd_res is not None else []
     )
@@ -1113,11 +1216,27 @@ def analyze_series(
         huber_k=huber_k,
         prov=prov,
         alpha=1.0 - ci_level,
+        mk_correction=mk_correction,
+        n_imputations=int(eff_censoring.n_imputations) if eff_censoring is not None else 0,
+        mi_seed=int(eff_censoring.random_state) if (
+            eff_censoring is not None and isinstance(eff_censoring.random_state, (int, np.integer))
+        ) else 0,
+        mi_warnings=mi_warns,
     )
+    slope_fan_low: FloatArray | None = None
+    slope_fan_high: FloatArray | None = None
     if override_trend is not None:
         combined_trend = override_trend
-        trend_ci_low = override_ci_low
-        trend_ci_high = override_ci_high
+        if slope_estimator == "sen":
+            # Median-pivoted slope envelope: NOT a pointwise CI for the trend (zero width at
+            # each segment's median time), so it is exported separately.
+            slope_fan_low = override_ci_low
+            slope_fan_high = override_ci_high
+            trend_ci_low = None
+            trend_ci_high = None
+        else:
+            trend_ci_low = override_ci_low
+            trend_ci_high = override_ci_high
 
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
@@ -1129,6 +1248,7 @@ def analyze_series(
         if w.code not in ("MODERATE_AUTOCORRELATION", "STRONG_AUTOCORRELATION")
     ]
     filtered_warnings.extend(final_rn_warns)
+    filtered_warnings.extend(mi_warns)
 
     diag = DiagnosticReport(
         red_noise=rn_final,
@@ -1160,4 +1280,6 @@ def analyze_series(
         ci_level=ci_level,
         trend_ci_low=trend_ci_low,
         trend_ci_high=trend_ci_high,
+        slope_fan_low=slope_fan_low,
+        slope_fan_high=slope_fan_high,
     )

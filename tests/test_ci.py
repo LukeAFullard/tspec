@@ -326,6 +326,13 @@ class TestPipelineCIAndPlotting:
         if slope_estimator == "l1":
             assert res.trend_ci_low is None and res.trend_ci_high is None
             assert "trend_ci_low" not in df.columns
+        elif slope_estimator == "sen":
+            # Audit CRT-03: the median-pivoted slope fan is not a pointwise trend CI
+            assert res.trend_ci_low is None and res.trend_ci_high is None
+            assert "trend_ci_low" not in df.columns
+            assert res.slope_fan_low is not None and res.slope_fan_high is not None
+            assert {"slope_fan_low", "slope_fan_high"} <= set(df.columns)
+            assert "CI90=" in res.summary()
         else:
             assert res.trend_ci_low is not None and res.trend_ci_high is not None
             assert "trend_ci_low" in df.columns and "trend_ci_high" in df.columns
