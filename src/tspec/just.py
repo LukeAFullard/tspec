@@ -20,7 +20,7 @@ from scipy.stats import f as f_dist
 from scipy.stats import t as t_dist
 
 from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
-from ._linalg import PreparedWeights, prepare_weights, whiten_vector
+from ._linalg import PreparedWeights, prepare_weights, whiten_matrix, whiten_vector
 from ._robust import (
     RobustMethod,
     huber_nested_ftest,
@@ -56,6 +56,7 @@ from .spectral import (
 
 SeasonMode = Literal["allssa", "ols", "none"]
 WindowMode = Literal["count", "duration"]
+JumpCalibration = Literal["montecarlo", "bonferroni", "none"]
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ class JustJumpResult(BaseResult):
     jump_alpha: float | None
     censoring: CensoringProvenance | None
     diagnostics: DiagnosticReport
+    jump_calibration: str = "none"
 
     @property
     def jump_indices(self) -> IntArray:
@@ -129,7 +131,7 @@ class JustJumpResult(BaseResult):
         lines = [
             f"JUST Jump Detection Result (season={self.season!r}, "
             f"window_mode={self.window_mode!r}, alpha={self.alpha}, "
-            f"jump_alpha={self.jump_alpha})",
+            f"jump_alpha={self.jump_alpha}, jump_calibration={self.jump_calibration!r})",
             f"Thresholds   : |mag| >= {self.mag_th} or |dir| >= {self.dir_th}, "
             f"min separation >= {self.jump_th}",
             f"Jumps found  : {len(self.jumps)}",
@@ -167,6 +169,11 @@ class JustJumpResult(BaseResult):
                 f"Detected {len(self.jumps)} abrupt change(s) in the trend component "
                 f"(using {self.season.upper()} seasonal modeling without interpolating gaps):"
             )
+            p_label = (
+                "family-wise calibrated F-test"
+                if self.jump_calibration in ("montecarlo", "bonferroni")
+                else "uncalibrated screening F-test"
+            )
             for k, j in enumerate(self.jumps, start=1):
                 t_str = format_timestamp(j.time, self.is_datetime)
                 step_word = "upward" if j.magnitude >= 0 else "downward"
@@ -174,7 +181,7 @@ class JustJumpResult(BaseResult):
                 desc = (
                     f"  {k}. Around {t_str} (index {j.index}): {step_word} step of "
                     f"{j.magnitude:+.4g} and slope {slope_word} by {j.direction:+.4g}/unit time "
-                    f"(seen in {j.occurrences} window(s); screening F-test p={j.jump_pvalue:.2e})."
+                    f"(seen in {j.occurrences} window(s); {p_label} p={j.jump_pvalue:.2e})."
                 )
                 if j.stability_rate is not None:
                     desc += f" Recovered in {j.stability_rate:.0%} of censoring stability draws."
@@ -189,10 +196,20 @@ class JustJumpResult(BaseResult):
                         "limits are harmonized (likely a detection-limit artifact)."
                     )
                 lines.append(desc)
-            lines.append(
-                "Note: Window screening p-values are computed at the RSS-minimizing split "
-                "index and are more optimistic than fixed-date tests."
-            )
+            if self.jump_calibration in ("montecarlo", "bonferroni"):
+                if self.jump_alpha is not None:
+                    lines.append(
+                        f"Jump p-values account for the data-driven split search "
+                        f"({self.jump_calibration}) and are Holm-adjusted across candidate "
+                        f"locations; reported jumps are significant at family-wise "
+                        f"alpha={self.jump_alpha:g}."
+                    )
+            else:
+                lines.append(
+                    "Note: these are uncalibrated screening p-values computed at the "
+                    "RSS-minimizing split index; they are far more optimistic than "
+                    "fixed-date tests and do not control false positives."
+                )
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
 
@@ -255,6 +272,9 @@ class JustDecomposeResult(BaseResult):
     trend_reg_ci_high: FloatArray | None = None
     seasonal_reg_ci_low: FloatArray | None = None
     seasonal_reg_ci_high: FloatArray | None = None
+    trend_ci_method: str = "model"
+    trend_bc: FloatArray | None = None
+    trend_reg_bc: FloatArray | None = None
 
     def summary(self) -> str:
         t_range = float(np.ptp(self.trend)) if self.trend.size else 0.0
@@ -302,6 +322,8 @@ class JustDecomposeResult(BaseResult):
         if self.trend_ci_low is not None and self.trend_ci_high is not None:
             data["trend_ci_low"] = self.trend_ci_low
             data["trend_ci_high"] = self.trend_ci_high
+        if self.trend_bc is not None:
+            data["trend_bias_corrected"] = self.trend_bc
         if self.seasonal_ci_low is not None and self.seasonal_ci_high is not None:
             data["seasonal_ci_low"] = self.seasonal_ci_low
             data["seasonal_ci_high"] = self.seasonal_ci_high
@@ -577,6 +599,84 @@ def _detect_jump_in_window(
     return best_ind, best_mag, best_dir, best_rss, best_freqs
 
 
+def _mc_maxf_pvalue(
+    t0: FloatArray,
+    pw_win: PreparedWeights,
+    test_freqs: FloatArray,
+    f_obs: float,
+    j_lo: int,
+    j_hi: int,
+    n_mc: int,
+    seed: int | Sequence[int],
+) -> float:
+    """Exact Monte Carlo p-value of an observed jump F statistic against the null
+    distribution of the **maximum** F over all candidate splits ``j_lo <= j < j_hi``.
+
+    Under Gaussian errors with the supplied weights, the split-wise jump F statistics
+    (null: linear trend + fixed harmonics; alternative: adds a level and slope change at
+    ``j``) are pivotal, so simulating standard-normal whitened errors yields the exact
+    finite-sample null distribution of ``max_j F_j`` for this window design. This corrects
+    the anti-conservative fixed-split F reference used for a data-chosen split
+    (Andrews, 1993).
+    """
+    n = int(t0.size)
+    if j_hi <= j_lo or not np.isfinite(f_obs):
+        return float("nan")
+    span = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
+    u = (t0 - t0[0]) / span
+    n_f = int(test_freqs.size)
+    X0 = np.empty((n, 2 + 2 * n_f), dtype=np.float64)
+    X0[:, 0] = 1.0
+    X0[:, 1] = u
+    if n_f > 0:
+        ph = np.outer((2.0 * np.pi) * t0, test_freqs)
+        X0[:, 2::2] = np.cos(ph)
+        X0[:, 3::2] = np.sin(ph)
+    dof2 = n - X0.shape[1] - 2
+    if dof2 <= 0:
+        return float("nan")
+    q0, _ = np.linalg.qr(whiten_matrix(X0, pw_win), mode="reduced")
+    splits = np.arange(j_lo, j_hi)
+    n_j = int(splits.size)
+    step = (np.arange(n)[:, None] >= splits[None, :]).astype(np.float64)
+    zw = whiten_matrix(np.hstack([step, step * u[:, None]]), pw_win)
+    zp = zw - q0 @ (q0.T @ zw)
+    a = zp[:, :n_j]
+    b = zp[:, n_j:]
+    s11 = np.sum(a * a, axis=0)
+    s22 = np.sum(b * b, axis=0)
+    s12 = np.sum(a * b, axis=0)
+    det = s11 * s22 - s12 * s12
+    ok = (s11 > 0.0) & (s22 > 0.0) & (det > 1e-10 * s11 * s22)
+    if not np.any(ok):
+        return float("nan")
+    a, b, s11, s22, s12, det = a[:, ok], b[:, ok], s11[ok], s22[ok], s12[ok], det[ok]
+    rng = np.random.default_rng(seed)
+    exceed = 0
+    done = 0
+    chunk = 256
+    while done < n_mc:
+        m = min(chunk, n_mc - done)
+        e = rng.standard_normal((n, m))
+        r = e - q0 @ (q0.T @ e)
+        rss0 = np.sum(r * r, axis=0)
+        g1 = a.T @ r
+        g2 = b.T @ r
+        red = (s22[:, None] * g1 * g1 - 2.0 * s12[:, None] * g1 * g2 + s11[:, None] * g2 * g2) / det[:, None]
+        red = np.minimum(red, rss0[None, :] * (1.0 - 1e-12))
+        f_null = (0.5 * red) / ((rss0[None, :] - red) / dof2)
+        exceed += int(np.sum(np.max(f_null, axis=0) >= f_obs))
+        done += m
+    p_mc = float((1 + exceed) / (n_mc + 1))
+    if exceed == 0:
+        # Below Monte Carlo resolution: report the (valid) Bonferroni bound over the
+        # scanned splits, capped at 1/(n_mc+1). The test is unchanged for any
+        # alpha >= 1/(n_mc+1) and Bonferroni-valid below it.
+        p_bonf = float(min(1.0, n_j * f_dist.sf(f_obs, 2, dof2)))
+        return min(p_mc, p_bonf)
+    return p_mc
+
+
 def _nested_jump_ftests(
     t_win: FloatArray,
     y_win: FloatArray,
@@ -591,6 +691,9 @@ def _nested_jump_ftests(
     parity_mode: bool = False,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    calibration: JumpCalibration | None = None,
+    n_mc: int = 999,
+    mc_seed: int | Sequence[int] = 0,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -609,9 +712,11 @@ def _nested_jump_ftests(
     Schrader–Hettmansperger (1980) robust drop-in-dispersion F-test at the
     shared full-model scale so outlier spikes do not inflate false positives.
 
-    If ``bonferroni=True``, multiplies raw p-values by the number of candidate
-    interior split indices scanned in the window to mitigate post-selection
-    inflation.
+    ``calibration`` controls the split-selection correction of ``jump_pvalue``:
+    ``"montecarlo"`` (exact Monte Carlo null of the max-over-splits F statistic;
+    non-robust fits only), ``"bonferroni"`` (multiply raw p-values by the number of
+    candidate splits), or ``"none"`` (raw fixed-split p-values). ``bonferroni=True`` is
+    the legacy spelling of ``calibration="bonferroni"``.
     """
     from ._linalg import solve_weighted_ols
 
@@ -653,8 +758,13 @@ def _nested_jump_ftests(
         if eff_robust != "none"
         else 3
     )
+    calib: JumpCalibration = calibration if calibration is not None else (
+        "bonferroni" if bonferroni else "none"
+    )
+    if calib == "montecarlo" and eff_robust != "none":
+        calib = "bonferroni"
     n_cands = max(1, (n_win - 2 * min_seg + 1) if eff_robust != "none" else (n_win - 5))
-    mult = float(n_cands) if bonferroni else 1.0
+    mult = float(n_cands) if calib == "bonferroni" else 1.0
     if float(np.ptp(y_win)) <= 1e-13 * abs(float(np.mean(y_win))):
         return 1.0, 1.0
 
@@ -762,9 +872,32 @@ def _nested_jump_ftests(
     den = rss1 / dof2
     f_jump = max(0.0, (rss0 - rss1) / 2.0) / den
     f_step = max(0.0, rss_hinge - rss1) / den
+    if calib == "montecarlo":
+        p_jump = _mc_maxf_pvalue(t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed)
+        p_step = float(f_dist.sf(f_step, 1, dof2))
+        return float(p_jump), p_step
     p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
     p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2))))
     return p_jump, p_step
+
+
+def _holm_adjust_candidates(
+    tested: list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
+) -> list[tuple[int, int, float, float, float, float, float, WindowCandidate]]:
+    """Holm (1979) step-down adjustment of ``jump_pvalue`` across candidate locations."""
+    pvals = np.array([np.nan_to_num(it[5], nan=1.0) for it in tested], dtype=np.float64)
+    m = int(pvals.size)
+    order = np.argsort(pvals)
+    adj = np.empty(m, dtype=np.float64)
+    running = 0.0
+    for rank, idx in enumerate(order):
+        running = max(running, min(1.0, (m - rank) * pvals[idx]))
+        adj[idx] = running
+    out = []
+    for it, p_adj in zip(tested, adj, strict=True):
+        p_orig = it[5]
+        out.append((it[0], it[1], it[2], it[3], it[4], float(p_adj) if np.isfinite(p_orig) else p_orig, it[6], it[7]))
+    return out
 
 
 def _run_just_jumps_array(
@@ -783,6 +916,8 @@ def _run_just_jumps_array(
     *,
     step_alpha: float | None = None,
     bonferroni_window: bool = False,
+    jump_calibration: JumpCalibration | None = None,
+    n_mc: int = 999,
     parity_mode: bool,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
@@ -875,7 +1010,10 @@ def _run_just_jumps_array(
             r += 1
 
     # Compute nested partial F-test p-values & apply magnitude/direction/statistical filters
-    accepted: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+    calib: JumpCalibration = jump_calibration if jump_calibration is not None else (
+        "bonferroni" if bonferroni_window else "none"
+    )
+    tested: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
     for item in grouped:
         j_idx, occ, mag_val, dir_val, _bucket, dis_raw, best_c = item
         if abs(mag_val) < mag_th and abs(dir_val) < dir_th:
@@ -895,16 +1033,28 @@ def _run_just_jumps_array(
             season=season,
             omega=omega,
             alpha=alpha,
-            bonferroni=bonferroni_window,
             parity_mode=parity_mode,
             robust=robust,
             huber_k=huber_k,
+            calibration=calib,
+            n_mc=n_mc,
+            mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
         )
+        tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
+
+    # Family-wise control across the distinct candidate locations (Holm step-down) when
+    # a calibrated jump test is requested.
+    if calib != "none" and tested:
+        tested = _holm_adjust_candidates(tested)
+
+    accepted: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+    for item in tested:
+        p_jump, p_step = item[5], item[6]
         if jump_alpha is not None and (np.isnan(p_jump) or p_jump >= jump_alpha):
             continue
         if step_alpha is not None and (np.isnan(p_step) or p_step >= step_alpha):
             continue
-        accepted.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
+        accepted.append(item)
 
     return accepted, candidates_sorted, window_fallbacks
 
@@ -923,12 +1073,14 @@ def just_jumps(
     season: SeasonMode = "allssa",
     omega: ArrayLike | None = None,
     alpha: float = 0.01,
-    mag_th: float = 0.05,
-    dir_th: float = 0.01,
+    mag_th: float | None = None,
+    dir_th: float | None = None,
     jump_th: float = 0.75,
-    jump_alpha: float | None = None,
+    jump_alpha: float | None | Literal["auto"] = "auto",
     step_alpha: float | None = None,
     bonferroni_window: bool = False,
+    jump_calibration: JumpCalibration | None = None,
+    n_mc: int = 999,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -971,15 +1123,34 @@ def just_jumps(
         Significance level for ALLSSA seasonal peak detection (default ``0.01``).
     mag_th, dir_th:
         Minimum absolute jump magnitude or slope-change thresholds (keeps jumps
-        satisfying ``|mag| >= mag_th or |dir| >= dir_th``). Note: defaults
-        ``0.05`` / ``0.01`` follow Ghaderpour (2020) for NDVI/EVI scale; a
-        diagnostic warning is emitted automatically if mismatched to your data.
+        satisfying ``|mag| >= mag_th or |dir| >= dir_th``). Default ``None``
+        resolves to ``0.0`` (no effect-size filter; selection is controlled by
+        ``jump_alpha``), or to Ghaderpour's NDVI-scale ``0.05`` / ``0.01`` when
+        ``parity_mode=True``.
     jump_th:
         Minimum time separation between distinct jumps (default ``0.75``).
     jump_alpha:
-        Optional nested partial F-test significance cutoff (e.g. ``0.05``).
-        Defaults to ``None`` for Ghaderpour parity; ``jump_pvalue`` is always
-        computed and stored on every :class:`JumpEvent`.
+        Family-wise significance level for reported jumps. ``"auto"`` (default)
+        resolves to ``0.05``, or to ``None`` (no statistical filter, Ghaderpour
+        parity) when ``parity_mode=True``. Pass ``None`` explicitly to disable the
+        filter; ``jump_pvalue`` is always computed and stored on every
+        :class:`JumpEvent`.
+    step_alpha:
+        Optional additional cutoff on ``step_pvalue`` (discontinuous jump vs.
+        best continuous hinge), isolating vertical steps from smooth bends.
+    jump_calibration:
+        Correction of ``jump_pvalue`` for the data-driven choice of split inside
+        each window: ``"montecarlo"`` (default for non-robust fits; exact Monte
+        Carlo null of the max-over-splits F statistic, ``n_mc`` draws),
+        ``"bonferroni"`` (analytical, conservative; default for robust fits), or
+        ``"none"`` (raw fixed-split screening p-values, forced by
+        ``parity_mode=True``). With ``"montecarlo"`` or ``"bonferroni"``, p-values
+        are additionally Holm-adjusted across the distinct candidate locations so
+        ``jump_alpha`` bounds the probability of reporting any false jump.
+    bonferroni_window:
+        Legacy alias for ``jump_calibration="bonferroni"``.
+    n_mc:
+        Monte Carlo draws for ``jump_calibration="montecarlo"`` (default ``999``).
     robust:
         ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS window
         fits + Schrader–Hettmansperger robust nested F-tests), or ``'mm'``
@@ -1001,13 +1172,44 @@ def just_jumps(
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
     if not (0.0 < alpha < 1.0):
         raise ValueError(f"`alpha` must lie in (0, 1); got {alpha}.")
-    if jump_alpha is not None and not (0.0 < jump_alpha < 1.0):
-        raise ValueError(f"`jump_alpha` must lie in (0, 1); got {jump_alpha}.")
+    eff_jump_alpha: float | None
+    if isinstance(jump_alpha, str):
+        if jump_alpha != "auto":
+            raise ValueError(f"`jump_alpha` must be a float in (0, 1), None, or 'auto'; got {jump_alpha!r}.")
+        eff_jump_alpha = None if parity_mode else 0.05
+    else:
+        eff_jump_alpha = jump_alpha
+    if eff_jump_alpha is not None and not (0.0 < eff_jump_alpha < 1.0):
+        raise ValueError(f"`jump_alpha` must lie in (0, 1); got {eff_jump_alpha}.")
     if step_alpha is not None and not (0.0 < step_alpha < 1.0):
         raise ValueError(f"`step_alpha` must lie in (0, 1); got {step_alpha}.")
+    mag_th = (0.05 if parity_mode else 0.0) if mag_th is None else float(mag_th)
+    dir_th = (0.01 if parity_mode else 0.0) if dir_th is None else float(dir_th)
     if mag_th < 0.0 or dir_th < 0.0 or jump_th < 0.0:
         raise ValueError("`mag_th`, `dir_th`, and `jump_th` must be non-negative.")
+    if jump_calibration is not None and jump_calibration not in ("montecarlo", "bonferroni", "none"):
+        raise ValueError(
+            f"Unknown `jump_calibration` {jump_calibration!r}. Options: 'montecarlo', 'bonferroni', 'none'."
+        )
+    if int(n_mc) < 99:
+        raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
+    calib_warn: WarningItem | None = None
+    if parity_mode:
+        eff_calib: JumpCalibration = "none"
+    elif jump_calibration is not None:
+        eff_calib = jump_calibration
+    elif bonferroni_window:
+        eff_calib = "bonferroni"
+    else:
+        eff_calib = "bonferroni" if eff_robust != "none" else "montecarlo"
+    if eff_calib == "montecarlo" and eff_robust != "none":
+        eff_calib = "bonferroni"
+        calib_warn = WarningItem(
+            code="CALIBRATION_FALLBACK",
+            severity="info",
+            message="Monte Carlo jump calibration is available for non-robust fits only; used Bonferroni.",
+        )
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
     series = prep.series
@@ -1026,12 +1228,38 @@ def just_jumps(
     )
 
     warnings_list: list[WarningItem] = list(prep.warnings)
+    if calib_warn is not None:
+        warnings_list.append(calib_warn)
+    if not parity_mode and eff_jump_alpha is None:
+        warnings_list.append(
+            WarningItem(
+                code="UNCALIBRATED_JUMP_SELECTION",
+                severity="warning",
+                message=(
+                    "jump_alpha=None: jumps are selected by magnitude/direction thresholds only, "
+                    "with no false-positive control."
+                ),
+                suggestion="Use the default jump_alpha (0.05) for family-wise calibrated selection.",
+            )
+        )
+    elif not parity_mode and eff_calib == "none":
+        warnings_list.append(
+            WarningItem(
+                code="UNCALIBRATED_JUMP_PVALUES",
+                severity="warning",
+                message=(
+                    "jump_calibration='none': jump p-values are raw fixed-split screening p-values at "
+                    "data-chosen splits and are strongly anti-conservative."
+                ),
+                suggestion="Use jump_calibration='montecarlo' (default) or 'bonferroni'.",
+            )
+        )
 
     # Scale-mismatch diagnostic for default NDVI-tuned mag_th
     iqr = float(np.percentile(series.values, 75) - np.percentile(series.values, 25))
     if (
         not parity_mode
-        and jump_alpha is None
+        and eff_jump_alpha is None
         and mag_th == 0.05
         and iqr > 0.0
         and (0.01 * iqr > 0.05 or 2.0 * iqr < 0.05)
@@ -1046,7 +1274,7 @@ def just_jumps(
                     ),
                     suggestion=(
                         f"Consider setting mag_th≈{0.25 * iqr:.3g} (domain-meaningful jump size) "
-                        "or enabling `jump_alpha=0.05` (or using `analyze_series()`)."
+                        "or using the calibrated default `jump_alpha=0.05`."
                     ),
                 )
             )
@@ -1107,9 +1335,10 @@ def just_jumps(
         mag_th,
         dir_th,
         jump_th,
-        jump_alpha,
+        eff_jump_alpha,
         step_alpha=step_alpha,
-        bonferroni_window=bonferroni_window,
+        jump_calibration=eff_calib,
+        n_mc=int(n_mc),
         parity_mode=parity_mode,
         robust=eff_robust,
         huber_k=huber_k,
@@ -1166,9 +1395,10 @@ def just_jumps(
                 mag_th,
                 dir_th,
                 jump_th,
-                jump_alpha,
+                eff_jump_alpha,
                 step_alpha=step_alpha,
-                bonferroni_window=bonferroni_window,
+                jump_calibration=eff_calib,
+                n_mc=int(n_mc),
                 parity_mode=parity_mode,
                 robust=eff_robust,
                 huber_k=huber_k,
@@ -1389,9 +1619,10 @@ def just_jumps(
         mag_th=mag_th,
         dir_th=dir_th,
         jump_th=jump_th,
-        jump_alpha=jump_alpha,
+        jump_alpha=eff_jump_alpha,
         censoring=prov,
         diagnostics=diag,
+        jump_calibration=eff_calib,
     )
 
 
@@ -1509,6 +1740,61 @@ def _window_component_half_widths(
     return t_crit * np.sqrt(var_tr), t_crit * np.sqrt(var_seas)
 
 
+def _window_bias_corrected_trend(
+    t_obs: FloatArray,
+    y_obs: FloatArray,
+    pw_w: PreparedWeights,
+    local_jumps: IntArray,
+    freqs: FloatArray,
+    t_targets: list[FloatArray],
+    target_is_obs: list[bool],
+    ci_level: float,
+    *,
+    robust: RobustMethod,
+    huber_k: float,
+) -> list[tuple[FloatArray, FloatArray]] | None:
+    """Local-quadratic (bias-corrected) window trend and pointwise t half-widths.
+
+    Refits the window with a quadratic trend term (piecewise intercepts/slopes at the
+    local jumps plus one global quadratic) holding the selected harmonics fixed, and
+    returns ``(trend_bc, half_width)`` on each requested target grid. Centering the band
+    on the bias-corrected estimate with its own (larger) variance removes the leading
+    local-linear smoothing bias (Calonico, Cattaneo & Farrell, 2018).
+    Returns ``None`` when the window cannot support the extra parameter.
+    """
+    n_obs = int(t_obs.size)
+    n_j = int(local_jumps.size)
+    n_trq = 2 * (n_j + 1) + 1
+    nc_q = n_trq + 2 * int(freqs.size)
+    if n_obs <= nc_q + 1:
+        return None
+    try:
+        res_q = _lssa_core(
+            t_obs, y_obs, pw_w, np.empty(0, dtype=np.float64), local_jumps, 0.05,
+            "quadratic", False, freqs, compute_cov=True, robust=robust, huber_k=huber_k,
+        )
+    except InsufficientDataError:
+        return None
+    cov = res_q.cov
+    if cov.size == 0 or not np.all(np.isfinite(cov)) or res_q.rank_deficient:
+        return None
+    coeff_tr = res_q.coeff[:n_trq]
+    cov_tt = cov[:n_trq, :n_trq]
+    t_crit = float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n_obs - nc_q)))
+    out: list[tuple[FloatArray, FloatArray]] = []
+    for tt, is_obs in zip(t_targets, target_is_obs, strict=True):
+        if is_obs or n_j == 0:
+            jj = local_jumps
+        else:
+            jj = np.array([int(np.searchsorted(tt, t_obs[j], side="left")) for j in local_jumps], dtype=np.intp)
+        D, cs = build_design_matrix(tt, "quadratic", jj, False, np.empty(0, dtype=np.float64))
+        D_u = D / cs
+        est = D_u @ coeff_tr
+        var = np.maximum(0.0, np.sum((D_u @ cov_tt) * D_u, axis=1))
+        out.append((np.asarray(est, dtype=np.float64), t_crit * np.sqrt(var)))
+    return out
+
+
 def just_decompose(
     t: TimeLike,
     y: ValueLike,
@@ -1526,6 +1812,7 @@ def just_decompose(
     omega: ArrayLike | None = None,
     alpha: float = 0.01,
     ci_level: float = 0.95,
+    trend_ci_method: Literal["bias_corrected", "model"] | None = None,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1543,8 +1830,17 @@ def just_decompose(
 
     Pointwise confidence intervals at level ``ci_level`` (default ``0.95``) are
     computed analytically inside each window and blended across overlapping
-    Gaussian windows via the conservative Cauchy–Schwarz half-width blend so
-    overlapping correlated windows do not artificially shrink interval widths.
+    Gaussian windows via the Cauchy–Schwarz half-width blend (a valid upper bound on
+    the standard deviation of the blended estimator).
+
+    ``trend_ci_method`` controls the trend band. ``"bias_corrected"`` (default)
+    refits every window with an added quadratic trend term and centers the band on
+    that bias-corrected estimate (``trend_bc``) with its own variance, so smooth
+    curvature within a window does not make the band miss the true trend (robust
+    bias correction, Calonico, Cattaneo & Farrell, 2018). ``"model"`` (forced by
+    ``parity_mode=True``) gives the band of the local-linear window model around
+    ``trend``; it ignores the smoothing bias and under-covers curved trends (e.g.
+    ~70% for a 9-year cycle). Seasonal bands are model-based in both cases.
     In default mode (``parity_mode=False``), pure sinusoidal seasonal terms are
     not sample-mean shifted onto the trend, eliminating seasonal-balance bias on
     irregularly sampled timestamps (``parity_mode=True`` retains Ghaderpour's
@@ -1559,6 +1855,11 @@ def just_decompose(
         raise ValueError(f"`alpha` must lie in (0, 1); got {alpha}.")
     if not (0.0 < ci_level < 1.0):
         raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
+    if trend_ci_method is not None and trend_ci_method not in ("bias_corrected", "model"):
+        raise ValueError(
+            f"Unknown `trend_ci_method` {trend_ci_method!r}. Options: 'bias_corrected', 'model'."
+        )
+    eff_ci_method = "model" if parity_mode else (trend_ci_method or "bias_corrected")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
@@ -1677,6 +1978,15 @@ def just_decompose(
     seas_reg_hw_acc = np.zeros(n_tt, dtype=np.float64)
     sum_w_reg_tr_ci = np.zeros(n_tt, dtype=np.float64)
     sum_w_reg_s_ci = np.zeros(n_tt, dtype=np.float64)
+
+    bc_on = eff_ci_method == "bias_corrected"
+    trend_bc0 = np.zeros(n, dtype=np.float64)
+    hw_bc0 = np.zeros(n, dtype=np.float64)
+    sum_w_bc0 = np.zeros(n, dtype=np.float64)
+    trend_bc_reg = np.zeros(n_tt, dtype=np.float64)
+    hw_bc_reg = np.zeros(n_tt, dtype=np.float64)
+    sum_w_bc_reg = np.zeros(n_tt, dtype=np.float64)
+    bc_fallbacks = 0
 
     win_freqs_list: list[FloatArray] = []
     cond_max = 1.0
@@ -1821,6 +2131,23 @@ def just_decompose(
             seas_hw0[lb0:ub0] += np.where(fin_s, hw_s_w * gauss_w, 0.0)
             sum_w0_s_ci[lb0:ub0] += np.where(fin_s, gauss_w, 0.0)
 
+        bc_win: list[tuple[FloatArray, FloatArray]] | None = None
+        if bc_on:
+            targets = [ty_loc, tty_loc] if has_eval else [ty_loc]
+            bc_win = _window_bias_corrected_trend(
+                ty_loc, yy, pw_w, local_j, freqs_w, targets, [True, False][: len(targets)],
+                ci_level, robust=eff_robust, huber_k=huber_k,
+            )
+            if bc_win is None:
+                bc_fallbacks += 1
+                bc_obs = (trend_t, hw_tr_w)
+            else:
+                bc_obs = bc_win[0]
+            fin_bc = np.isfinite(bc_obs[1])
+            trend_bc0[lb0:ub0] += np.where(fin_bc, bc_obs[0] * gauss_w, 0.0)
+            hw_bc0[lb0:ub0] += np.where(fin_bc, bc_obs[1] * gauss_w, 0.0)
+            sum_w_bc0[lb0:ub0] += np.where(fin_bc, gauss_w, 0.0)
+
         if has_eval:
             trend_tt = _eval_piecewise_trend(
                 ty_loc, tty_loc, local_j, tr_coeff, parity_mode=parity_mode
@@ -1860,6 +2187,12 @@ def just_decompose(
             if np.any(fin_s_tt):
                 seas_reg_hw_acc[lb:ub] += np.where(fin_s_tt, hw_s_tt * gw_tt, 0.0)
                 sum_w_reg_s_ci[lb:ub] += np.where(fin_s_tt, gw_tt, 0.0)
+            if bc_on:
+                bc_reg = bc_win[1] if bc_win is not None else (trend_tt, hw_tr_tt)
+                fin_bcr = np.isfinite(bc_reg[1])
+                trend_bc_reg[lb:ub] += np.where(fin_bcr, bc_reg[0] * gw_tt, 0.0)
+                hw_bc_reg[lb:ub] += np.where(fin_bcr, bc_reg[1] * gw_tt, 0.0)
+                sum_w_bc_reg[lb:ub] += np.where(fin_bcr, gw_tt, 0.0)
 
     if eval_gap_skipped > 0:
         warnings_list.append(
@@ -1890,8 +2223,15 @@ def just_decompose(
         remainder = np.where(sum_w0 > 0, remainders0 / sum_w0, np.nan)
         tr_hw = np.where(sum_w0_tr_ci > 0, trend_hw0 / sum_w0_tr_ci, np.nan)
         s_hw = np.where(sum_w0_s_ci > 0, seas_hw0 / sum_w0_s_ci, np.nan)
-        trend_ci_low = trend - tr_hw
-        trend_ci_high = trend + tr_hw
+        trend_bc_arr: FloatArray | None = None
+        if bc_on:
+            trend_bc_arr = np.where(sum_w_bc0 > 0, trend_bc0 / sum_w_bc0, np.nan)
+            hw_bc = np.where(sum_w_bc0 > 0, hw_bc0 / sum_w_bc0, np.nan)
+            trend_ci_low = trend_bc_arr - hw_bc
+            trend_ci_high = trend_bc_arr + hw_bc
+        else:
+            trend_ci_low = trend - tr_hw
+            trend_ci_high = trend + tr_hw
         seasonal_ci_low = seasonal - s_hw
         seasonal_ci_high = seasonal + s_hw
 
@@ -1904,18 +2244,37 @@ def just_decompose(
             )
             tr_reg_hw = np.where(sum_w_reg_tr_ci > 0, trend_reg_hw_acc / sum_w_reg_tr_ci, np.nan)
             s_reg_hw = np.where(sum_w_reg_s_ci > 0, seas_reg_hw_acc / sum_w_reg_s_ci, np.nan)
-            trend_reg_ci_low: FloatArray | None = trend_reg - tr_reg_hw
-            trend_reg_ci_high: FloatArray | None = trend_reg + tr_reg_hw
+            trend_reg_bc: FloatArray | None = None
+            if bc_on:
+                trend_reg_bc = np.where(sum_w_bc_reg > 0, trend_bc_reg / sum_w_bc_reg, np.nan)
+                hw_bcr = np.where(sum_w_bc_reg > 0, hw_bc_reg / sum_w_bc_reg, np.nan)
+                trend_reg_ci_low: FloatArray | None = trend_reg_bc - hw_bcr
+                trend_reg_ci_high: FloatArray | None = trend_reg_bc + hw_bcr
+            else:
+                trend_reg_ci_low = trend_reg - tr_reg_hw
+                trend_reg_ci_high = trend_reg + tr_reg_hw
             seasonal_reg_ci_low: FloatArray | None = seasonal_reg - s_reg_hw
             seasonal_reg_ci_high: FloatArray | None = seasonal_reg + s_reg_hw
         else:
             trend_reg = None
             seasonal_reg = None
+            trend_reg_bc = None
             trend_reg_ci_low = None
             trend_reg_ci_high = None
             seasonal_reg_ci_low = None
             seasonal_reg_ci_high = None
 
+    if bc_on and bc_fallbacks > 0:
+        warnings_list.append(
+            WarningItem(
+                code="BIAS_CORRECTION_FALLBACK",
+                severity="info",
+                message=(
+                    f"{bc_fallbacks} window(s) were too small for the local-quadratic bias-corrected "
+                    "trend band; their model-based band was used instead."
+                ),
+            )
+        )
     valid_rem = remainder[~np.isnan(remainder)]
     rn, rn_warns = compute_red_noise_diagnostics(
         series.times_numeric[~np.isnan(remainder)], valid_rem
@@ -1959,4 +2318,7 @@ def just_decompose(
         trend_reg_ci_high=trend_reg_ci_high,
         seasonal_reg_ci_low=seasonal_reg_ci_low,
         seasonal_reg_ci_high=seasonal_reg_ci_high,
+        trend_ci_method=eff_ci_method,
+        trend_bc=trend_bc_arr,
+        trend_reg_bc=trend_reg_bc,
     )

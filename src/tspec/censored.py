@@ -68,7 +68,18 @@ def _require_ndimpute() -> Any:
 
 @dataclass(frozen=True)
 class CensoredConfig:
-    """Configuration for ``ndimpute``-backed censored time-series analysis."""
+    """Configuration for censored time-series analysis.
+
+    ``imputation_model="trend"`` (default, with ``scope="global"``) imputes censored
+    values from a censored-regression (Tobit-type) MLE conditional on time (linear
+    trend plus ``trend_harmonics``; default ``(1, 2)`` cycles/year for datetime input,
+    none otherwise), so imputations keep the series' temporal structure.
+    ``imputation_model="marginal"`` uses ``ndimpute``'s time-invariant marginal model
+    (ROS / parametric), which flattens trends among censored values and biases slopes
+    toward zero. ``n_imputations`` multiple imputations are pooled with Rubin's rules
+    for ``analyze_series`` OLS segment slopes. ``dist="weibull"`` and
+    ``method="substitution"`` always use the marginal path.
+    """
 
     method: Literal["ros", "parametric", "substitution"] = "ros"
     censoring_type: Literal["left", "right", "mixed", "interval"] | None = None
@@ -89,8 +100,15 @@ class CensoredConfig:
     left_marker: str = "<"
     right_marker: str = ">"
     ndimpute_kwargs: dict[str, Any] = field(default_factory=dict)
+    imputation_model: Literal["trend", "marginal"] = "trend"
+    trend_harmonics: tuple[float, ...] | None = None
+    n_imputations: int = 20
 
     def __post_init__(self) -> None:
+        if self.imputation_model not in ("trend", "marginal"):
+            raise ValueError("`imputation_model` must be 'trend' or 'marginal'.")
+        if self.n_imputations < 1:
+            raise ValueError("`n_imputations` must be >= 1.")
         if not (0.0 < self.imputed_weight_factor <= 1.0):
             raise ValueError(
                 f"`imputed_weight_factor` must lie in (0, 1]; got {self.imputed_weight_factor}."
@@ -879,6 +897,26 @@ def generate_stability_draws(
     child_rngs = _spawn_stability_rngs(config.random_state, n_draws)
 
     draws: list[FloatArray] = []
+    attrs_p = provenance.ndimpute_attrs
+    if attrs_p.get("imputation_model") == "trend" and config.scope == "global":
+        for rng in child_rngs:
+            try:
+                imp, _ = impute_trend_model(
+                    provenance.original_values,
+                    provenance.status_codes,
+                    provenance.original_left,
+                    provenance.original_right,
+                    t_valid,
+                    tuple(attrs_p.get("trend_harmonics", ())),
+                    str(attrs_p.get("dist", config.dist)),
+                    "stochastic",
+                    rng,
+                    draw_params=True,
+                )
+            except (ValueError, np.linalg.LinAlgError):
+                imp = provenance.imputed_values.copy()
+            draws.append(imp)
+        return draws
     for rng in child_rngs:
         if config.stability_mode == "bootstrap":
             imp = _bootstrap_refit_draw(provenance, config, rng)
@@ -1034,6 +1072,58 @@ def _impute_causal_history_and_monitoring(
         imp_out[k] = float(imp_pair[-1])
 
     return imp_out, attrs
+
+
+def _resolve_trend_dist(
+    vals: FloatArray, codes: IntArray, left: FloatArray | None, right: FloatArray | None, dist: str
+) -> str:
+    if dist in ("normal", "lognormal"):
+        return dist
+    if dist == "weibull":
+        raise ValueError("Weibull is not supported by the trend imputation model.")
+    pos = bool(np.all(vals[codes == 0] > 0))
+    if codes.size and np.any(codes == -1):
+        pos = pos and bool(np.all(vals[codes == -1] > 0))
+    if left is not None:
+        fin = np.isfinite(left) & (codes == 2)
+        pos = pos and bool(np.all(left[fin] > 0))
+    return "lognormal" if pos else "normal"
+
+
+def impute_trend_model(
+    vals: FloatArray,
+    codes: IntArray,
+    left: FloatArray | None,
+    right: FloatArray | None,
+    t_valid: FloatArray,
+    harmonics: tuple[float, ...],
+    dist: str,
+    impute_type: str,
+    rng: np.random.Generator,
+    *,
+    draw_params: bool = False,
+) -> tuple[FloatArray, dict[str, Any]]:
+    """Impute censored values conditionally on time via censored-regression MLE."""
+    from ._cenreg import fit_censored_regression, impute_censored_regression, trend_design
+
+    d = _resolve_trend_dist(vals, codes, left, right, dist)
+    X = trend_design(t_valid, harmonics)
+    fit = fit_censored_regression(vals, codes, X, left=left, right=right, dist=d)
+    if not fit.converged:
+        raise ValueError("Censored-regression MLE did not converge.")
+    imp = impute_censored_regression(
+        fit, vals, codes, X, rng, left=left, right=right, mode=impute_type, draw_params=draw_params
+    )
+    attrs = {
+        "method": "censored_regression",
+        "imputation_model": "trend",
+        "dist": d,
+        "impute_type": impute_type,
+        "trend_harmonics": tuple(float(f) for f in harmonics),
+        "trend_coef": fit.beta.tolist(),
+        "trend_sigma": float(np.exp(fit.log_sigma)),
+    }
+    return imp, attrs
 
 
 def prepare_series_with_censoring(
@@ -1241,9 +1331,39 @@ def prepare_series_with_censoring(
             start_idx,
         )
     else:
-        imp_global, attrs = _call_ndimpute_single(
-            vals_valid, codes_valid, left_valid, right_valid, ctype, cfg, rng
+        use_trend = (
+            cfg.imputation_model == "trend"
+            and cfg.scope == "global"
+            and cfg.method != "substitution"
+            and n_cen > 0
         )
+        imp_global = None
+        if use_trend:
+            harm = cfg.trend_harmonics if cfg.trend_harmonics is not None else ((1.0, 2.0) if is_dt else ())
+            try:
+                imp_global, attrs = impute_trend_model(
+                    vals_valid, codes_valid, left_valid, right_valid, t_valid, tuple(harm),
+                    cfg.dist, cfg.impute_type, rng,
+                )
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                warnings_list.append(
+                    WarningItem(
+                        code="TREND_IMPUTATION_FALLBACK",
+                        severity="warning",
+                        message=(
+                            f"Time-conditional censored-regression imputation failed ({exc}); fell back "
+                            "to ndimpute's time-invariant marginal model, which biases trends toward zero."
+                        ),
+                    )
+                )
+                imp_global = None
+        if imp_global is None:
+            imp_global, attrs = _call_ndimpute_single(
+                vals_valid, codes_valid, left_valid, right_valid, ctype, cfg, rng
+            )
+            if n_cen > 0 and cfg.method != "substitution" and cfg.scope == "global":
+                attrs = dict(attrs)
+                attrs["imputation_model"] = "marginal"
         if cfg.scope == "seasonal_stratified" and n_cen > 0:
             imp_values, fallback_count = _impute_seasonal_stratified(
                 t_valid,

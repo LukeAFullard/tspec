@@ -23,6 +23,8 @@ from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagn
 from ._linalg import (
     PreparedWeights,
     compute_lss_vectorized,
+    max_lss_null_draws,
+    orthonormal_design_basis,
     prepare_weights,
     solve_weighted_ols,
 )
@@ -38,6 +40,7 @@ from .results import (
 )
 
 TrendType = Literal["none", "constant", "linear", "quadratic", "cubic"]
+SignificanceMethod = Literal["montecarlo", "sidak", "per_frequency"]
 _VALID_TRENDS: tuple[str, ...] = ("none", "constant", "linear", "quadratic", "cubic")
 
 
@@ -169,6 +172,29 @@ def _default_allssa_omega(t0: FloatArray) -> FloatArray:
     if upper <= 1:
         return np.array([1.0], dtype=np.float64)
     return np.arange(1, upper, dtype=np.float64)
+
+
+def _allssa_search_grid(t0: FloatArray, omega: FloatArray, decimal: int) -> tuple[FloatArray, float]:
+    """Dense grid covering every frequency ALLSSA can select, and its effective size.
+
+    Returns ``(grid, k_eff)`` where ``k_eff`` approximates the number of independent
+    frequencies searched (Rayleigh resolution ``1/T`` over the band), used for the
+    analytical Sidak family-wise threshold.
+    """
+    span = float(t0[-1] - t0[0]) if t0.size > 1 else 1.0
+    span = span if span > 0.0 else 1.0
+    if omega.size == 0:
+        return np.empty(0, dtype=np.float64), 1.0
+    if decimal == 0:
+        grid = np.unique(np.maximum(1.0, np.floor(omega + 0.5)))
+        return grid.astype(np.float64), float(max(1, grid.size))
+    step = 10.0 ** (-decimal)
+    f_lo = max(step, float(np.min(omega)) - 0.5)
+    f_hi = float(np.max(omega)) + 0.5
+    d_step = max(step, 1.0 / (20.0 * span))
+    grid = np.arange(f_lo, f_hi + 0.5 * d_step, d_step, dtype=np.float64)
+    k_eff = float(min(grid.size, max(int(np.unique(omega).size), int(np.ceil(span * (f_hi - f_lo))))))
+    return grid, max(1.0, k_eff)
 
 
 def critical_value_lss(n: int, nc: int, alpha: float) -> float:
@@ -307,8 +333,17 @@ def _allssa_core(
     compute_cov: bool = True,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    significance: str = "per_frequency",
+    n_mc: int = 999,
 ) -> _AllssaCoreOutput:
-    """Fast internal ALLSSA iterative anti-leakage kernel."""
+    """Fast internal ALLSSA iterative anti-leakage kernel.
+
+    ``significance`` selects the acceptance rule for each new frequency:
+    ``"per_frequency"`` (published rule: peak > Beta critical value at ``alpha``),
+    ``"sidak"`` (analytical family-wise threshold over the effective number of
+    searched frequencies), or ``"montecarlo"`` (exact Monte Carlo null of the spectral
+    maximum over the searched grid; peak accepted when its family-wise p <= alpha).
+    """
     eff_robust: RobustMethod = "none" if parity_mode else robust
     inc = 10**decimal
     step = 1.0 / inc
@@ -323,6 +358,10 @@ def _allssa_core(
 
     n = int(t0.size)
     base_nc = _count_constituents(trend, int(jump_indices.size), shared_slope, 0)
+    fw_method = "per_frequency" if parity_mode else significance
+    if fw_method != "per_frequency":
+        search_grid, k_eff = _allssa_search_grid(t0, omega, decimal)
+        alpha_sidak = float(1.0 - (1.0 - alpha) ** (1.0 / k_eff))
 
     res = _lssa_core(
         t0,
@@ -394,7 +433,21 @@ def _allssa_core(
         any_rank_def = any_rank_def or res_fine.rank_deficient
 
         fine_idx = int(np.argmax(res_fine.spectrum))
-        if res_fine.spectrum[fine_idx] > res_fine.critical_value:
+        s_peak = float(res_fine.spectrum[fine_idx])
+        accept = s_peak > res_fine.critical_value
+        if accept and fw_method == "sidak":
+            accept = s_peak > critical_value_lss(n, nc_fine, alpha_sidak)
+        elif accept and fw_method == "montecarlo":
+            sel_arr = np.asarray(selected, dtype=np.float64)
+            D_cur, _ = build_design_matrix(t0, trend, jump_indices, shared_slope, sel_arr)
+            q_cur = orthonormal_design_basis(D_cur, pw)
+            draws = max_lss_null_draws(
+                t0, search_grid, q_cur, pw, known_freqs=sel_arr, n_mc=n_mc,
+                seed=(20261125, it, len(selected)),
+            )
+            p_fw = (1.0 + float(np.sum(draws >= s_peak))) / (n_mc + 1.0)
+            accept = p_fw <= alpha
+        if accept:
             om_new = _round_half_up(float(om_fine[fine_idx]), decimal)
             if any(abs(om_new - f_prev) < 0.5 * step for f_prev in prev):
                 selected = prev
@@ -523,10 +576,16 @@ class LssaResult(BaseResult):
     times_raw: np.ndarray[Any, Any]
     is_datetime: bool
     diagnostics: DiagnosticReport
+    peak_fap: float = float("nan")
+    peak_fap_method: str = "none"
 
     @property
     def significant_mask(self) -> np.ndarray[Any, np.dtype[np.bool_]]:
-        """Boolean mask of frequencies exceeding the critical value."""
+        """Boolean mask of frequencies exceeding the **per-frequency** critical value.
+
+        Under pure noise about ``alpha * len(frequencies)`` points exceed it by chance;
+        use :attr:`peak_fap` for the family-wise significance of the highest peak.
+        """
         return np.asarray(self.spectrum > self.critical_value, dtype=np.bool_)
 
     def summary(self) -> str:
@@ -543,7 +602,8 @@ class LssaResult(BaseResult):
             peak_idx = int(np.argmax(self.spectrum))
             lines.append(
                 f"Peak frequency     : {self.frequencies[peak_idx]:.4f} "
-                f"(LSS={self.spectrum[peak_idx]:.4f}, p={self.pvalues[peak_idx]:.3e})"
+                f"(LSS={self.spectrum[peak_idx]:.4f}, per-frequency p={self.pvalues[peak_idx]:.3e}, "
+                f"family-wise FAP={self.peak_fap:.3e} [{self.peak_fap_method}])"
             )
         lines.extend(format_diagnostics_block(self.diagnostics))
         return "\n".join(lines)
@@ -557,21 +617,32 @@ class LssaResult(BaseResult):
             )
         else:
             sig_idx = np.flatnonzero(self.significant_mask)
-            if sig_idx.size == 0:
+            peak_idx = int(np.argmax(self.spectrum))
+            n_freq = self.frequencies.size
+            fap_known = np.isfinite(self.peak_fap)
+            if fap_known and self.peak_fap <= self.alpha:
                 lines.append(
-                    f"No statistically significant periodic cycles were detected across the "
-                    f"{self.frequencies.size} tested frequencies at alpha={self.alpha}."
+                    f"The highest spectral peak, near frequency {self.frequencies[peak_idx]:.3f} "
+                    f"(explaining {100.0 * self.spectrum[peak_idx]:.1f}% of residual variance), is "
+                    f"significant after accounting for the {n_freq} frequencies searched "
+                    f"(family-wise false-alarm probability {self.peak_fap:.2e} <= alpha={self.alpha})."
+                )
+            elif fap_known:
+                lines.append(
+                    f"No periodic cycle is significant after accounting for the {n_freq} "
+                    f"frequencies searched: the highest peak near {self.frequencies[peak_idx]:.3f} "
+                    f"has family-wise false-alarm probability {self.peak_fap:.2f} > alpha={self.alpha}."
                 )
             else:
-                peak_idx = int(np.argmax(self.spectrum))
                 lines.append(
-                    f"Detected {sig_idx.size} significant spectral point(s) above the "
-                    f"{100.0 * (1.0 - self.alpha):.1f}% confidence threshold "
-                    f"(critical LSS = {self.critical_value:.3f}). "
-                    f"The strongest cycle is near frequency {self.frequencies[peak_idx]:.3f} "
-                    f"(explaining {100.0 * self.spectrum[peak_idx]:.1f}% of residual variance, "
-                    f"p = {self.pvalues[peak_idx]:.2e})."
+                    f"The highest spectral peak is near frequency {self.frequencies[peak_idx]:.3f} "
+                    f"(per-frequency p = {self.pvalues[peak_idx]:.2e}; no family-wise correction applied)."
                 )
+            lines.append(
+                f"{sig_idx.size} of {n_freq} frequencies exceed the per-frequency critical value "
+                f"(LSS = {self.critical_value:.3f}); about {self.alpha * n_freq:.1f} are expected "
+                "by chance under pure noise, so individual exceedances are not evidence of cycles."
+            )
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
 
@@ -582,7 +653,7 @@ class LssaResult(BaseResult):
                 "frequency": self.frequencies,
                 "spectrum": self.spectrum,
                 "pvalue": self.pvalues,
-                "significant": self.significant_mask,
+                "significant_per_frequency": self.significant_mask,
                 "cos_coeff": self.cos_sin_coeffs[:, 0] if self.frequencies.size else [],
                 "sin_coeff": self.cos_sin_coeffs[:, 1] if self.frequencies.size else [],
                 "amplitude": self.amplitudes,
@@ -616,11 +687,12 @@ class AllssaResult(BaseResult):
     times_raw: np.ndarray[Any, Any]
     is_datetime: bool
     diagnostics: DiagnosticReport
+    significance: str = "per_frequency"
 
     def summary(self) -> str:
         lines = [
             f"ALLSSA Result (trend={self.trend!r}, alpha={self.alpha}, "
-            f"iters={self.n_iter}, converged={self.converged})",
+            f"significance={self.significance!r}, iters={self.n_iter}, converged={self.converged})",
             f"Weighted RSS : {self.norm_res:.6g}",
             f"Selected frequencies ({self.frequencies.size}):",
         ]
@@ -649,11 +721,21 @@ class AllssaResult(BaseResult):
                 f"{f:.3f} (amplitude {a:.3g})"
                 for f, a in zip(self.frequencies, self.amplitudes, strict=True)
             )
-            lines.append(
-                f"Anti-leakage spectral search (ALLSSA) identified {self.frequencies.size} "
-                f"statistically significant cycle(s) simultaneously with the {self.trend} trend: "
-                f"{freq_desc}."
-            )
+            if self.significance == "per_frequency":
+                lines.append(
+                    f"Anti-leakage spectral search (ALLSSA) selected {self.frequencies.size} "
+                    f"cycle(s) simultaneously with the {self.trend} trend: {freq_desc}. "
+                    f"Selection used the per-frequency critical value at alpha={self.alpha}, "
+                    "which does not account for the frequency search; spurious cycles are "
+                    "selected far more often than alpha under pure noise."
+                )
+            else:
+                lines.append(
+                    f"Anti-leakage spectral search (ALLSSA) identified {self.frequencies.size} "
+                    f"cycle(s) significant at family-wise alpha={self.alpha} "
+                    f"({self.significance} control over the searched frequency grid), "
+                    f"estimated simultaneously with the {self.trend} trend: {freq_desc}."
+                )
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
 
@@ -700,6 +782,8 @@ def lssa(
     known_freqs: Sequence[float] | None = None,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    peak_fap: Literal["sidak", "montecarlo", "none"] = "sidak",
+    n_mc: int = 999,
 ) -> LssaResult:
     """Compute the weighted Least-Squares Spectrum (LSSA) of an unevenly sampled series.
 
@@ -737,6 +821,13 @@ def lssa(
         biweight MM-estimation with zero weight on extreme isolated spikes).
     huber_k:
         Huber tuning constant (default ``1.345``, 95% Gaussian efficiency).
+    peak_fap:
+        Family-wise false-alarm probability of the highest peak over ``omega``:
+        ``"sidak"`` (analytical, effective number of independent frequencies),
+        ``"montecarlo"`` (exact Gaussian-null simulation of the spectral maximum,
+        ``n_mc`` draws), or ``"none"``. Per-frequency ``pvalues`` are unaffected.
+    n_mc:
+        Monte Carlo draws for ``peak_fap="montecarlo"``.
 
     Returns
     -------
@@ -789,6 +880,25 @@ def lssa(
         huber_k=huber_k,
     )
     amps, phases = _amplitudes_and_phases(core.cos_sin_coeffs)
+
+    if peak_fap not in ("sidak", "montecarlo", "none"):
+        raise ValueError(f"Unknown `peak_fap` {peak_fap!r}. Options: 'sidak', 'montecarlo', 'none'.")
+    fap = float("nan")
+    if om_arr.size > 0 and peak_fap != "none" and np.isfinite(core.critical_value):
+        k_peak = int(np.argmax(core.spectrum))
+        if peak_fap == "sidak":
+            span_t = float(t0[-1]) if t0[-1] > 0 else 1.0
+            band = float(om_arr[-1] - om_arr[0])
+            k_eff = float(min(om_arr.size, max(1, int(np.ceil(span_t * band)) + 1)))
+            p_min = float(core.pvalues[k_peak])
+            fap = float(-np.expm1(k_eff * np.log1p(-min(p_min, 1.0 - 1e-16))))
+        else:
+            D_l, _ = build_design_matrix(t0, trend_l, j_valid, shared_slope, kf_arr)
+            draws = max_lss_null_draws(
+                t0, om_arr, orthonormal_design_basis(D_l, pw), pw,
+                known_freqs=kf_arr, n_mc=int(n_mc), seed=(20261125, int(om_arr.size)),
+            )
+            fap = float((1.0 + np.sum(draws >= core.spectrum[k_peak])) / (int(n_mc) + 1.0))
 
     rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, core.residuals)
     extra_warns = list(rn_warns)
@@ -843,6 +953,8 @@ def lssa(
         times_raw=series.times_raw,
         is_datetime=series.is_datetime,
         diagnostics=diag,
+        peak_fap=fap,
+        peak_fap_method=peak_fap if om_arr.size > 0 else "none",
     )
 
 
@@ -861,6 +973,8 @@ def allssa(
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     parity_mode: bool = False,
+    significance: SignificanceMethod | None = None,
+    n_mc: int = 999,
 ) -> AllssaResult:
     """Antileakage Least-Squares Spectral Analysis (ALLSSA).
 
@@ -882,12 +996,32 @@ def allssa(
     parity_mode:
         If ``True``, disables robust reweighting and uses un-clamped fine grids
         around rounded integer centers to match legacy upstream behavior.
+    significance:
+        Acceptance rule for each new frequency. ``"montecarlo"`` (default) accepts a
+        peak only if its family-wise p-value (exact Gaussian-null Monte Carlo of the
+        spectral maximum over the whole searched grid, ``n_mc`` draws) is
+        ``<= alpha``; ``"sidak"`` uses an analytical Sidak threshold over the
+        effective number of searched frequencies; ``"per_frequency"`` is the
+        published rule (Beta critical value at ``alpha`` for a single frequency;
+        forced by ``parity_mode=True``), which selects spurious cycles in roughly
+        20% of pure-noise series at ``alpha=0.01``.
+    n_mc:
+        Monte Carlo draws for ``significance="montecarlo"`` (default ``999``).
     """
     trend_l = _validate_spectral_common(trend, alpha)
     robust_m = validate_robust_args(robust, huber_k)
     if not isinstance(decimal, (int, np.integer)) or decimal < 0 or decimal > 4:
         raise ValueError("`decimal` must be an integer between 0 and 4.")
     decimal_int = int(decimal)
+    if significance is not None and significance not in ("montecarlo", "sidak", "per_frequency"):
+        raise ValueError(
+            f"Unknown `significance` {significance!r}. Options: 'montecarlo', 'sidak', 'per_frequency'."
+        )
+    eff_sig: str = "per_frequency" if parity_mode else (significance or "montecarlo")
+    if eff_sig == "montecarlo" and (int(n_mc) + 1) * alpha < 5.0:
+        raise ValueError(
+            f"`n_mc` too small for alpha={alpha}: need (n_mc + 1) * alpha >= 5 for Monte Carlo significance."
+        )
 
     series = prepare_numeric_series(t, y)
     pw_full = prepare_weights(weights, series.n_input)
@@ -926,11 +1060,25 @@ def allssa(
         parity_mode=parity_mode,
         robust=robust_m,
         huber_k=huber_k,
+        significance=eff_sig,
+        n_mc=int(n_mc),
     )
     amps, phases = _amplitudes_and_phases(core.cos_sin_coeffs)
 
     rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, core.residuals)
     extra_warns = list(rn_warns)
+    if om_arr.size <= 1 and omega is None:
+        extra_warns.append(
+            WarningItem(
+                code="DEGENERATE_DEFAULT_GRID",
+                severity="warning",
+                message=(
+                    f"The default integer frequency grid has {om_arr.size} frequency; it assumes "
+                    "time in decimal years (cycles/year) and roughly >= 4 samples per unit time."
+                ),
+                suggestion="Pass `omega` explicitly in cycles per unit of your time axis, or convert t to years.",
+            )
+        )
     if not core.converged:
         extra_warns.append(
             WarningItem(
@@ -979,4 +1127,5 @@ def allssa(
         times_raw=series.times_raw,
         is_datetime=series.is_datetime,
         diagnostics=diag,
+        significance=eff_sig,
     )

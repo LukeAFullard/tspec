@@ -611,8 +611,8 @@ def analyze_series(
 
     1. Handles irregular timestamps, ``NaN``s, and optional censored data
        (defaulting to 20 stochastic stability draws when censoring is detected).
-    2. Detects abrupt jumps via :func:`just_jumps` (enabling scale-free
-       ``jump_alpha=0.05`` screening by default).
+    2. Detects abrupt jumps via :func:`just_jumps` with family-wise calibrated
+       selection (``jump_alpha=0.05``, Monte Carlo split-search calibration).
     3. Extracts seasonality and trend via :func:`just_decompose` with analytical
        pointwise confidence intervals at level ``ci_level``.
     4. Removes seasonality and vertical jump offsets (or segments by epoch)
@@ -693,14 +693,13 @@ def analyze_series(
     if slope_estimator in ("l1", "huber"):
         s_kw.setdefault("refit_mode", slope_estimator)
 
-    # Practitioner-friendly scale-free defaults in analyze_series unless overridden:
-    # - Bonferroni-adjusted within-window screening p-values suppress post-selection noise.
+    # Scale-free defaults in analyze_series unless overridden:
+    # - just_jumps' family-wise calibrated selection (jump_alpha=0.05, Monte Carlo
+    #   max-over-splits calibration + Holm across candidate locations).
     # - When STPD is also enabled, step_alpha isolates genuine vertical discontinuities in
     #   Stage 1 (JUST) so pure continuous slope bends pass cleanly to Stage 2 (STPD).
     if "jump_alpha" not in j_kw:
         j_kw["jump_alpha"] = 0.05
-    if "bonferroni_window" not in j_kw:
-        j_kw["bonferroni_window"] = True
     if detect_turning_points and "step_alpha" not in j_kw:
         j_kw["step_alpha"] = float(j_kw["jump_alpha"]) if j_kw["jump_alpha"] is not None else 0.05
     if "mag_th" not in j_kw and "dir_th" not in j_kw and j_kw["jump_alpha"] is not None:

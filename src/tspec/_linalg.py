@@ -477,3 +477,73 @@ def compute_lss_vectorized(
             cs_coeffs[start:stop] = chunk_cs
 
     return spectrum, cs_coeffs
+
+
+def orthonormal_design_basis(
+    D: FloatArray,
+    pw: PreparedWeights,
+    *,
+    rcond: float = 1e-12,
+) -> FloatArray:
+    """Return an orthonormal basis of the whitened column space ``col(W D)``."""
+    if D.shape[1] == 0:
+        return np.empty((D.shape[0], 0), dtype=np.float64)
+    U, s, _ = linalg.svd(whiten_matrix(D, pw), full_matrices=False, check_finite=False)
+    keep = s > (rcond * float(s[0]) if s.size and s[0] > 0.0 else np.inf)
+    return np.asarray(U[:, keep], dtype=np.float64)
+
+
+def max_lss_null_draws(
+    t0: FloatArray,
+    omega: FloatArray,
+    q_basis: FloatArray,
+    pw: PreparedWeights,
+    *,
+    known_freqs: FloatArray | None = None,
+    freq_tol: float = 1e-12,
+    n_mc: int = 999,
+    seed: int | tuple[int, ...] = 0,
+    chunk_size: int = 256,
+) -> FloatArray:
+    """Monte Carlo draws of ``max_omega s(omega)`` under the Gaussian white-noise null.
+
+    The normalized LSS is invariant to the error scale and to the known-constituent
+    coefficients, so standard-normal errors in whitened coordinates (projected off
+    ``q_basis``) give the exact finite-sample null distribution of the spectral
+    maximum over the searched grid ``omega`` for the given design and weights.
+    """
+    n = int(t0.size)
+    rng = np.random.default_rng(seed)
+    e = rng.standard_normal((n, int(n_mc)))
+    if q_basis.shape[1] > 0:
+        e = e - q_basis @ (q_basis.T @ e)
+    rr = np.sum(e * e, axis=0)
+    best = np.zeros(int(n_mc), dtype=np.float64)
+    known = known_freqs if known_freqs is not None else np.empty(0, dtype=np.float64)
+    two_pi_t = (2.0 * np.pi) * t0
+    for start in range(0, int(omega.size), chunk_size):
+        om = omega[start : start + chunk_size]
+        if known.size > 0:
+            om = om[np.min(np.abs(om[:, None] - known[None, :]), axis=1) > freq_tol]
+        om = om[np.abs(om) > 0.0]
+        if om.size == 0:
+            continue
+        ph = np.outer(two_pi_t, om)
+        cw = whiten_matrix(np.cos(ph), pw)
+        sw = whiten_matrix(np.sin(ph), pw)
+        if q_basis.shape[1] > 0:
+            cw = cw - q_basis @ (q_basis.T @ cw)
+            sw = sw - q_basis @ (q_basis.T @ sw)
+        a = np.sum(cw * cw, axis=0)
+        d = np.sum(sw * sw, axis=0)
+        b = np.sum(cw * sw, axis=0)
+        det = a * d - b * b
+        good = (det > 1e-12 * (a + d) ** 2) & ((a + d) > 0.0)
+        if not np.any(good):
+            continue
+        cw, sw, a, d, b, det = cw[:, good], sw[:, good], a[good], d[good], b[good], det[good]
+        g1 = cw.T @ e
+        g2 = sw.T @ e
+        spec = (d[:, None] * g1 * g1 - 2.0 * b[:, None] * g1 * g2 + a[:, None] * g2 * g2) / det[:, None]
+        best = np.maximum(best, np.max(spec, axis=0) / rr)
+    return best
