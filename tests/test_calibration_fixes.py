@@ -272,3 +272,52 @@ def test_stpd_calibrated_null_rate_and_power() -> None:
         )
     assert hits >= 6
     assert hits > legacy
+
+
+# ---------------------------------------------------------------------------
+# CRT-01: consecutive_k calibrated over a planned horizon
+# ---------------------------------------------------------------------------
+
+
+def _stable_monitor_series(seed: int, n: int) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    t = np.sort(rng.uniform(2000, 2000 + n / 24.0, n))
+    mu = 2 + 0.1 * (t - 2000) + 0.5 * np.cos(2 * np.pi * t)
+    return t, mu + rng.normal(0, 0.15, n)
+
+
+def test_consecutive_k_calibrated_with_horizon() -> None:
+    t, y = _stable_monitor_series(0, 96 + 24)
+    res = tspec.just_monitor(
+        t, y, start=96, season="ols", alpha=0.05, sequential_control="consecutive_k", horizon=24
+    )
+    assert res.consecutive_k_calibrated
+    levels = {s.alpha_step for s in res.steps}
+    assert len(levels) == 1
+    pocock = tspec.just_monitor(t, y, start=96, season="ols", alpha=0.05, horizon=24)
+    assert pocock.steps[0].alpha_step < levels.pop() < 1.0
+    assert "calibrated" in res.explain()
+    # Same history and horizon -> same level regardless of how much monitoring data exists
+    short = tspec.just_monitor(
+        t[:110], y[:110], start=96, season="ols", alpha=0.05,
+        sequential_control="consecutive_k", horizon=24,
+    )
+    assert short.steps[0].alpha_step == res.steps[0].alpha_step
+
+
+def test_consecutive_k_without_horizon_warns() -> None:
+    t, y = _stable_monitor_series(1, 120)
+    res = tspec.just_monitor(t, y, start=96, season="ols", sequential_control="consecutive_k")
+    assert not res.consecutive_k_calibrated
+    assert "UNCALIBRATED_CONSECUTIVE_K" in {w.code for w in res.diagnostics.warnings}
+
+
+def test_consecutive_k_calibrated_null_rate() -> None:
+    alarms = 0
+    for seed in range(20):
+        t, y = _stable_monitor_series(500 + seed, 96 + 48)
+        alarms += tspec.just_monitor(
+            t, y, start=96, season="ols", alpha=0.05,
+            sequential_control="consecutive_k", horizon=48, n_mc=199,
+        ).detected
+    assert alarms <= 4  # nominal 5% familywise (about 1 alarm expected)

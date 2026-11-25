@@ -30,7 +30,14 @@ from ._diagnostics import (
     compute_red_noise_diagnostics,
     time_unit_warning,
 )
-from ._linalg import PreparedWeights, prepare_weights, whiten_matrix, whiten_vector
+from ._linalg import (
+    PreparedWeights,
+    max_lss_batch,
+    orthonormal_design_basis,
+    prepare_weights,
+    whiten_matrix,
+    whiten_vector,
+)
 from ._robust import RobustMethod, tukey_weight, validate_robust_args
 from ._time import TimeSeriesInput, convert_eval_times
 from ._types import ArrayLike, FloatArray, TimeLike, ValueLike, WeightLike
@@ -175,6 +182,15 @@ class MonitorResult(BaseResult):
         Structured diagnostics and warnings.
     censoring : CensoringProvenance | None
         Censored-data provenance if censored inputs were provided.
+    ci_level : float
+        Confidence level of the forecast bands.
+    forecast_ci_low, forecast_ci_high, forecast_pi_low, forecast_pi_high : FloatArray | None
+        Pointwise mean-forecast confidence band and observation prediction interval.
+    consecutive_k : int
+        Number of consecutive exceedances required under ``"consecutive_k"``.
+    consecutive_k_calibrated : bool
+        ``True`` when the ``"consecutive_k"`` per-step level was calibrated by Monte
+        Carlo over the planned ``horizon`` (reported as ``steps[i].alpha_step``).
     """
 
     detected: bool
@@ -210,6 +226,8 @@ class MonitorResult(BaseResult):
     forecast_ci_high: FloatArray | None = None
     forecast_pi_low: FloatArray | None = None
     forecast_pi_high: FloatArray | None = None
+    consecutive_k: int = 2
+    consecutive_k_calibrated: bool = False
 
     def summary(self) -> str:
         lines = [
@@ -282,11 +300,20 @@ class MonitorResult(BaseResult):
                 "Over long monitoring horizons, unadjusted per-step testing increases cumulative "
                 "false-alarm probability."
             )
+        elif self.sequential_control == "consecutive_k" and self.consecutive_k_calibrated:
+            a_step = self.steps[0].alpha_step if self.steps else float("nan")
+            parts.append(
+                f"Repeated-testing protection active: an alarm needs {self.consecutive_k} consecutive "
+                f"exceedances at a Monte Carlo-calibrated per-step level {a_step:.3g}, which bounds "
+                f"the familywise false-alarm rate at alpha={self.alpha:g} over the planned horizon of "
+                f"{self.horizon} steps (assuming Gaussian errors and regular sampling)."
+            )
         elif self.sequential_control == "consecutive_k":
             parts.append(
-                f"Note: sequential_control='consecutive_k' requires repeated exceedances but does "
-                f"not bound the familywise false-alarm rate at alpha={self.alpha:g}; it grows with "
-                "the monitoring length (about 10% over 96 steps at alpha=0.05 in simulations)."
+                f"Note: sequential_control='consecutive_k' without `horizon` requires repeated "
+                f"exceedances but does not bound the familywise false-alarm rate at "
+                f"alpha={self.alpha:g}; it grows with the monitoring length (about 10% over 96 steps "
+                "at alpha=0.05 in simulations)."
             )
         else:
             parts.append(
@@ -417,6 +444,117 @@ def _adjust_alpha_for_frequencies(
     raise ValueError("freq_correction must be 'sidak', 'bonferroni', or 'none'.")
 
 
+def _step_pvalues_from_spectrum(
+    smax: FloatArray, n_w: int, n_freqs: int, freq_correction: FreqCorrection
+) -> FloatArray:
+    """Per-step p-values (on the ``alpha_step`` scale) of the maximum normalized LSS.
+
+    Inverts the monitoring rule ``smax > critical_value_lss(n_w, 1, alpha_adj)`` with
+    ``alpha_adj`` the frequency-adjusted budget, so ``p <= alpha_step`` iff the step
+    exceeds its threshold.
+    """
+    nu = n_w - 3
+    if nu <= 0:
+        return np.ones_like(smax)
+    p_min = np.power(np.clip(1.0 - smax, 0.0, 1.0), 0.5 * nu)
+    k = max(1, int(n_freqs))
+    if freq_correction == "none" or k == 1:
+        return np.asarray(p_min, dtype=np.float64)
+    if freq_correction == "bonferroni":
+        return np.asarray(np.minimum(1.0, k * p_min), dtype=np.float64)
+    return np.asarray(-np.expm1(k * np.log1p(-np.minimum(p_min, 1.0 - 1e-16))), dtype=np.float64)
+
+
+def _calibrate_consecutive_k(
+    t_his: FloatArray,
+    pw_his: PreparedWeights,
+    his_freqs: FloatArray,
+    t_first: float,
+    horizon: int,
+    lh: int,
+    slide_width: int,
+    window_mode: MonitorWindowMode,
+    om_mon: FloatArray,
+    freq_correction: FreqCorrection,
+    k: int,
+    alpha: float,
+    n_mc: int,
+    forecast_cov: bool,
+    seed: int = 0,
+) -> float | None:
+    """Monte Carlo per-step level for ``consecutive_k`` with family-wise control.
+
+    Simulates the monitoring residual process under the fitted history model with
+    Gaussian errors (the history design is refitted in every replicate; selected
+    harmonics are held fixed). Future observations are placed on a regular grid with
+    the history's median spacing and median weight, starting at the first monitoring
+    time, so the level depends only on the history and the planned ``horizon``.
+    For each replicate the smallest per-step level at which ``k`` consecutive steps
+    would all exceed is recorded; the returned level is a lower Monte Carlo quantile
+    of these, so ``P(alarm within horizon) <= alpha`` under the simulated null.
+    Returns ``None`` when the weights cannot be extrapolated (full weight matrices) or
+    the history spacing is degenerate.
+    """
+    n_his = int(t_his.size)
+    if pw_his.kind == "matrix":
+        return None
+    if pw_his.kind == "none":
+        w_his = np.ones(n_his, dtype=np.float64)
+    elif pw_his.kind == "scalar":
+        w_his = np.full(n_his, pw_his.scalar, dtype=np.float64)
+    else:
+        assert pw_his.vector is not None
+        w_his = np.asarray(pw_his.vector, dtype=np.float64)
+    dt = np.diff(t_his)
+    dt = dt[dt > 0.0]
+    if dt.size == 0 or horizon < 1:
+        return None
+    if k > horizon:
+        return alpha
+    t_fut = float(t_first) + float(np.median(dt)) * np.arange(horizon, dtype=np.float64)
+    t_c = np.concatenate([t_his, t_fut])
+    w_c = np.concatenate([w_his, np.full(horizon, float(np.median(w_his)))])
+    sw_c = np.sqrt(w_c)
+    pw_c = PreparedWeights(kind="vector", vector=w_c, sqrt_vector=sw_c)
+    d_c, _ = build_design_matrix(t_c, "linear", np.empty(0, dtype=np.intp), False, his_freqs)
+    wd_his = sw_c[:n_his, None] * d_c[:n_his]
+    u_h, s_h, vt_h = linalg.svd(wd_his, full_matrices=False)
+    if s_h.size == 0 or s_h[0] <= 0.0:
+        return None
+    keep = s_h > 1e-12 * s_h[0]
+    inv_s = np.where(keep, 1.0 / s_h, 0.0)
+    f_his = vt_h.T * inv_s[None, :]
+
+    rng = np.random.default_rng(seed)
+    z = rng.standard_normal((t_c.size, int(n_mc)))
+    coef = f_his @ (u_h.T @ z[:n_his])
+    resid = z / sw_c[:, None] - d_c @ coef
+    v_out = np.asarray(d_c[n_his:] @ f_his, dtype=np.float64) if forecast_cov else None
+
+    pvals = np.empty((horizon, int(n_mc)), dtype=np.float64)
+    for d in range(1, horizon + 1):
+        win_end = n_his + d
+        win_start = lh if window_mode == "expanding" else max(0, win_end - slide_width)
+        idx = np.arange(win_start, win_end, dtype=np.intp)
+        pw_w = pw_c.subset(idx)
+        if v_out is not None:
+            n_in = max(0, n_his - win_start)
+            pw_w = _build_predictive_window_weights(pw_w, n_in, v_out[max(0, win_start - n_his) : d])
+        q = orthonormal_design_basis(np.ones((idx.size, 1), dtype=np.float64), pw_w)
+        smax = max_lss_batch(t_c[idx], om_mon, q, pw_w, whiten_matrix(resid[idx], pw_w))
+        pvals[d - 1] = _step_pvalues_from_spectrum(smax, int(idx.size), int(om_mon.size), freq_correction)
+
+    # Smallest level at which k consecutive steps all exceed, per replicate
+    run_level = np.full(int(n_mc), np.inf)
+    for d in range(k - 1, horizon):
+        run_level = np.minimum(run_level, np.max(pvals[d - k + 1 : d + 1], axis=0))
+    j = int(np.floor(alpha * (n_mc + 1)))
+    if j < 1:
+        return None
+    thr = float(np.sort(run_level)[j - 1])
+    return float(min(1.0, np.nextafter(thr, 0.0)))
+
+
 def _build_predictive_window_weights(
     pw_w: PreparedWeights,
     n_in: int,
@@ -504,6 +642,7 @@ def just_monitor(
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
     season_significance: Literal["sidak", "montecarlo", "per_frequency"] = "sidak",
+    n_mc: int = 999,
 ) -> MonitorResult:
     """Near-Real-Time (NRT) disturbance detection and classification (JUSTmonitor).
 
@@ -572,17 +711,22 @@ def just_monitor(
         - ``"pocock"``: constant Šidák alpha-spending across ``horizon`` steps.
         - ``"obrien_fleming"``: Lan–DeMets O'Brien–Fleming alpha-spending
           (very conservative early, higher power later in the horizon).
-        - ``"consecutive_k"``: requires ``consecutive_k`` consecutive exceedances at
-          the unadjusted per-step level. This does **not** control the familywise rate,
-          which grows with monitoring length; for open-ended streams with error control,
-          use ``"pocock"`` without ``horizon`` (open-ended spending).
+        - ``"consecutive_k"``: requires ``consecutive_k`` consecutive exceedances. With
+          ``horizon``, the constant per-step level is calibrated by Monte Carlo so that
+          the probability of any alarm within the horizon is at most ``alpha`` under the
+          fitted history model with Gaussian errors (future observations are placed on
+          a regular grid with the history's median spacing, so the level uses no
+          monitoring data). Without ``horizon``, each step is tested at the full
+          ``alpha``, which does **not** control the familywise rate (warning
+          ``UNCALIBRATED_CONSECUTIVE_K``).
         - ``"none"``: unadjusted per-step testing (used by ``parity_mode=True``).
     consecutive_k : int, default 2
         Number of consecutive exceedances required when
         ``sequential_control="consecutive_k"``.
     horizon : int, optional
         Total number of planned monitoring steps ``D_max`` for ``"pocock"`` or
-        ``"obrien_fleming"`` spending. It must be fixed in advance: if omitted,
+        ``"obrien_fleming"`` spending, and the calibration horizon for
+        ``"consecutive_k"``. It must be fixed in advance: if omitted,
         open-ended spending ``alpha_d = alpha / (2.11 (d+1) ln^2(d+1))`` is used (reported as
         ``horizon=0``) so thresholds never depend on how many future observations
         exist. ``parity_mode=True`` keeps the legacy default (number of monitoring
@@ -620,6 +764,9 @@ def just_monitor(
         Acceptance rule for ALLSSA-selected historical harmonics (``season="allssa"``):
         family-wise Sidak (default), exact Monte Carlo, or the published per-frequency
         rule (forced by ``parity_mode=True``).
+    n_mc : int, default 999
+        Monte Carlo replicates for the ``"consecutive_k"`` calibration (requires
+        ``(n_mc + 1) * alpha >= 5``).
     parity_mode : bool, default False
         If ``True``, disables multiplicity controls (``freq_correction="none"``,
         ``sequential_control="none"``), disables predictive covariance weighting
@@ -644,6 +791,10 @@ def just_monitor(
         raise ValueError(f"ci_level must be in (0, 1), got {ci_level}.")
     if consecutive_k < 1:
         raise ValueError(f"consecutive_k must be >= 1, got {consecutive_k}.")
+    if sequential_control == "consecutive_k" and horizon is not None and (int(n_mc) + 1) * alpha < 5:
+        raise ValueError(
+            f"`n_mc` too small for alpha={alpha}: need (n_mc + 1) * alpha >= 5, got n_mc={n_mc}."
+        )
 
     season_norm = season.lower()
     if season_norm not in ("allssa", "ols", "none"):
@@ -937,7 +1088,12 @@ def just_monitor(
             )
         )
 
-    if (not parity_mode) and eff_seq_ctrl in ("pocock", "obrien_fleming") and 0 < eff_horizon < n_mon:
+    if (
+        (not parity_mode)
+        and eff_seq_ctrl in ("pocock", "obrien_fleming", "consecutive_k")
+        and horizon is not None
+        and 0 < eff_horizon < n_mon
+    ):
         warnings_list.append(
             WarningItem(
                 code="HORIZON_EXCEEDED",
@@ -998,6 +1154,55 @@ def just_monitor(
     low_mask = om_mon < 1.0 - 1e-12
     high_mask = ~low_mask
 
+    # consecutive_k: calibrate a constant per-step level so that k consecutive exceedances
+    # within the planned horizon occur with probability <= alpha under the fitted null.
+    consec_alpha: float | None = None
+    if eff_seq_ctrl == "consecutive_k":
+        if horizon is not None:
+            consec_alpha = _calibrate_consecutive_k(
+                t_act[:n_his],
+                pw_act.subset(his_local),
+                his_freqs,
+                float(t_act[n_his]),
+                eff_horizon,
+                lh,
+                slide_width,
+                eff_win_mode,
+                om_mon,
+                eff_freq_corr,
+                int(consecutive_k),
+                alpha,
+                int(n_mc),
+                v_out_all is not None,
+            )
+            if consec_alpha is None:
+                warnings_list.append(
+                    WarningItem(
+                        code="CALIBRATION_FALLBACK",
+                        severity="warning",
+                        message=(
+                            "consecutive_k could not be calibrated (full weight matrix or degenerate "
+                            "history spacing); each step is tested at the full alpha, which does not "
+                            "bound the familywise false-alarm rate."
+                        ),
+                    )
+                )
+        else:
+            warnings_list.append(
+                WarningItem(
+                    code="UNCALIBRATED_CONSECUTIVE_K",
+                    severity="caution",
+                    message=(
+                        "sequential_control='consecutive_k' without `horizon` tests each step at the "
+                        "full alpha; the familywise false-alarm rate grows with monitoring length."
+                    ),
+                    suggestion=(
+                        "Pass the planned number of monitoring steps as `horizon` to calibrate the "
+                        "per-step level by Monte Carlo, or use sequential_control='pocock'."
+                    ),
+                )
+            )
+
     steps: list[MonitorStep] = []
     detected = False
     dist_type: DisturbanceType = "none"
@@ -1020,7 +1225,11 @@ def just_monitor(
             out_start = max(0, win_start - n_his)
             pw_w = _build_predictive_window_weights(pw_w, n_in_w, v_out_all[out_start:d])
 
-        alpha_step = _step_alpha_budget(d, eff_horizon, alpha, eff_seq_ctrl)
+        alpha_step = (
+            consec_alpha
+            if consec_alpha is not None
+            else _step_alpha_budget(d, eff_horizon, alpha, eff_seq_ctrl)
+        )
         alpha_adj = _adjust_alpha_for_frequencies(alpha_step, int(om_mon.size), eff_freq_corr)
 
         res_step = _lssa_core(
@@ -1261,6 +1470,8 @@ def just_monitor(
         horizon=eff_horizon,
         diagnostics=diag,
         censoring=prepared.provenance,
+        consecutive_k=int(consecutive_k),
+        consecutive_k_calibrated=consec_alpha is not None,
         ci_level=ci_level,
         forecast_ci_low=forecast_ci_low,
         forecast_ci_high=forecast_ci_high,

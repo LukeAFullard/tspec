@@ -37,6 +37,7 @@ How `tspec` handles this:
 | `TREND_IMPUTATION_FALLBACK` | Warning | Time-conditional censored imputation failed and the time-invariant marginal model was used; trends among censored values are biased toward zero. |
 | `LONG_MONITORING_HORIZON` | Caution | The monitoring span exceeds the stable historical span, so extrapolated trend uncertainty grows quadratically. Keep `account_for_forecast_uncertainty=True` (default) or re-baseline periodically. |
 | `UNADJUSTED_REPEATED_TESTING` | Warning | Multiplicity controls (`freq_correction`, `sequential_control`) are disabled in `just_monitor()` outside `parity_mode=True`. |
+| `UNCALIBRATED_CONSECUTIVE_K` | Caution | `sequential_control="consecutive_k"` was used without `horizon`, so each step is tested at the full `alpha` and the familywise false-alarm rate grows with monitoring length. Pass a planned `horizon` to calibrate the per-step level. |
 | `PENDING_CONFIRMATION` | Info | Under `sequential_control="consecutive_k"`, the latest observation exceeded the threshold but has not yet reached `consecutive_k` consecutive hits. |
 | `THRESHOLD_SCALE_MISMATCH` | Caution | Threshold-only selection (`jump_alpha=None`) with `mag_th=0.05` (NDVI scale) looks badly scaled for your data's IQR. Set a domain-meaningful `mag_th` or use the calibrated default `jump_alpha=0.05`. |
 | `VARIABLE_SAMPLING_RATE` | Caution | Sampling density shifts $> 2\times$ across the series under `window_mode="count"`. Try `window_mode="duration"`. |
@@ -51,7 +52,7 @@ How `tspec` handles this:
 | `MI_SEGMENT_FALLBACK` | Warning | Multiple imputation failed for a censored segment, so its OLS CI ignores imputation uncertainty. |
 | `ALLSSA_MAX_ITER` | Caution | ALLSSA hit `max_iter` before the frequency set stabilized; increase `max_iter` or use a stricter `alpha`. |
 | `DEGENERATE_DEFAULT_GRID` | Warning | The default ALLSSA frequency grid has ≤ 1 frequency, usually because time is not in decimal years; pass `omega`. |
-| `CALIBRATION_FALLBACK` | Info | Monte Carlo jump calibration is not available for robust fits, so Bonferroni was used. |
+| `CALIBRATION_FALLBACK` | Info / Warning | Monte Carlo jump calibration is not available for robust fits, so Bonferroni was used (info); or `consecutive_k` could not be calibrated because a full weight matrix was supplied or the history spacing is degenerate, so each step uses the full `alpha` (warning). |
 | `BIAS_CORRECTION_FALLBACK` | Info | Some decomposition windows were too small for the bias-corrected trend band and used the model-based band. |
 | `RANK_DEFICIENT_DESIGN` | Warning | The design matrix was numerically singular (duplicate times, very narrow jump segments, or collinear frequencies); an SVD pseudoinverse was used and individual coefficients are not identifiable. |
 | `HIGH_CONDITION_NUMBER` | Caution | The design is ill-conditioned (cond > 1e6); fitted values are accurate, but individual coefficients and amplitudes are unstable. |

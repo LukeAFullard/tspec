@@ -515,10 +515,32 @@ def max_lss_null_draws(
     n = int(t0.size)
     rng = np.random.default_rng(seed)
     e = rng.standard_normal((n, int(n_mc)))
+    return max_lss_batch(
+        t0, omega, q_basis, pw, e, known_freqs=known_freqs, freq_tol=freq_tol, chunk_size=chunk_size
+    )
+
+
+def max_lss_batch(
+    t0: FloatArray,
+    omega: FloatArray,
+    q_basis: FloatArray,
+    pw: PreparedWeights,
+    e: FloatArray,
+    *,
+    known_freqs: FloatArray | None = None,
+    freq_tol: float = 1e-12,
+    chunk_size: int = 256,
+) -> FloatArray:
+    """Maximum normalized LSS over ``omega`` for each column of whitened residuals ``e``.
+
+    ``e`` holds whitened series (``W r``) as columns; they are projected off the
+    orthonormal whitened design basis ``q_basis`` before the spectrum is computed.
+    """
+    e = np.asarray(e, dtype=np.float64)
     if q_basis.shape[1] > 0:
         e = e - q_basis @ (q_basis.T @ e)
     rr = np.sum(e * e, axis=0)
-    best = np.zeros(int(n_mc), dtype=np.float64)
+    best = np.zeros(int(e.shape[1]), dtype=np.float64)
     known = known_freqs if known_freqs is not None else np.empty(0, dtype=np.float64)
     two_pi_t = (2.0 * np.pi) * t0
     for start in range(0, int(omega.size), chunk_size):
