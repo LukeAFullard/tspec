@@ -62,6 +62,42 @@ from .spectral import (
 SeasonMode = Literal["allssa", "ols", "none"]
 WindowMode = Literal["count", "duration"]
 JumpCalibration = Literal["montecarlo", "bonferroni", "none"]
+SeasonSignificance = Literal["sidak", "montecarlo", "per_frequency"]
+
+
+def _short_seasonal_window_warning(
+    t: FloatArray, windows: list[tuple[int, int]], omega: FloatArray, season: str, sig: str
+) -> WarningItem | None:
+    """Warn when windows cover fewer than two cycles of the lowest searched frequency."""
+    if season != "allssa" or sig == "per_frequency" or omega.size == 0 or not windows:
+        return None
+    spans = [float(t[b - 1] - t[a]) for a, b in windows if b - a > 1]
+    if not spans:
+        return None
+    cycles = float(np.median(spans)) * float(np.min(omega))
+    if cycles >= 2.0:
+        return None
+    return WarningItem(
+        code="SHORT_SEASONAL_WINDOW",
+        severity="caution",
+        message=(
+            f"Windows span about {cycles:.1f} cycle(s) of the lowest searched frequency, so real "
+            "harmonics may not be family-wise identifiable and seasonality can leak into the "
+            "trend/jump estimates."
+        ),
+        suggestion=(
+            "Use longer windows (`size`/`window_duration`), `season='ols'` with known frequencies, "
+            "or `season_significance='per_frequency'` if seasonality is known to be present."
+        ),
+    )
+
+
+def _resolve_season_significance(value: str, parity_mode: bool) -> str:
+    if value not in ("sidak", "montecarlo", "per_frequency"):
+        raise ValueError(
+            f"Unknown `season_significance` {value!r}. Options: 'sidak', 'montecarlo', 'per_frequency'."
+        )
+    return "per_frequency" if parity_mode else value
 
 
 @dataclass(frozen=True)
@@ -569,6 +605,7 @@ def _detect_jump_in_window(
     parity_mode: bool,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    season_significance: str = "per_frequency",
 ) -> tuple[int, float, float, float, FloatArray]:
     """Scan all interior split indices ``3 .. n_win - 3`` in a single window."""
     eff_robust: RobustMethod = "none" if parity_mode else robust
@@ -607,6 +644,7 @@ def _detect_jump_in_window(
                 compute_cov=False,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=season_significance,
             )
             rss = res_a.norm_res
             tr_c = res_a.trend_coeff
@@ -789,6 +827,7 @@ def _nested_jump_ftests(
     calibration: JumpCalibration | None = None,
     n_mc: int = 999,
     mc_seed: int | Sequence[int] = 0,
+    season_significance: str = "per_frequency",
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -837,6 +876,7 @@ def _nested_jump_ftests(
             compute_cov=False,
             robust=eff_robust,
             huber_k=huber_k,
+            significance=season_significance,
         )
         test_freqs = null_allssa.frequencies
     else:
@@ -1025,6 +1065,7 @@ def _run_just_jumps_array(
     bonferroni_window: bool = False,
     jump_calibration: JumpCalibration | None = None,
     n_mc: int = 999,
+    season_significance: str = "per_frequency",
     parity_mode: bool,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
@@ -1070,6 +1111,7 @@ def _run_just_jumps_array(
             parity_mode=parity_mode,
             robust=robust,
             huber_k=huber_k,
+            season_significance=season_significance,
         )
         n_w = w_stop - w_start
         dist_center = abs(loc_ind - (n_w - 1) / 2.0)
@@ -1146,6 +1188,7 @@ def _run_just_jumps_array(
             calibration=calib,
             n_mc=n_mc,
             mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
+            season_significance=season_significance,
         )
         tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
 
@@ -1188,6 +1231,7 @@ def just_jumps(
     bonferroni_window: bool = False,
     jump_calibration: JumpCalibration | None = None,
     n_mc: int = 999,
+    season_significance: SeasonSignificance = "sidak",
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1258,6 +1302,12 @@ def just_jumps(
         Legacy alias for ``jump_calibration="bonferroni"``.
     n_mc:
         Monte Carlo draws for ``jump_calibration="montecarlo"`` (default ``999``).
+    season_significance:
+        Acceptance rule for harmonics selected by ALLSSA inside each window when
+        ``season='allssa'``: ``"sidak"`` (default; family-wise over the searched
+        frequencies, analytical), ``"montecarlo"`` (exact but slow inside the split
+        scan), or ``"per_frequency"`` (published rule, forced by ``parity_mode``; it
+        admits spurious harmonics in about 20% of noise windows).
     robust:
         ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS window
         fits + Schrader–Hettmansperger robust nested F-tests), or ``'mm'``
@@ -1302,6 +1352,7 @@ def just_jumps(
     if int(n_mc) < 99:
         raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
+    eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
     calib_warn: WarningItem | None = None
     if parity_mode:
         eff_calib: JumpCalibration = "none"
@@ -1427,6 +1478,10 @@ def just_jumps(
                 )
             )
 
+    sw_warn = _short_seasonal_window_warning(series.times_numeric, windows, om_arr, season_l, eff_season_sig)
+    if sw_warn is not None:
+        warnings_list.append(sw_warn)
+
     if cfg is not None and isinstance(cfg.random_state, np.random.Generator):
         rng: np.random.Generator = cfg.random_state
     else:
@@ -1448,6 +1503,7 @@ def just_jumps(
         step_alpha=step_alpha,
         jump_calibration=eff_calib,
         n_mc=int(n_mc),
+        season_significance=eff_season_sig,
         parity_mode=parity_mode,
         robust=eff_robust,
         huber_k=huber_k,
@@ -1521,6 +1577,7 @@ def just_jumps(
                 step_alpha=step_alpha,
                 jump_calibration=eff_calib,
                 n_mc=int(n_mc),
+                season_significance=eff_season_sig,
                 parity_mode=parity_mode,
                 robust=eff_robust,
                 huber_k=huber_k,
@@ -1593,6 +1650,7 @@ def just_jumps(
                     parity_mode=parity_mode,
                     robust=eff_robust,
                     huber_k=huber_k,
+                    season_significance=eff_season_sig,
                 )
                 p_r, _ = _nested_jump_ftests(
                     t_w,
@@ -1606,6 +1664,7 @@ def just_jumps(
                     parity_mode=parity_mode,
                     robust=eff_robust,
                     huber_k=huber_k,
+                    season_significance=eff_season_sig,
                 )
                 vanished = (abs(mag_r) < mag_th and abs(dir_r) < dir_th) or (p_r >= 0.05)
                 dl_artifact = bool(vanished)
@@ -1677,6 +1736,7 @@ def just_jumps(
                 parity_mode=parity_mode,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=eff_season_sig,
             )
             global_res = fit_global.residuals
             cond_max = fit_global.condition_number_max
@@ -1935,6 +1995,7 @@ def just_decompose(
     alpha: float = 0.01,
     ci_level: float = 0.95,
     trend_ci_method: Literal["bias_corrected", "model"] | None = None,
+    season_significance: SeasonSignificance = "sidak",
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1996,8 +2057,8 @@ def just_decompose(
         (defaults ``min(3, span)`` years, ``window_duration/3``, and
         ``max(12, n_params + 5)``).
     season:
-        ``'allssa'`` (default; anti-leakage frequency selection per window, using
-        the per-frequency rule), ``'ols'`` (fixed frequencies ``omega``), or ``'none'``.
+        ``'allssa'`` (default; anti-leakage frequency selection per window, see
+        ``season_significance``), ``'ols'`` (fixed frequencies ``omega``), or ``'none'``.
     omega:
         Candidate (ALLSSA) or fixed (OLS) cyclic frequencies in cycles/year.
         Defaults to ``[0.8, 1.0, ..., 3.8]`` for ALLSSA and ``[1, 2, 3, 4]`` for OLS.
@@ -2007,6 +2068,11 @@ def just_decompose(
         Pointwise confidence level of the trend and seasonal bands.
     trend_ci_method:
         ``'bias_corrected'`` (default) or ``'model'``; see above.
+    season_significance:
+        Acceptance rule for ALLSSA-selected harmonics in each window
+        (``season='allssa'``): ``'sidak'`` (default, family-wise over the searched
+        frequencies), ``'montecarlo'``, or ``'per_frequency'`` (published rule,
+        forced by ``parity_mode``).
     robust:
         ``'none'``, ``'huber'``, or ``'mm'`` window fits (forced to ``'none'`` in
         ``parity_mode``).
@@ -2023,8 +2089,7 @@ def just_decompose(
     JustDecomposeResult
         ``trend``, ``seasonal`` and ``remainder`` on the observed times (they sum to
         the input exactly), pointwise bands, and optional ``eval_times`` versions.
-        Seasonal bands with ``season='allssa'`` are conditional on the selected
-        frequencies and under-cover somewhat (~91% at nominal 95% in simulation).
+        Seasonal bands are conditional on the selected frequencies.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -2040,6 +2105,7 @@ def just_decompose(
             f"Unknown `trend_ci_method` {trend_ci_method!r}. Options: 'bias_corrected', 'model'."
         )
     eff_ci_method = "model" if parity_mode else (trend_ci_method or "bias_corrected")
+    eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
@@ -2128,6 +2194,10 @@ def just_decompose(
                     message=f"Skipped {skipped} sparse duration window(s).",
                 )
             )
+
+    sw_warn = _short_seasonal_window_warning(tt_num, windows_tt, om_arr, season_l, eff_season_sig)
+    if sw_warn is not None:
+        warnings_list.append(sw_warn)
 
     cfg = prep.config
     use_local_censor = (
@@ -2225,6 +2295,7 @@ def just_decompose(
                 compute_cov=True,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=eff_season_sig,
             )
             tr_coeff = res_a.trend_coeff
             cs_coeff = res_a.cos_sin_coeffs

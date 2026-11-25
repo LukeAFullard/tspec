@@ -185,6 +185,7 @@ class TestRobustJust:
             robust=robust_mode,  # type: ignore[arg-type]
         )
         assert len(res_null_rob.jumps) == 0
+        assert "SHORT_SEASONAL_WINDOW" in {w.code for w in res_null_rob.diagnostics.warnings}
 
         # Case B: Genuine step jump of +3.5 at t=3.0 PLUS isolated spikes
         y_jump_spikes = y_spikes.copy()
@@ -201,6 +202,10 @@ class TestRobustJust:
             mag_th=0.0,
             dir_th=0.0,
             robust=robust_mode,  # type: ignore[arg-type]
+            # 40-point windows span ~1.3 seasonal cycles: the annual harmonic is not
+            # family-wise identifiable there, so keep the published per-frequency rule
+            # (seasonality is known to be present in this design).
+            season_significance="per_frequency",
         )
         assert len(res_jump_rob.jumps) >= 1
         closest = min(res_jump_rob.jumps, key=lambda j: abs(j.time_year - 3.0))

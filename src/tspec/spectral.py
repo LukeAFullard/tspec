@@ -183,8 +183,8 @@ def _allssa_search_grid(t0: FloatArray, omega: FloatArray, decimal: int) -> tupl
     """Dense grid covering every frequency ALLSSA can select, and its effective size.
 
     Returns ``(grid, k_eff)`` where ``k_eff`` approximates the number of independent
-    frequencies searched (Rayleigh resolution ``1/T`` over the band), used for the
-    analytical Sidak family-wise threshold.
+    frequencies searched (three times the Rayleigh count ``T x bandwidth``, capped by the
+    grid size), used for the analytical Sidak family-wise threshold.
     """
     span = float(t0[-1] - t0[0]) if t0.size > 1 else 1.0
     span = span if span > 0.0 else 1.0
@@ -198,7 +198,9 @@ def _allssa_search_grid(t0: FloatArray, omega: FloatArray, decimal: int) -> tupl
     f_hi = float(np.max(omega)) + 0.5
     d_step = max(step, 1.0 / (20.0 * span))
     grid = np.arange(f_lo, f_hi + 0.5 * d_step, d_step, dtype=np.float64)
-    k_eff = float(min(grid.size, max(int(np.unique(omega).size), int(np.ceil(span * (f_hi - f_lo))))))
+    # The maximum over a continuous (refined) band behaves like ~2-3x the Rayleigh count
+    # T * bandwidth of independent frequencies (calibrated by simulation, audit/post_sidak_null.py).
+    k_eff = float(min(grid.size, int(np.ceil(3.0 * span * (f_hi - f_lo)))))
     return grid, max(1.0, k_eff)
 
 

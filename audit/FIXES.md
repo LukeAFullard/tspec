@@ -4,7 +4,7 @@ This document records the changes made in response to `audit/AUDIT_REPORT.md` (a
 
 **Scope:** the four Blockers plus the quick, high-confidence items.
 - CRT-01 is disclosed but not fixed.
-- CRT-04 and CRT-05 are not fixed (see *Not fixed* below).
+- CRT-05 was fixed in a follow-up (see below); CRT-04 is not fixed (see *Not fixed* below).
 
 **Policy:** defaults are now statistically calibrated. `parity_mode=True` still reproduces the upstream (Ghaderpour) behaviour, so existing parity results are unchanged.
 
@@ -27,6 +27,7 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 | MAJ-03 MM / L1 breakdown claims | **Fixed (docs)** | "Yohai MM", "50% breakdown" | described as Huber-started MM-type; breakdown design-dependent |
 | MAJ-04 years-only defaults | **Fixed (guarded)** | silent empty grid; cryptic crash | `TIME_UNIT_ASSUMPTION` / `DEGENERATE_DEFAULT_GRID` warnings; explicit error message |
 | MAJ-05 overstated validation claims | **Fixed (docs)** | 26/26 gates, ALLSSA 7.5% | README/validation summary rewritten with audited numbers and limitations |
+| CRT-05 seasonal/forecast bands under ALLSSA selection | **Fixed (follow-up)** | seasonal coverage 91.3% / 89.8%; monitor mean CI 92.9% | **94.6% / 93.5%**; monitor mean CI **94.9%**; jump FP unchanged (5%), power up (2σ: 55.5% → 61%), 4σ magnitude RMSE 0.029 → 0.019 (`audit/post_season_sig.py`, `audit/post_monitor_season.py`, `audit/post_sidak_null.py`) |
 | MIN-01 Sen CI rank | **Fixed** | upper limit one rank low | matches `scipy.stats.theilslopes` exactly |
 | MIN-02 datetime overflow / numeric strings | **Fixed** | `"1"` → year 1754; silent wrap | numeric strings parsed as numbers; out-of-range dates rejected |
 | MIN-04 conditioning warning | **Fixed** | threshold 1e10 | caution at cond > 1e6 with explanation |
@@ -61,7 +62,7 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 - `AllssaResult.significance` is new.
 - `lssa(peak_fap="sidak" | "montecarlo" | "none")` adds `LssaResult.peak_fap`.
 - `to_dataframe()` column `significant` was renamed `significant_per_frequency`.
-- Internal ALLSSA calls inside JUST and the monitor still use the per-frequency rule (see *Not fixed*).
+- Internal ALLSSA calls inside JUST and the monitor use `season_significance="sidak"` (follow-up fix for CRT-05).
 
 **`just_decompose`**
 - `trend_ci_method="bias_corrected"` (default; `"model"` in `parity_mode`). Each window is refit with an added quadratic trend term, harmonics held fixed. The band is centred on the blended bias-corrected estimate `trend_bc` (robust bias correction, Calonico–Cattaneo–Farrell 2018).
@@ -115,7 +116,6 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 
 - **CRT-01:** `consecutive_k` still does not bound the family-wise rate. It is now documented as such, and the warnings no longer recommend it for error control.
 - **CRT-04:** STPD / `analyze_series` trend bands remain conditional on the detected structure. Coverage is 83.5% even with the correct structure (MC7b). STPD's SNR > 1 gate can still miss turning points regardless of n. The docs now quantify this. A full fix needs a bootstrap of the detect-then-fit procedure.
-- **CRT-05:** internal ALLSSA harmonic selection inside JUST/monitor still uses the per-frequency rule, so seasonal bands cover ≈ 91%.
 - **Censored data beyond segment slopes:** JUST/STPD detection p-values on censored data condition on a single (now time-conditional) imputation. The windowed and seasonal-stratified scopes still use the marginal model.
 - **MIN-03 (partial):** IRLS non-convergence inside JUST/STPD sliding windows is still not reported per window. Convergence failures were ≤ 0.2% in the audit's simulations.
-- **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers fixed and CRT-04/CRT-05 still open, the cap rule would limit the score to 80%.
+- **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers and CRT-02/03/05 fixed and CRT-01/CRT-04 still open, the cap rule would limit the score to 80%.

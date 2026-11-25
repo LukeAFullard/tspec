@@ -161,7 +161,7 @@ pip install --no-deps tspec
   - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
   - Mann–Kendall Type-I error under AR(1) ρ = 0.5: ≈ 5–7% with the default `mk_correction="ar1"` (uncorrected: ~25%).
   - `just_monitor()` prediction-interval coverage: ~95%.
-- **Known limitations:** bands from `stpd`/`analyze_series` and ALLSSA-selected seasonal bands are conditional on the detected structure and under-cover (about 83–92%); STPD's SNR gate can miss turning points regardless of sample size; detection p-values on censored data condition on one imputation; `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Known limitations:** bands from `stpd`/`analyze_series` are conditional on the detected structure and under-cover (about 83–92%); STPD's SNR gate can miss turning points regardless of sample size; detection p-values on censored data condition on one imputation; `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
 - **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
 - **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
 

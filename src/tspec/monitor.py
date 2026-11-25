@@ -503,6 +503,7 @@ def just_monitor(
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
+    season_significance: Literal["sidak", "montecarlo", "per_frequency"] = "sidak",
 ) -> MonitorResult:
     """Near-Real-Time (NRT) disturbance detection and classification (JUSTmonitor).
 
@@ -615,6 +616,10 @@ def just_monitor(
         Configuration for ``ndimpute`` censored-data handling. Fitted strictly
         causally on ``t[history:start]`` so future monitoring observations never
         leak into historical imputation.
+    season_significance : {"sidak", "montecarlo", "per_frequency"}, default "sidak"
+        Acceptance rule for ALLSSA-selected historical harmonics (``season="allssa"``):
+        family-wise Sidak (default), exact Monte Carlo, or the published per-frequency
+        rule (forced by ``parity_mode=True``).
     parity_mode : bool, default False
         If ``True``, disables multiplicity controls (``freq_correction="none"``,
         ``sequential_control="none"``), disables predictive covariance weighting
@@ -652,6 +657,12 @@ def just_monitor(
     eff_win_mode: MonitorWindowMode = "expanding" if parity_mode else window_mode
     eff_forecast_cov = False if parity_mode else bool(account_for_forecast_uncertainty)
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
+    if season_significance not in ("sidak", "montecarlo", "per_frequency"):
+        raise ValueError(
+            f"Unknown `season_significance` {season_significance!r}. "
+            "Options: 'sidak', 'montecarlo', 'per_frequency'."
+        )
+    season_sig = "per_frequency" if parity_mode else season_significance
 
     def _causal_split(pre_series: TimeSeriesInput) -> tuple[int, int]:
         n_pre = pre_series.n_valid
@@ -763,6 +774,7 @@ def just_monitor(
             compute_cov=True,
             robust=eff_robust,
             huber_k=huber_k,
+            significance=season_sig,
         )
         his_freqs = his_allssa.frequencies
         his_trend_coeff = his_allssa.trend_coeff
@@ -1135,6 +1147,7 @@ def just_monitor(
                 compute_cov=False,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=season_sig,
             )
             tr_c = j_res.trend_coeff
             cond_max = max(cond_max, j_res.condition_number_max)
