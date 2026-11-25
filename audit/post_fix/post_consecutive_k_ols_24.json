@@ -1,0 +1,35 @@
+{
+ "consecutive_k2_calibrated": {
+  "R": 1000,
+  "FWER": 0.048,
+  "detect_2sigma": 0.867,
+  "detect_3sigma": 0.986,
+  "median_delay_2sigma": 9.0,
+  "median_delay_3sigma": 6.0
+ },
+ "consecutive_k3_calibrated": {
+  "R": 1000,
+  "FWER": 0.052,
+  "detect_2sigma": 0.852,
+  "detect_3sigma": 0.982,
+  "median_delay_2sigma": 10.0,
+  "median_delay_3sigma": 7.0
+ },
+ "consecutive_k2_no_horizon": {
+  "R": 1000,
+  "FWER": 0.023,
+  "detect_2sigma": 0.806,
+  "detect_3sigma": 0.986,
+  "median_delay_2sigma": 10.0,
+  "median_delay_3sigma": 7.0
+ },
+ "pocock_horizon": {
+  "R": 1000,
+  "FWER": 0.001,
+  "detect_2sigma": 0.479,
+  "detect_3sigma": 0.953,
+  "median_delay_2sigma": 12.0,
+  "median_delay_3sigma": 9.0
+ },
+ "MCSE_at_alpha": 0.006892024376045111
+}
