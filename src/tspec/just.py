@@ -885,7 +885,10 @@ def _nested_jump_ftests(
     f_step = max(0.0, rss_hinge - rss1) / den
     if calib == "montecarlo":
         p_jump = _mc_maxf_pvalue(t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed)
-        p_step = float(f_dist.sf(f_step, 1, dof2))
+        # The step test (jump vs best continuous hinge) is also evaluated at the
+        # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
+        # analytical Bonferroni correction over the scanned splits.
+        p_step = float(min(1.0, float(n_cands) * float(f_dist.sf(f_step, 1, dof2))))
         return float(p_jump), p_step
     p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
     p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2))))
@@ -895,19 +898,28 @@ def _nested_jump_ftests(
 def _holm_adjust_candidates(
     tested: list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
 ) -> list[tuple[int, int, float, float, float, float, float, WindowCandidate]]:
-    """Holm (1979) step-down adjustment of ``jump_pvalue`` across candidate locations."""
-    pvals = np.array([np.nan_to_num(it[5], nan=1.0) for it in tested], dtype=np.float64)
-    m = int(pvals.size)
-    order = np.argsort(pvals)
-    adj = np.empty(m, dtype=np.float64)
-    running = 0.0
-    for rank, idx in enumerate(order):
-        running = max(running, min(1.0, (m - rank) * pvals[idx]))
-        adj[idx] = running
+    """Holm (1979) step-down adjustment of ``jump_pvalue`` and ``step_pvalue`` across
+    candidate locations."""
+
+    def _holm(raw: FloatArray) -> FloatArray:
+        m = int(raw.size)
+        order = np.argsort(raw)
+        adj = np.empty(m, dtype=np.float64)
+        running = 0.0
+        for rank, idx in enumerate(order):
+            running = max(running, min(1.0, (m - rank) * raw[idx]))
+            adj[idx] = running
+        return adj
+
+    pj = np.array([np.nan_to_num(it[5], nan=1.0) for it in tested], dtype=np.float64)
+    ps = np.array([np.nan_to_num(it[6], nan=1.0) for it in tested], dtype=np.float64)
+    adj_j = _holm(pj)
+    adj_s = _holm(ps)
     out = []
-    for it, p_adj in zip(tested, adj, strict=True):
-        p_orig = it[5]
-        out.append((it[0], it[1], it[2], it[3], it[4], float(p_adj) if np.isfinite(p_orig) else p_orig, it[6], it[7]))
+    for k, it in enumerate(tested):
+        pj_new = float(adj_j[k]) if np.isfinite(it[5]) else it[5]
+        ps_new = float(adj_s[k]) if np.isfinite(it[6]) else it[6]
+        out.append((it[0], it[1], it[2], it[3], it[4], pj_new, ps_new, it[7]))
     return out
 
 
