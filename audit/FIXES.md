@@ -3,12 +3,12 @@
 This document records the changes made in response to `audit/AUDIT_REPORT.md` (audited commit `22e2d44`). For each fixed finding it gives before/after evidence from re-running the audit's own Monte Carlo designs on the new code.
 
 **Scope:** the four Blockers plus the quick, high-confidence items.
-- CRT-01 is disclosed but not fixed.
+- CRT-01 was fixed in a follow-up for monitoring with a planned `horizon` (see below).
 - CRT-05 was fixed in a follow-up (see below). CRT-04 is partly fixed: STPD detection is now calibrated, but trend bands remain conditional on the detected structure (see *Not fixed* below).
 
 **Policy:** defaults are now statistically calibrated. `parity_mode=True` still reproduces the upstream (Ghaderpour) behaviour, so existing parity results are unchanged.
 
-Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jumps.py`, `audit/post_mc5_monitor.py`, `audit/post_mk_variants.py`, `audit/post_mc7_stpd.py`, `audit/post_stpd_robust.py`, plus the original audit scripts re-run unchanged.
+Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jumps.py`, `audit/post_mc5_monitor.py`, `audit/post_mk_variants.py`, `audit/post_mc7_stpd.py`, `audit/post_stpd_robust.py`, `audit/post_consecutive_k.py`, `audit/post_consecutive_k_null.py`, plus the original audit scripts re-run unchanged.
 
 ## Summary
 
@@ -21,7 +21,7 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 | **BLK-04** censored OLS slope (50% censoring) | **Fixed** | bias −27%, coverage 63.4% | bias **+0.5%**, coverage **96.0%** (20% censoring: −2%, 94.0%) |
 | CRT-02 monitor look-ahead | **Fixed** | step thresholds changed with future data | identical thresholds regardless of data length; FWER 0.2% |
 | CRT-03 Sen fan exported as trend CI | **Fixed** | `trend_ci_*` covered 63% | fan moved to `slope_fan_*`; `trend_ci_*` is `None` for `"sen"` |
-| CRT-01 `consecutive_k` FWER | **Disclosed** | claimed "protection at nominal α" | `explain()`/docs now state it does not bound FWER (still ≈11% over 96 steps) |
+| CRT-01 `consecutive_k` FWER | **Fixed with `horizon` (follow-up)**; disclosed otherwise | claimed "protection at nominal α"; 2.3–4.2% over 24 steps, 9.5–15.3% over 96 steps | Monte Carlo-calibrated per-step level: **4.8–5.3%** over 24 steps (R = 1000), **3.3%** (ols) / **5.1%** (allssa, R = 1200) over 96 steps; exact under regular sampling (5.15%, R = 2000). 2σ detection 82–87% vs. Pocock 48–49% (24 steps); 97–99.5% vs. 92% (96 steps), median delay 12 vs. 16 steps (`audit/post_consecutive_k.py`, `audit/post_consecutive_k_null.py`). Without `horizon`: `UNCALIBRATED_CONSECUTIVE_K` warning |
 | MAJ-01 MK/Sen under autocorrelation | **Fixed** | Type-I 23–25%, coverage 74–77% (AR(1) 0.5) | **4.8–7.3%**, 92.7–95.2%; iid unchanged (4.0–4.2%) |
 | MAJ-02 LSSA "significant points" narrative | **Fixed** | "Detected k significant points" on noise | reports the family-wise FAP of the top peak (`peak_fap`) |
 | MAJ-03 MM / L1 breakdown claims | **Fixed (docs)** | "Yohai MM", "50% breakdown" | described as Huber-started MM-type; breakdown design-dependent |
@@ -98,7 +98,7 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 
 ## Verification
 
-- `pytest`: **138 passed** (tests/), including new `tests/test_calibration_fixes.py` plus new tests in `test_just.py` and `test_monitor.py`. `audit/test_hypothesis_audit.py`: 6/6.
+- `pytest`: **141 passed** (tests/), including new `tests/test_calibration_fixes.py` plus new tests in `test_just.py` and `test_monitor.py`. `audit/test_hypothesis_audit.py`: 6/6.
 - `ruff check .`: clean. `mypy src/`: no issues in 16 source files (target now Python 3.12 for numpy ≥ 2.3 stubs; runtime support unchanged).
 - Monte Carlo re-runs, with the same designs and seeds as the audit:
 
@@ -115,8 +115,8 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 
 ## Not fixed (remaining limitations)
 
-- **CRT-01:** `consecutive_k` still does not bound the family-wise rate. It is now documented as such, and the warnings no longer recommend it for error control.
+- **CRT-01 (no horizon):** without a planned `horizon`, `consecutive_k` still does not bound the family-wise rate (warning `UNCALIBRATED_CONSECUTIVE_K`). The calibration assumes Gaussian errors and holds ALLSSA-selected harmonics fixed; it does not use full weight matrices (`CALIBRATION_FALLBACK`).
 - **CRT-04 (bands):** STPD / `analyze_series` trend bands remain conditional on the detected structure: about 83% coverage in MC7b even with the correct structure. The docs quantify this. A full fix needs a bootstrap of the detect-then-fit procedure. The detection half of CRT-04 (SNR gate, uncalibrated knot search) is fixed. STPD power still depends on the information within one window, not on the record length.
 - **Censored data beyond segment slopes:** JUST/STPD detection p-values on censored data condition on a single (now time-conditional) imputation. The windowed and seasonal-stratified scopes still use the marginal model.
 - **MIN-03 (partial):** IRLS non-convergence inside JUST/STPD sliding windows is still not reported per window. Convergence failures were ≤ 0.2% in the audit's simulations.
-- **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers and CRT-02/03/05 fixed, CRT-04 partly fixed and CRT-01 still open, the cap rule would limit the score to 80%.
+- **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers and CRT-02/03/05 fixed and CRT-01/CRT-04 partly fixed, the cap rule would limit the score to 80%.

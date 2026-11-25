@@ -308,7 +308,7 @@ class MonitorResult(BaseResult):
                 f"Repeated-testing protection active: an alarm needs {self.consecutive_k} consecutive "
                 f"exceedances at a Monte Carlo-calibrated per-step level {a_step:.3g}, which bounds "
                 f"the familywise false-alarm rate at alpha={self.alpha:g} over the planned horizon of "
-                f"{self.horizon} steps (assuming Gaussian errors and regular sampling)."
+                f"{self.horizon} steps (assuming Gaussian errors and history-like sampling)."
             )
         elif self.sequential_control == "consecutive_k":
             parts.append(

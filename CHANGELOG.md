@@ -20,6 +20,9 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
   - The new `tp_calibration="montecarlo"` refers each window's slope-change t statistic to the Monte Carlo null of the maximum over candidate knots and scan directions; `"bonferroni"` is the default for robust fits. Calibrated p-values are Holm-adjusted across candidate locations.
   - `snr_th` now defaults to `None`, which resolves to `0` (no SNR gate), or `1.0` with `parity_mode=True`.
   - Effect: false turning points on straight-line series fall from up to 2.2% to 0.2–0.6% at `alpha=0.01`, and single-turning-point detection rises from 0% to 52% (n=150, σ=1) and from 32% to 82% (n=500, σ=0.6).
+- **`just_monitor(sequential_control="consecutive_k")`** with a `horizon`: the per-step level is now calibrated by Monte Carlo so that `k` consecutive exceedances within the horizon occur with probability ≤ `alpha` under the fitted history model (new `n_mc`, default 999). Future sampling gaps are resampled from the history, so the level uses no monitoring data.
+  - Effect at `alpha=0.05`: the familywise false-alarm rate is 3–5% over 24–96 steps (uncalibrated: up to 15% over 96 steps), and 2σ steps are detected more often than with Pocock spending (82–87% vs. 48–49% within 24 steps).
+  - Without `horizon` the per-step `alpha` is unchanged and the new warning `UNCALIBRATED_CONSECUTIVE_K` is reported.
 - **`analyze_series`**:
   - New `mk_correction="ar1"` (default) corrects Mann–Kendall/Sen inference for serial correlation; `"hamed_rao"` and `"none"` are also available.
   - With `slope_estimator="sen"`, the median-pivoted fan moves from `trend_ci_low/high` to the new `slope_fan_low/high` (it is not a trend CI).
@@ -33,9 +36,9 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - New warning `SHORT_SEASONAL_WINDOW` when windows cover fewer than two cycles of the lowest searched frequency.
 - `allssa(significance="sidak")` now counts about three times the Rayleigh number (T × bandwidth) of independent frequencies, calibrated by simulation for short windows.
 - `lssa(peak_fap=...)` and `LssaResult.peak_fap`: the family-wise false-alarm probability of the highest peak.
-- `StpdResult.tp_calibration`, `JustJumpResult.jump_calibration`, `AllssaResult.significance`, `JustDecomposeResult.trend_bc`/`trend_reg_bc`/`trend_ci_method`, and `PipelineResult.slope_fan_low/high`.
+- `MonitorResult.consecutive_k` / `consecutive_k_calibrated`, `StpdResult.tp_calibration`, `JustJumpResult.jump_calibration`, `AllssaResult.significance`, `JustDecomposeResult.trend_bc`/`trend_reg_bc`/`trend_ci_method`, and `PipelineResult.slope_fan_low/high`.
 - `CensoredConfig.imputation_model`, `trend_harmonics`, and `n_imputations`.
-- New warnings: `UNCALIBRATED_JUMP_SELECTION`, `UNCALIBRATED_JUMP_PVALUES`, `CALIBRATION_FALLBACK`, `OPEN_ENDED_SPENDING`, `TIME_UNIT_ASSUMPTION`, `DEGENERATE_DEFAULT_GRID`, `BIAS_CORRECTION_FALLBACK`, `TREND_IMPUTATION_FALLBACK`, and `MI_SEGMENT_FALLBACK`.
+- New warnings: `UNCALIBRATED_JUMP_SELECTION`, `UNCALIBRATED_JUMP_PVALUES`, `CALIBRATION_FALLBACK`, `OPEN_ENDED_SPENDING`, `TIME_UNIT_ASSUMPTION`, `DEGENERATE_DEFAULT_GRID`, `BIAS_CORRECTION_FALLBACK`, `TREND_IMPUTATION_FALLBACK`, `MI_SEGMENT_FALLBACK`, and `UNCALIBRATED_CONSECUTIVE_K`.
 
 ### Fixed
 - Akritas–Theil–Sen p-values and CIs use the censoring-aware permutation variance of the censored Kendall statistic (Daniels, 1944). They were conservative before: 98% CI coverage at 50% censoring, now about 95%.
@@ -56,7 +59,7 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - Corrected claims:
   - `robust="mm"` is a Huber-started MM-type estimator, not Yohai's high-breakdown MM.
   - L1 hinge fits do not have 50% breakdown.
-  - `consecutive_k` monitoring does not bound the familywise false-alarm rate.
+  - `consecutive_k` monitoring without a `horizon` does not bound the familywise false-alarm rate.
   - Validation numbers replaced with audited ones.
 - Every public function parameter, configuration field, result attribute and warning code is now documented, including the difference between separately fitted `analyze_series` segment slopes and the connected-refit turning-point slopes.
 - Figures regenerated; references added.
