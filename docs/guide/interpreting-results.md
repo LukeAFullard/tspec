@@ -14,9 +14,10 @@ Every result returned by `tspec` (`LssaResult`, `AllssaResult`, `JustJumpResult`
 !!! important "Screening vs. Fixed-Date $p$-Values"
     Inside a sliding window, JUST and STPD search across many candidate split indices and select the index $j^*$ that minimizes the residual sum of squares *before* computing `jump_pvalue` (JUST) or Student-$t$ `pval` (STPD). Because $j^*$ was chosen by looking at the data, raw window $p$-values are **screening statistics** — they are optimistically small compared to testing a single pre-specified date!
 
-How `tspec` handles this transparently:
-- In **`analyze_series()`**, Stage 1 enables **`bonferroni_window=True`** by default (multiplying raw window $p$-values by the number of tested interior splits) AND applies the 1-df **`step_pvalue`** test comparing the best discontinuous jump against the best continuous hinge — suppressing post-selection noise while cleanly handing smooth bends to STPD.
-- In **`just_jumps()`**, `bonferroni_window=False` and `jump_alpha=None` by default for exact parity with Ghaderpour (2020), while always computing and storing both `jump_pvalue` and `step_pvalue` on every `JumpEvent`.
+How `tspec` handles this:
+- **`just_jumps()`** (and therefore `analyze_series()`) uses `jump_calibration="montecarlo"` by default: each window's `jump_pvalue` is referred to the exact Monte Carlo null distribution of the *maximum* F statistic over all candidate splits, then Holm-adjusted across candidate locations, so the default `jump_alpha=0.05` bounds the probability of reporting any false jump (about 3–5% in simulation, versus 70–100% for the raw screening p-values). `jump_calibration="bonferroni"` is a faster, more conservative analytical alternative; `"none"` returns raw screening p-values (forced by `parity_mode=True`).
+- **`analyze_series()`** additionally applies the 1-df **`step_pvalue`** filter, which compares the best discontinuous jump against the best continuous hinge, so smooth bends are handed to STPD.
+- **STPD** turning-point `pval` values remain per-window screening statistics; treat them as screening evidence.
 
 ---
 
@@ -25,11 +26,15 @@ How `tspec` handles this transparently:
 | Warning Code | Severity | What It Means & What To Do |
 | :--- | :--- | :--- |
 | `DL_SHIFT_COINCIDENCE` | Warning | A jump, turning point, or NRT alarm landed right next to a laboratory detection-limit change. Re-run with `CensoredConfig(recensor_check=True)` and check lab metadata! |
-| `DL_ARTIFACT_LIKELY` | Warning | The detected jump vanished once data were recensored to a common detection limit — almost certainly a lab artifact, not an environmental shift. |
+| `DL_ARTIFACT_LIKELY` | Warning | The detected jump vanished once data were recensored to a common detection limit — this suggests a lab artifact, but recensoring discards information, so a real but weak shift can also vanish; check lab metadata. |
 | `STRONG_AUTOCORRELATION` | Warning | Residual lag-1 or continuous-time OU correlation $\ge 0.60$. Nominal $p$-values are unreliable; tighten `alpha` or supply correlated inverse-covariance `weights = C_f^{-1}`. |
 | `MODERATE_AUTOCORRELATION` | Caution | Residual autocorrelation $\in [0.30, 0.60)$. False-positive rates are modestly elevated; consider `alpha=0.005`. |
 | `HIGH_NDRI_JUMP_CANDIDATE` | Caution | STPD rejected a strong candidate because residuals were lop-sided (`NDRI >= ndri_th`). Run `just_jumps()` or `analyze_series()` to check for an abrupt vertical jump. |
-| `HORIZON_EXCEEDED` | Warning | `just_monitor()` ran past its planned `horizon` under Pocock or O'Brien–Fleming spending; familywise Type I error control is no longer guaranteed past `horizon`. Increase `horizon` or switch to `sequential_control="consecutive_k"`. |
+| `HORIZON_EXCEEDED` | Warning | `just_monitor()` ran past its planned `horizon` under Pocock or O'Brien–Fleming spending; familywise Type I error control is no longer guaranteed past `horizon`. Increase `horizon`, or omit it to use open-ended spending. |
+| `OPEN_ENDED_SPENDING` | Caution | No `horizon` was given, so open-ended alpha spending was used (valid for any length, but strict at late steps). Pass a planned `horizon` for more power. |
+| `UNCALIBRATED_JUMP_SELECTION` / `UNCALIBRATED_JUMP_PVALUES` | Warning | `just_jumps()` ran with `jump_alpha=None` or `jump_calibration="none"`: reported jumps have no false-positive control. |
+| `TIME_UNIT_ASSUMPTION` | Warning | The numeric time axis does not look like decimal years, but default grids, windows and thresholds assume years. |
+| `TREND_IMPUTATION_FALLBACK` | Warning | Time-conditional censored imputation failed and the time-invariant marginal model was used; trends among censored values are biased toward zero. |
 | `LONG_MONITORING_HORIZON` | Caution | The monitoring span exceeds the stable historical span, so extrapolated trend uncertainty grows quadratically. Keep `account_for_forecast_uncertainty=True` (default) or re-baseline periodically. |
 | `UNADJUSTED_REPEATED_TESTING` | Warning | Multiplicity controls (`freq_correction`, `sequential_control`) are disabled in `just_monitor()` outside `parity_mode=True`. |
 | `PENDING_CONFIRMATION` | Info | Under `sequential_control="consecutive_k"`, the latest observation exceeded the threshold but has not yet reached `consecutive_k` consecutive hits. |
@@ -49,15 +54,15 @@ Every trend, seasonal, and forecast estimator in `tspec` computes fast analytica
 
 | Function / Mode | Output Fields | Interval Formula |
 | :--- | :--- | :--- |
-| `just_decompose()` | `trend_ci_low/high`, `seasonal_ci_low/high` (plus `*_reg_ci_*` for `eval_times`) | Exact within-window Student-$t$ half-widths (keeping pure zero-cycle-mean harmonics in default mode to avoid irregular-grid centering bias), blended across overlapping Gaussian windows via the conservative **Cauchy–Schwarz half-width blend**. |
+| `just_decompose()` | `trend_ci_low/high` (centered on `trend_bc`), `seasonal_ci_low/high` (plus `*_reg_ci_*` for `eval_times`) | Trend: **bias-corrected** band from local-quadratic window refits (default `trend_ci_method="bias_corrected"`), so curvature within windows does not cause under-coverage. Seasonal: exact within-window Student-$t$ half-widths. Both blended across overlapping Gaussian windows with the Cauchy–Schwarz half-width blend. |
 | `fit_piecewise_trend()` & `detect_turning_points()` | `trend_ci_low/high` on `PiecewiseTrendResult` | Exact $O(n)$ disjoint-support variance recursion for `mode="sequential"` (TPTR); exact $\mathbf{d}_i^T \widehat{\text{Cov}}\,\mathbf{d}_i$ for `mode="joint"` / `"huber"`; `None` for `mode="l1"`. |
-| `analyze_series()` | `trend_ci_low/high`, `decomposition.seasonal_ci_low/high`, and per-segment `slope_ci_low/high` | Exact analytical ribbons for `"ols"` and `"huber"`; **median-pivoted Sen/ATS slope-CI fans** (`MannKS` / Helsel convention) for `"sen"`; `None` for `"l1"`. |
+| `analyze_series()` | `trend_ci_low/high`, `decomposition.seasonal_ci_low/high`, per-segment `slope_ci_low/high`, and `slope_fan_low/high` for `"sen"` | Analytical ribbons for `"ols"` and `"huber"`; for `"sen"` the median-pivoted slope fan is exported as `slope_fan_*` (it is **not** a pointwise trend CI) and `trend_ci_*` is `None`; `None` for `"l1"`. Censored OLS segments use Rubin-pooled multiple imputation (`estimator="ols_mi"`). |
 | `just_monitor()` | `forecast_ci_low/high` **and** `forecast_pi_low/high` | Inner band: mean forecast uncertainty (widens quadratically as forecast extrapolates past `start`). Outer band: out-of-sample observation **prediction interval** adding $\hat{\sigma}_{\text{his}}^2 / w_i$. |
 
 !!! note "Statistical Interpretation & Caveats"
-    - **Conditional pointwise bands:** Analytical intervals are **conditional on the detected breakpoints and selected seasonal frequencies** (post-selection breakpoint-location uncertainty is not folded into the analytical band). For heavily censored records, pair with `CensoredConfig(n_stability_draws=20)` to assess breakpoint stability.
+    - **Conditional pointwise bands:** Analytical intervals are **conditional on the detected breakpoints and selected seasonal frequencies**; breakpoint-location and selection uncertainty are not included. In simulations, STPD and `analyze_series` trend bands covered about 83–92% when the structure was detected correctly, and far less when a turning point was missed (STPD requires a within-window SNR above `snr_th`, independent of sample size). ALLSSA-selected seasonal bands cover about 91%. Treat these bands as optimistic. For heavily censored records, pair with `CensoredConfig(n_stability_draws=20)` to assess breakpoint stability.
     - **Autocorrelation:** Standard intervals assume independent residuals unless you supply an inverse-covariance weight matrix `weights = C_f^{-1}`. If `tspec` emits `MODERATE_AUTOCORRELATION` or `STRONG_AUTOCORRELATION`, analytical bands are optimistic (too narrow).
-    - **Theil–Sen bowtie fan (`slope_estimator="sen"`):** The plotted median-pivoted fan shows **slope uncertainty** (`seg.slope_ci_low/high`) around each segment's median point $(t_{\text{med}}, \hat{y}_{\text{med}})$—pinching to zero width at $t_{\text{med}}$—rather than vertical intercept uncertainty.
+    - **Theil–Sen bowtie fan (`slope_estimator="sen"`):** The plotted median-pivoted fan (`slope_fan_low/high`) shows **slope uncertainty** (`seg.slope_ci_low/high`) around each segment's median point $(t_{\text{med}}, \hat{y}_{\text{med}})$. It pinches to zero width at $t_{\text{med}}$, so it is not a confidence band for the trend line (it covered the true line at only ~63% of points in simulation).
     - **Why `mode="l1"` returns `None`:** Exact linear-programming $L_1$ (LAD) regression has no closed-form finite-sample covariance without density estimation or resampling. Rather than showing misleading parametric error bars, `tspec` returns `None`—use `slope_estimator="sen"` or `"huber"` when you want robust CIs.
 
 ### Example 1: JUST Decomposition Trend & Seasonal 95% CIs
@@ -97,7 +102,7 @@ pipe = tspec.analyze_series(
 for seg in pipe.segments:
     print(f"Seg {seg.segment_index}: slope={seg.slope:+.3f} 95% CI=[{seg.slope_ci_low:+.3f}, {seg.slope_ci_high:+.3f}]")
 
-fig, axes = pipe.plot(show_ci=True)  # plots Sen slope-CI fans & seasonal 95% CI
+fig, axes = pipe.plot(show_ci=True)  # plots the Sen slope fan & seasonal 95% CI
 ```
 
 ### Example 3: Near-Real-Time Monitoring Forecast CI vs. Prediction Interval

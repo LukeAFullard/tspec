@@ -7,7 +7,7 @@ Real multi-decade records frequently contain **all four challenges at once**:
 4. A later smooth turning point (e.g., gradual ecosystem or hydrological turnaround)
 
 Following Ghaderpour et al. (2024), `analyze_series()` automates the recommended two-stage workflow:
-- **Stage 1 (JUST):** Isolates statistically significant abrupt vertical jumps (`step_alpha` + `bonferroni_window=True`) and extracts seasonal harmonics (`just_decompose`).
+- **Stage 1 (JUST):** Isolates statistically significant abrupt vertical jumps (family-wise calibrated `jump_alpha` + `step_alpha`) and extracts seasonal harmonics (`just_decompose`).
 - **Stage 2 (STPD):** Removes seasonality and vertical step offsets, then detects continuous turning points on the adjusted series.
 
 ![Guided JUST -> STPD combined workflow result](../assets/figures/hero_combined_workflow.png)

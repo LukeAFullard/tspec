@@ -822,8 +822,8 @@ def lssa(
         Known cyclic frequencies removed simultaneously with the trend.
     robust:
         ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS
-        M-estimation), or ``'mm'`` (Yohai 1987 Huber-initialized Tukey
-        biweight MM-estimation with zero weight on extreme isolated spikes).
+        M-estimation), or ``'mm'`` (Huber-initialized Tukey biweight MM-type estimation
+        with zero weight on extreme isolated spikes; not Yohai's S-started high-breakdown MM).
     huber_k:
         Huber tuning constant (default ``1.345``, 95% Gaussian efficiency).
     peak_fap:

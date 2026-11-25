@@ -583,7 +583,7 @@ def _huber_line_2param(
 
     for it in range(1, max_iter + 1):
         au = np.abs(rw) / scale
-        wh = np.where(au <= k, 1.0, k / au)
+        wh = np.where(au <= k, 1.0, k / np.maximum(au, k))
         nb, na = _wls2(w0 * wh)
         rw = (y - (nb + na * u)) * sw0
         if it <= 3:
@@ -626,7 +626,7 @@ def _huber_slope_1param(
 
     for it in range(1, max_iter + 1):
         au = np.abs(rw) / scale
-        wh = np.where(au <= k, 1.0, k / au)
+        wh = np.where(au <= k, 1.0, k / np.maximum(au, k))
         wt = w0 * wh
         den = float(np.dot(wt, d2))
         if den <= 0.0:
@@ -727,7 +727,7 @@ def _fit_two_piece_sequential_huber(
             # Isolated spikes only: zero extreme spikes without masking contiguous step cliffs
             w_huber = np.maximum(tukey_weight(u_signed), 1e-12)
         else:
-            w_huber = np.where(u_abs <= huber_k, 1.0, huber_k / u_abs)
+            w_huber = np.where(u_abs <= huber_k, 1.0, huber_k / np.maximum(u_abs, huber_k))
     else:
         w_huber = np.ones(n, dtype=np.float64)
 
@@ -1215,7 +1215,8 @@ def fit_piecewise_trend(
         - ``'sequential'``: Ghaderpour et al. (2024) ``TPTR`` forward/backward chained OLS.
         - ``'joint'``: globally optimal simultaneous continuous hinge-spline OLS.
         - ``'l1'``: globally optimal continuous L1 (LAD) hinge-spline via linear
-          programming (50% vertical breakdown, strictly continuous at knots;
+          programming (robust to isolated outliers, design-dependent breakdown well
+          below 50%, strictly continuous at knots;
           pointwise CIs are ``None``).
         - ``'huber'``: globally optimal continuous Huber IRLS hinge-spline.
     huber_k:

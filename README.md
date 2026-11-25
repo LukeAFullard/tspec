@@ -26,8 +26,8 @@
 - **JUSTmonitor (v1.1)** — Near-Real-Time (NRT) abrupt & phenological disturbance monitoring (`just_monitor`) with Šidák, Pocock, O'Brien–Fleming, and $k$-consecutive repeated-testing controls (Ghaderpour & Vujadinovic, 2020b)
 - **STPD & TPTR** — *Sequential Turning Point Detection* (`detect_turning_points` / `stpd`) with RMSE-NDRI jump discrimination and connected piecewise linear trend fitting (`fit_piecewise_trend`) (Ghaderpour et al., 2024)
 - **Censored Time-Series Workflows** — First-class handling of `<LOD`, `>UL`, mixed, and `[L, R]` interval observations via [`ndimpute`](https://github.com/LukeAFullard/ndimpute) with automated temporal-order protection, lab detection-limit shift warnings, and multi-draw stability reporting.
-- **Robust Estimation & Non-Parametric Segment Slopes** — Outlier-resistant convex **Huber IRLS** (`robust="huber"`) and **Yohai MM-biweight** (`robust="mm"`) with Schrader–Hettmansperger robust $F$-tests, exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
-- **Analytical Pointwise Confidence & Prediction Intervals** — Fast, zero-dependency pointwise CIs (`ci_level=0.95`) on `just_decompose` trend & seasonal components (Cauchy–Schwarz overlap blend), connected `stpd` / `fit_piecewise_trend` curves (exact $O(n)$ sequential TPTR variance and joint/Huber hinge-spline covariance), `analyze_series` (including median-pivoted Sen/ATS slope-CI fans), and `just_monitor` mean forecast CIs + out-of-sample prediction intervals, rendered automatically as shaded ribbons in `.plot(show_ci=True)`.
+- **Robust Estimation & Non-Parametric Segment Slopes** — Outlier-resistant convex **Huber IRLS** (`robust="huber"`) and **Huber-started Tukey-biweight MM-type** estimation (`robust="mm"`; not a high-breakdown S-started MM) with Schrader–Hettmansperger robust $F$-tests, exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
+- **Analytical Pointwise Confidence & Prediction Intervals** — Pointwise CIs (`ci_level=0.95`) on `just_decompose` trend (bias-corrected local-quadratic band) & seasonal components, connected `stpd` / `fit_piecewise_trend` curves (exact $O(n)$ sequential TPTR variance and joint/Huber hinge-spline covariance), `analyze_series` segment slopes (Rubin-pooled multiple imputation for censored segments; autocorrelation-corrected Mann–Kendall/Sen), and `just_monitor` mean forecast CIs + out-of-sample prediction intervals, rendered as shaded ribbons in `.plot(show_ci=True)`. Bands are conditional on detected breakpoints and selected frequencies (see *Interpreting Results*).
 
 All algorithms work natively on **irregular, gappy timestamps with zero interpolation**.
 
@@ -79,7 +79,7 @@ fig, axes = result.plot()
 
 ## Near-Real-Time Disturbance Monitoring (`just_monitor`, v1.1)
 
-Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (**72.5%** null false-alarm rate over 25 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending** (**0.0%** empirical null FPR over 25 steps, **100%** recall on abrupt & phenological disturbances), while also offering Lan–DeMets **O'Brien–Fleming**, open-ended **`consecutive_k`**, and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b).
+Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (about 70% over 24 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending**: with a planned `horizon` the familywise false-alarm rate is bounded by $\alpha$ (0.1–0.3% at $\alpha = 0.05$ in simulation, i.e. conservative), and without `horizon` an open-ended spending sequence keeps the bound for any monitoring length without using future data. Lan–DeMets-shaped **O'Brien–Fleming** spending, **`consecutive_k`** (which does *not* bound the familywise rate), and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b) are also available.
 
 ![Near-real-time monitoring with sequential multiplicity control](docs/assets/figures/tutorial_nrt_monitoring.png)
 
@@ -94,6 +94,7 @@ res = just_monitor(
     alpha=0.01,
     freq_correction="sidak",       # Per-step adjustment across scanned frequencies
     sequential_control="pocock",   # Or "obrien_fleming", "consecutive_k", "none"
+    horizon=24,                    # Planned number of monitoring steps, fixed in advance
 )
 print(res.summary())
 print(res.explain())
@@ -150,12 +151,19 @@ pip install --no-deps tspec
 
 ## Verification & Performance
 
-`tspec` is verified across four automated validation tiers (full reports in [`validation/reports/`](validation/reports/)):
+`tspec` was independently audited (`audit/AUDIT_REPORT.md`; reproducible scripts in `audit/`). Highlights:
 
-- **Tier 1 — Upstream Numerical Parity:** **41 / 41 checks PASSED** against `Ghaderpour/LSWAVE-SignalProcessing` (`LSSA`, `ALLSSA`, `JUSTjumps`, `JUSTdecompose`, `JUSTmonitor`, `STPD`, `TPTR`; continuous max diffs `~1e-15`, exact discrete indices).
-- **Tier 2 — Monte Carlo Benchmarks:** **26 / 26 statistical gates PASSED** across JUST (including null-selected `season="allssa"` at `5.0%` FPR), STPD (exact negative-covariance SE, NDRI ROC AUC `1.000`; 3:1 density imbalance false-rejection rate dropped from `42.0%` → `0.0%`), censored data (`ndimpute` ROS vs `DL/2`, `100%` DL-shift defense, zero causal NRT leakage), AR(1) red-noise calibration, `just_monitor` sequential-peeking & forecast-drift control (`72.5%` → `0.0%` Šidák+Pocock; `25.0%` → `0.0%` with predictive covariance), and **robust estimation (`RB1–RB4`)**: 5% $12\sigma$ spikes JUST (`40%` → `12%` FPR, `100%` jump recall), heavy-tailed $t_3$ + spikes STPD (`96%` TP recall, `4.4×` lower $L_1$ slope MAE, `100%` NDRI jump separation), outlier pipeline slopes (`8.105` OLS → `0.017` MM+Sen), and 25% censored Akritas–Theil–Sen (`0.104` OLS → `0.012` ATS).
-- **Tier 3 — Unit, Property & Docs Tests:** 99 `pytest` + Hypothesis invariance, robust estimation, & audit-regression tests plus automated execution of every tutorial code block and unpacked PyPI sdist verification.
-- **Tier 4 — Speed & $O(n)$ Memory:** `allssa(decimal=4)` **6.4× faster** than upstream Python; **1,000-series STPD batch in 4.74 s**; 1D diagonal weights scale strictly in $O(n)$ memory (`19.4 MB` peak at $n = 10{,}000$).
+- **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall and the O(n) TPTR variance match `statsmodels`, `astropy`, `scipy` and `pymannkendall` (or brute force) to about 1e-14.
+- **Calibration of the default procedures** (Monte Carlo, ≥ 300–1000 replicates):
+  - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 3–5% (raw screening p-values: 70–100%).
+  - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–0.5% with Monte Carlo significance (published per-frequency rule: 18–25%).
+  - `just_decompose()` trend-band coverage: ~95% for linear, jump and smoothly curved trends.
+  - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
+  - Mann–Kendall Type-I error under AR(1) ρ = 0.5: ≈ 5–7% with the default `mk_correction="ar1"` (uncorrected: ~25%).
+  - `just_monitor()` prediction-interval coverage: ~95%.
+- **Known limitations:** bands from `stpd`/`analyze_series` and ALLSSA-selected seasonal bands are conditional on the detected structure and under-cover (about 83–92%); STPD's SNR gate can miss turning points regardless of sample size; detection p-values on censored data condition on one imputation; `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
+- **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
 
 ---
 

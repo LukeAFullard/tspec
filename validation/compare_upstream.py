@@ -26,7 +26,6 @@ if not hasattr(time, "clock"):
 from tspec import (  # noqa: E402
     allssa,
     detect_turning_points,
-    fit_piecewise_trend,
     just_decompose,
     just_jumps,
     just_monitor,

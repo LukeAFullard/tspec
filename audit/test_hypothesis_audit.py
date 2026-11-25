@@ -53,7 +53,8 @@ def test_decompose_reconstruction(data):
     assert np.allclose((d.trend + d.seasonal + d.remainder)[ok], y[ok], atol=1e-9 * max(1, np.abs(y).max()))
     lo, hi = d.trend_ci_low, d.trend_ci_high
     f = np.isfinite(lo) & np.isfinite(hi)
-    assert np.all(lo[f] <= d.trend[f] + 1e-12) and np.all(hi[f] >= d.trend[f] - 1e-12)
+    center = d.trend_bc if d.trend_bc is not None else d.trend
+    assert np.all(lo[f] <= center[f] + 1e-12) and np.all(hi[f] >= center[f] - 1e-12)
 
 @SET
 @given(st.data())

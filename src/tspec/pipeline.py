@@ -402,7 +402,7 @@ def _build_segment_summaries(
     huber_k: float,
     prov: CensoringProvenance | None,
     alpha: float = 0.05,
-    mk_correction: Literal["none", "hamed_rao"] = "hamed_rao",
+    mk_correction: Literal["none", "hamed_rao", "ar1"] = "ar1",
     n_imputations: int = 20,
     mi_seed: int = 0,
     mi_warnings: list[WarningItem] | None = None,
@@ -694,7 +694,7 @@ def analyze_series(
     robust: RobustMethod = "none",
     slope_estimator: SlopeEstimator = "ols",
     huber_k: float = 1.345,
-    mk_correction: Literal["none", "hamed_rao"] = "hamed_rao",
+    mk_correction: Literal["none", "hamed_rao", "ar1"] = "ar1",
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     just_kwargs: dict[str, Any] | None = None,
@@ -723,18 +723,22 @@ def analyze_series(
        - ``'ols'``: weighted ordinary least squares with Student-t CIs.
        - ``'sen'``: exact **Theil–Sen** (uncensored) or **Akritas–Theil–Sen**
          (left/right censored) with distribution-free CIs and Mann–Kendall
-         p-values. For uncensored segments ``mk_correction="hamed_rao"``
-         (default) inflates Var(S) for serial correlation (Hamed & Rao, 1998).
+         p-values. For uncensored segments ``mk_correction="ar1"`` (default)
+         inflates Var(S) for serial correlation via a bias-corrected AR(1)
+         effective-sample-size factor; ``"hamed_rao"`` is the significant-lags
+         Hamed & Rao (1998) correction (liberal in small samples); ``"none"``
+         assumes independence.
          The median-pivoted slope envelope is exported as ``slope_fan_low/high``
          (it is not a pointwise trend CI; ``trend_ci_*`` is ``None``).
        - ``'huber'``: continuous **Huber IRLS** hinge-spline with Huber (1981)
          asymptotic CIs.
        - ``'l1'``: globally optimal continuous **L1 (LAD)** hinge-spline via
-         sparse HiGHS linear programming (50% vertical breakdown; CIs are
+         sparse HiGHS linear programming (robust to isolated outliers; design-dependent
+         breakdown well below 50%; CIs are
          ``None``—use ``'sen'`` or ``'huber'`` for segment CIs).
 
-    Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'`` (Yohai
-    1987 Huber-initialized Tukey biweight MM-estimation, recommended for extreme
+    Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'``
+    (Huber-initialized Tukey biweight MM-type estimation, recommended for extreme
     isolated spikes) switches Phase 1 detection and decomposition
     (``just_jumps``, ``just_decompose``, step-offset estimation, and STPD) to
     outlier-resistant M/MM-estimation with Schrader–Hettmansperger (1980) robust
@@ -747,8 +751,8 @@ def analyze_series(
     if not (0.0 < ci_level < 1.0):
         raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     rob_method = validate_robust_args(robust, huber_k)
-    if mk_correction not in ("none", "hamed_rao"):
-        raise ValueError("`mk_correction` must be 'none' or 'hamed_rao'.")
+    if mk_correction not in ("none", "hamed_rao", "ar1"):
+        raise ValueError("`mk_correction` must be 'none', 'hamed_rao', or 'ar1'.")
     if slope_estimator not in ("ols", "sen", "l1", "huber"):
         raise ValueError(
             f"Unknown `slope_estimator` {slope_estimator!r}. "

@@ -252,7 +252,7 @@ def solve_huber_irls(
     for it in range(1, max_iter + 1):
         n_iter = it
         u = np.abs(r_w) / scale
-        w_h = np.where(u <= k, 1.0, k / u)
+        w_h = np.where(u <= k, 1.0, k / np.maximum(u, k))
         cur_coeff_s, r_w = _fast_wls_step(w_h)
 
         # Allow MAD scale to stabilize on early iterations if not held fixed
@@ -270,7 +270,7 @@ def solve_huber_irls(
 
     # Final effective weight structure & WeightedOLSResult for downstream spectral/Q use
     u_final = np.abs(r_w) / scale
-    w_h = np.where(u_final <= k, 1.0, k / u_final)
+    w_h = np.where(u_final <= k, 1.0, k / np.maximum(u_final, k))
     pw_eff = pw.scale_entries(w_h)
     ols_final = solve_weighted_ols(
         D, y, pw_eff, col_scales=col_scales, rcond=rcond, compute_cov=compute_cov
@@ -340,7 +340,11 @@ def solve_mm_biweight(
     tol: float = 1e-6,
     compute_cov: bool = True,
 ) -> HuberIRLSResult:
-    """Fit linear model via Yohai (1987) MM-estimation (Huber init + Tukey biweight).
+    """Fit linear model via MM-type estimation (Huber IRLS start + Tukey biweight).
+
+    Unlike Yohai's (1987) MM-estimator, the start is a monotone Huber M-estimate rather
+    than a high-breakdown S-estimate, so the breakdown point is design-dependent (it
+    breaks down under ~35% sustained vertical contamination at one end of the record).
 
     Initializes from convex Huber IRLS (guaranteeing zero masking of genuine
     sustained jumps) and refines at the fixed finite-sample MAD scale with
@@ -543,7 +547,7 @@ def huber_nested_ftest(
     """Schrader–Hettmansperger (1980) robust nested F-test for ``D_null subset D_full``.
 
     Evaluates both models at the shared full-model residual scale ``s_1`` using
-    Huber (``method='huber'``) or Yohai MM-biweight (``method='mm'``), returning
+    Huber (``method='huber'``) or Huber-started Tukey-biweight MM-type (``method='mm'``), returning
     ``(F_rob, pval, full_fit, null_fit)``.
     """
     n = int(y.size)
@@ -603,7 +607,9 @@ def fit_l1_piecewise(
 
     Solves ``min sum_i w_i |y_i - (b0 + a0 * u_i + sum_k delta_k (u_i - u_tau_k)_+)|``
     exactly via HiGHS sparse linear programming. Strictly continuous at every
-    turning point with 50% vertical breakdown.
+    turning point. Robust to isolated vertical outliers; its breakdown point is
+    design-dependent (about 0.29 for an intercept + slope on a uniform design, He et al. 1990),
+    not 50%.
     """
     n = int(t_num.size)
     m = int(tp_sorted.size)
@@ -715,6 +721,34 @@ def hamed_rao_factor(t: FloatArray, y: FloatArray, slope: float, alpha_acf: floa
     return factor if factor > 0.0 else 1.0
 
 
+def ar1_rank_factor(t: FloatArray, y: FloatArray, slope: float) -> float:
+    """AR(1) effective-sample-size inflation ``n / n*`` for the Mann-Kendall S.
+
+    Estimates the lag-1 autocorrelation of the Sen-detrended series with the
+    small-sample bias correction ``(n r + 1)/(n - 4)`` (Marriott & Pope, 1954),
+    truncated to ``[0, 0.95]`` (the variance is never deflated), maps the implied
+    Gaussian AR(1) correlations to rank (Spearman) correlations
+    ``(6/pi) arcsin(rho^k / 2)``, and applies the Hamed & Rao (1998) summation.
+    In simulations (``audit/``) this keeps Type-I error near 5% for AR(1) rho in
+    [0, 0.5], unlike the significant-lags-only Hamed-Rao estimate.
+    """
+    n = int(y.size)
+    if n < 6:
+        return 1.0
+    r = y - slope * t
+    r = r - float(np.mean(r))
+    den = float(np.dot(r, r))
+    if den <= 0.0:
+        return 1.0
+    rho = float(np.dot(r[:-1], r[1:]) / den)
+    rho = float(np.clip((n * rho + 1.0) / (n - 4.0), 0.0, 0.95))
+    if rho <= 0.0:
+        return 1.0
+    k = np.arange(1, n, dtype=np.float64)
+    rs = (6.0 / np.pi) * np.arcsin(rho**k / 2.0)
+    return float(1.0 + 2.0 * np.sum((n - k) * (n - k - 1) * (n - k - 2) * rs) / (n * (n - 1) * (n - 2)))
+
+
 def _censored_kendall_score(
     t: FloatArray,
     vals: FloatArray,
@@ -794,7 +828,7 @@ def fit_theil_sen_segment(
     status_codes: IntArray | None = None,
     original_values: FloatArray | None = None,
     max_exact_n: int = 2000,
-    autocorr_correction: Literal["none", "hamed_rao"] = "none",
+    autocorr_correction: Literal["none", "hamed_rao", "ar1"] = "none",
 ) -> RobustSegmentFit:
     """Estimate robust segment slope, intercept, CI, and Mann–Kendall p-value.
 
@@ -902,6 +936,8 @@ def fit_theil_sen_segment(
     intercept = float(np.median(y - slope * t))
     if autocorr_correction == "hamed_rao" and var_s > 0.0:
         var_s *= hamed_rao_factor(t, y, slope)
+    elif autocorr_correction == "ar1" and var_s > 0.0:
+        var_s *= ar1_rank_factor(t, y, slope)
 
     if n <= max_exact_n and var_s > 0.0:
         z_mk = (s_stat - np.sign(s_stat)) / np.sqrt(var_s) if abs(s_stat) > 0.0 else 0.0

@@ -69,9 +69,9 @@ def main() -> int:
         t0 = t - t[0]
         y = 1.0 + 0.1 * t + 0.5 * np.cos(2 * np.pi * 1.2 * t) + rng.normal(0.0, 0.1, size=n)
         w = rng.uniform(0.5, 2.0, size=n)
-        dt_our = _time_fn(lambda: lssa(t, y, weights=w, omega=om100))
+        dt_our = _time_fn(lambda t=t, y=y, w=w: lssa(t, y, weights=w, omega=om100))
         if up_lssa is not None:
-            dt_up = _time_fn(lambda: up_lssa.LSSA(t0, y, P=w, Omega=om100))
+            dt_up = _time_fn(lambda t0=t0, y=y, w=w: up_lssa.LSSA(t0, y, P=w, Omega=om100))
             speedup = dt_up / max(dt_our, 1e-9)
             speed_rows.append(f"| `lssa` (100 freqs, 1D P) | {n} | {dt_our*1000:.2f} ms | {dt_up*1000:.2f} ms | **{speedup:.1f}x** |")
         else:

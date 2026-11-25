@@ -15,7 +15,7 @@ Real-world environmental, hydrological, remote-sensing, and geotechnical time se
 - **STPD** (*Sequential Turning Point Detection*) finds smooth, continuous changes in trend rate (`detect_turning_points`) and uses **NDRI** to distinguish true bends from disguised jumps.
 - **`analyze_series()`** chains JUST and STPD together automatically in the recommended two-stage workflow.
 - **Built-in `ndimpute` integration** handles `<LOD`, `>UL`, mixed, and `[L, R]` censored data safely — with automated detection-limit upgrade warnings and multi-draw stability checks.
-- **Robust estimation against spikes & heavy tails** via convex **Huber IRLS** (`robust="huber"`) and **Yohai MM-biweight** (`robust="mm"`), exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
+- **Robust estimation against spikes & heavy tails** via convex **Huber IRLS** (`robust="huber"`) and **Huber-started Tukey-biweight MM-type** estimation (`robust="mm"`; not a high-breakdown S-started MM), exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
 
 ![Guided JUST -> STPD combined workflow result](assets/figures/hero_combined_workflow.png)
 

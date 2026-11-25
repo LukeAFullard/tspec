@@ -9,6 +9,7 @@ frequencies are naturally expressed in cycles/year.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -112,10 +113,8 @@ def coerce_times(
 
     if np.issubdtype(arr.dtype, np.str_):
         # Plain numeric strings (e.g. "2001.5", "3") are numbers, not dates.
-        try:
+        with contextlib.suppress(ValueError):
             arr = arr.astype(np.float64)
-        except ValueError:
-            pass
 
     is_datetime = False
     if np.issubdtype(arr.dtype, np.datetime64):

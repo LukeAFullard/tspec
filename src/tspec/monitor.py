@@ -603,7 +603,7 @@ def just_monitor(
         Forced to ``False`` when ``parity_mode=True``.
     robust : {"none", "huber", "mm"}, default "none"
         If ``"huber"`` or ``"mm"``, fits the stable historical baseline via
-        convex Huber IRLS or Yohai MM-biweight (down-weighting historical spikes
+        convex Huber IRLS or Huber-started Tukey biweight (down-weighting historical spikes
         without ever down-weighting incoming monitoring observations so new
         disturbances are never masked). Forced to ``"none"`` when
         ``parity_mode=True``.
@@ -823,7 +823,7 @@ def just_monitor(
             w_his_h = (
                 np.maximum(tukey_weight(rw_his / s_his), 1e-12)
                 if eff_robust == "mm"
-                else np.where(u_his <= huber_k, 1.0, huber_k / u_his)
+                else np.where(u_his <= huber_k, 1.0, huber_k / np.maximum(u_his, huber_k))
             )
             act_factors = np.concatenate(
                 [w_his_h, np.ones(int(t_act.size) - n_his, dtype=np.float64)]

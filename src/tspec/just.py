@@ -1059,13 +1059,13 @@ def _run_just_jumps_array(
         tested = _holm_adjust_candidates(tested)
 
     accepted: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
-    for item in tested:
-        p_jump, p_step = item[5], item[6]
+    for cand in tested:
+        p_jump, p_step = cand[5], cand[6]
         if jump_alpha is not None and (np.isnan(p_jump) or p_jump >= jump_alpha):
             continue
         if step_alpha is not None and (np.isnan(p_step) or p_step >= step_alpha):
             continue
-        accepted.append(item)
+        accepted.append(cand)
 
     return accepted, candidates_sorted, window_fallbacks
 
@@ -1165,7 +1165,8 @@ def just_jumps(
     robust:
         ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS window
         fits + Schrader–Hettmansperger robust nested F-tests), or ``'mm'``
-        (Yohai 1987 Huber-initialized Tukey biweight MM-estimation, recommended
+        (Huber-initialized Tukey biweight MM-type estimation; not Yohai's high-breakdown
+        S-started MM, so breakdown is design-dependent; recommended
         for extreme isolated spikes without masking genuine sustained jumps).
         Forced to ``'none'`` when ``parity_mode=True``.
     huber_k:
