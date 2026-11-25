@@ -57,6 +57,8 @@ MonitorWindowMode = Literal["expanding", "sliding"]
 
 # sum_{k>=2} 1 / (k ln(k)^2)
 _OPEN_SPEND_C = 2.1097428012368
+# Number of resampled future sampling grids in the consecutive_k calibration
+_CONSEC_GRID_GROUPS = 25
 
 
 @dataclass(frozen=True)
@@ -486,9 +488,11 @@ def _calibrate_consecutive_k(
 
     Simulates the monitoring residual process under the fitted history model with
     Gaussian errors (the history design is refitted in every replicate; selected
-    harmonics are held fixed). Future observations are placed on a regular grid with
-    the history's median spacing and median weight, starting at the first monitoring
-    time, so the level depends only on the history and the planned ``horizon``.
+    harmonics are held fixed). Future sampling times start at the first monitoring
+    time and follow gaps resampled from the history (a separate grid for each of up to
+    25 groups of replicates; a regular history gives a regular grid), with the
+    history's median weight, so the level depends only on the history, the first
+    monitoring time and the planned ``horizon``.
     For each replicate the smallest per-step level at which ``k`` consecutive steps
     would all exceed is recorded; the returned level is a lower Monte Carlo quantile
     of these, so ``P(alarm within horizon) <= alpha`` under the simulated null.
@@ -511,41 +515,56 @@ def _calibrate_consecutive_k(
         return None
     if k > horizon:
         return alpha
-    t_fut = float(t_first) + float(np.median(dt)) * np.arange(horizon, dtype=np.float64)
-    t_c = np.concatenate([t_his, t_fut])
-    w_c = np.concatenate([w_his, np.full(horizon, float(np.median(w_his)))])
+    w_fut = np.full(horizon, float(np.median(w_his)))
+    w_c = np.concatenate([w_his, w_fut])
     sw_c = np.sqrt(w_c)
     pw_c = PreparedWeights(kind="vector", vector=w_c, sqrt_vector=sw_c)
-    d_c, _ = build_design_matrix(t_c, "linear", np.empty(0, dtype=np.intp), False, his_freqs)
-    wd_his = sw_c[:n_his, None] * d_c[:n_his]
-    u_h, s_h, vt_h = linalg.svd(wd_his, full_matrices=False)
-    if s_h.size == 0 or s_h[0] <= 0.0:
-        return None
-    keep = s_h > 1e-12 * s_h[0]
-    inv_s = np.where(keep, 1.0 / s_h, 0.0)
-    f_his = vt_h.T * inv_s[None, :]
-
     rng = np.random.default_rng(seed)
-    z = rng.standard_normal((t_c.size, int(n_mc)))
-    coef = f_his @ (u_h.T @ z[:n_his])
-    resid = z / sw_c[:, None] - d_c @ coef
-    v_out = np.asarray(d_c[n_his:] @ f_his, dtype=np.float64) if forecast_cov else None
+    n_mc = int(n_mc)
+    pvals = np.empty((horizon, n_mc), dtype=np.float64)
+    # Future sampling times are unknown when monitoring starts: each group of replicates
+    # uses its own grid built from gaps resampled from the history (a regular history
+    # gives a regular grid).
+    n_groups = 1 if np.ptp(dt) <= 1e-9 * float(np.median(dt)) else min(_CONSEC_GRID_GROUPS, n_mc)
+    bounds = np.linspace(0, n_mc, n_groups + 1).astype(int)
+    for g in range(n_groups):
+        b0, b1 = int(bounds[g]), int(bounds[g + 1])
+        gaps = dt if n_groups == 1 else rng.choice(dt, size=horizon)
+        offs = np.concatenate([[0.0], np.cumsum(gaps[: horizon - 1])]) if n_groups > 1 else (
+            float(np.median(dt)) * np.arange(horizon, dtype=np.float64)
+        )
+        t_c = np.concatenate([t_his, float(t_first) + offs])
+        d_c, _ = build_design_matrix(t_c, "linear", np.empty(0, dtype=np.intp), False, his_freqs)
+        wd_his = sw_c[:n_his, None] * d_c[:n_his]
+        u_h, s_h, vt_h = linalg.svd(wd_his, full_matrices=False)
+        if s_h.size == 0 or s_h[0] <= 0.0:
+            return None
+        inv_s = np.where(s_h > 1e-12 * s_h[0], 1.0 / s_h, 0.0)
+        f_his = vt_h.T * inv_s[None, :]
 
-    pvals = np.empty((horizon, int(n_mc)), dtype=np.float64)
-    for d in range(1, horizon + 1):
-        win_end = n_his + d
-        win_start = lh if window_mode == "expanding" else max(0, win_end - slide_width)
-        idx = np.arange(win_start, win_end, dtype=np.intp)
-        pw_w = pw_c.subset(idx)
-        if v_out is not None:
-            n_in = max(0, n_his - win_start)
-            pw_w = _build_predictive_window_weights(pw_w, n_in, v_out[max(0, win_start - n_his) : d])
-        q = orthonormal_design_basis(np.ones((idx.size, 1), dtype=np.float64), pw_w)
-        smax = max_lss_batch(t_c[idx], om_mon, q, pw_w, whiten_matrix(resid[idx], pw_w))
-        pvals[d - 1] = _step_pvalues_from_spectrum(smax, int(idx.size), int(om_mon.size), freq_correction)
+        z = rng.standard_normal((t_c.size, b1 - b0))
+        coef = f_his @ (u_h.T @ z[:n_his])
+        resid = z / sw_c[:, None] - d_c @ coef
+        v_out = np.asarray(d_c[n_his:] @ f_his, dtype=np.float64) if forecast_cov else None
+
+        for d in range(1, horizon + 1):
+            win_end = n_his + d
+            win_start = lh if window_mode == "expanding" else max(0, win_end - slide_width)
+            idx = np.arange(win_start, win_end, dtype=np.intp)
+            pw_w = pw_c.subset(idx)
+            if v_out is not None:
+                n_in = max(0, n_his - win_start)
+                pw_w = _build_predictive_window_weights(
+                    pw_w, n_in, v_out[max(0, win_start - n_his) : d]
+                )
+            q = orthonormal_design_basis(np.ones((idx.size, 1), dtype=np.float64), pw_w)
+            smax = max_lss_batch(t_c[idx], om_mon, q, pw_w, whiten_matrix(resid[idx], pw_w))
+            pvals[d - 1, b0:b1] = _step_pvalues_from_spectrum(
+                smax, int(idx.size), int(om_mon.size), freq_correction
+            )
 
     # Smallest level at which k consecutive steps all exceed, per replicate
-    run_level = np.full(int(n_mc), np.inf)
+    run_level = np.full(n_mc, np.inf)
     for d in range(k - 1, horizon):
         run_level = np.minimum(run_level, np.max(pvals[d - k + 1 : d + 1], axis=0))
     j = int(np.floor(alpha * (n_mc + 1)))
@@ -714,9 +733,8 @@ def just_monitor(
         - ``"consecutive_k"``: requires ``consecutive_k`` consecutive exceedances. With
           ``horizon``, the constant per-step level is calibrated by Monte Carlo so that
           the probability of any alarm within the horizon is at most ``alpha`` under the
-          fitted history model with Gaussian errors (future observations are placed on
-          a regular grid with the history's median spacing, so the level uses no
-          monitoring data). Without ``horizon``, each step is tested at the full
+          fitted history model with Gaussian errors (future sampling gaps are resampled
+          from the history, so the level uses no monitoring data). Without ``horizon``, each step is tested at the full
           ``alpha``, which does **not** control the familywise rate (warning
           ``UNCALIBRATED_CONSECUTIVE_K``).
         - ``"none"``: unadjusted per-step testing (used by ``parity_mode=True``).
