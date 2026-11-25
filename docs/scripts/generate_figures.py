@@ -158,7 +158,7 @@ def make_concept_jump_vs_tp() -> None:
 
     # Left: Abrupt step jump (vertical cliff)
     y_jump = np.where(t < 2019.0, 5.0 - 0.1 * (t - 2016.0), 2.3 - 0.1 * (t - 2016.0)) + rng.normal(0.0, 0.22, size=t.size)
-    rj = just_jumps(t, y_jump, season="none", mag_th=0.5, dir_th=0.1, jump_alpha=0.01, bonferroni_window=True)
+    rj = just_jumps(t, y_jump, season="none", mag_th=0.5, dir_th=0.1, jump_alpha=0.01)
     dj = just_decompose(t, y_jump, jump_indices=[j.index for j in rj.jumps], season="none")
     rs_on_jump = detect_turning_points(t, y_jump, size=72, step=12, margin=10)
     ndri_jump = rs_on_jump.flagged_jumps[0].ndri_rmse if rs_on_jump.flagged_jumps else 0.72
@@ -292,7 +292,6 @@ def make_tutorial_water_quality_censored() -> None:
         dir_th=1.0,
         jump_alpha=0.01,
         step_alpha=0.01,
-        bonferroni_window=True,
         censoring=cfg,
     )
     decomp = just_decompose(
@@ -372,7 +371,7 @@ def make_tutorial_ndvi_wildfire() -> None:
     seas = 0.18 * np.cos(2 * np.pi * (t - 0.52)) + 0.05 * np.sin(4 * np.pi * t)
     y = trend + seas + rng.normal(0.0, sigma)
 
-    rj = just_jumps(t, y, weights=weights, season="allssa", mag_th=0.08, dir_th=0.02, jump_alpha=0.01, bonferroni_window=True)
+    rj = just_jumps(t, y, weights=weights, season="allssa", mag_th=0.08, dir_th=0.02, jump_alpha=0.01)
     decomp = just_decompose(t, y, weights=weights, jump_indices=[j.index for j in rj.jumps], season="allssa")
 
     fig, axes = plt.subplots(3, 1, figsize=(9.8, 6.8), sharex=True, gridspec_kw={"height_ratios": [1.5, 1.0, 0.85]})
@@ -476,6 +475,7 @@ def make_tutorial_nrt_monitoring() -> None:
         alpha=0.01,
         freq_correction="sidak",
         sequential_control="pocock",
+        horizon=40,
         stop_on_first=False,
     )
     res_parity = just_monitor(
@@ -554,7 +554,7 @@ def make_example_confidence_intervals() -> None:
     rng = np.random.default_rng(314)
     fig, axes = plt.subplots(3, 1, figsize=(10.2, 8.6))
 
-    # Panel A: just_decompose trend + seasonal 95% CIs (Cauchy-Schwarz overlap blend)
+    # Panel A: just_decompose bias-corrected trend band + seasonal 95% CIs
     t_a = np.sort(rng.uniform(2016.0, 2023.0, size=170))
     y_a = 8.0 + 0.45 * (t_a - 2016.0) + 1.1 * np.cos(2 * np.pi * t_a) + rng.normal(0.0, 0.35, t_a.size)
     dec = just_decompose(t_a, y_a, season="ols", ci_level=0.95)
@@ -562,7 +562,7 @@ def make_example_confidence_intervals() -> None:
     ax.plot(t_a, y_a, "o", color=DARK, ms=2.8, alpha=0.45, label="Irregular observations")
     assert dec.trend_ci_low is not None and dec.trend_ci_high is not None
     assert dec.seasonal_ci_low is not None and dec.seasonal_ci_high is not None
-    ax.fill_between(t_a, dec.trend_ci_low, dec.trend_ci_high, color=BLUE, alpha=0.25, lw=0, label="95% trend CI")
+    ax.fill_between(t_a, dec.trend_ci_low, dec.trend_ci_high, color=BLUE, alpha=0.25, lw=0, label="95% trend CI (bias-corrected)")
     ax.plot(t_a, dec.trend, color=BLUE, lw=2.2, label="JUST trend")
     # Plot seasonal shifted to bottom baseline on twin axis for clean visual inspection
     ax_r = ax.twinx()
@@ -574,14 +574,14 @@ def make_example_confidence_intervals() -> None:
     ax_r.set_ylim(-2.2, 5.5)
     ax.set_ylim(5.5, 13.5)
     ax.set_ylabel("Trend / Value", fontweight="bold", color=DARK)
-    ax.set_title("A. JUST Decomposition — Analytical Pointwise 95% Trend & Seasonal CIs (Cauchy–Schwarz Blend)",
+    ax.set_title("A. JUST Decomposition — Pointwise 95% Bias-Corrected Trend Band & Seasonal CI",
                  fontsize=10.8, fontweight="bold", color=DARK, pad=6)
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax_r.get_legend_handles_labels()
     ax.legend(h1 + h2, l1 + l2, frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper left", ncol=3, fontsize=8.1)
     _style_ax(ax)
 
-    # Panel B: analyze_series with robust='mm' + slope_estimator='sen' (Sen slope-CI fans)
+    # Panel B: analyze_series with robust='mm' + slope_estimator='sen' (Sen slope fan)
     t_b = np.sort(rng.uniform(2015.0, 2024.0, size=130))
     tr_b = np.where(t_b < 2019.2, 5.0 + 0.25 * (t_b - 2015.0), 8.6 - 0.55 * (t_b - 2019.2))
     y_b = tr_b + 0.65 * np.cos(2 * np.pi * t_b) + rng.normal(0.0, 0.55, t_b.size)
@@ -598,18 +598,18 @@ def make_example_confidence_intervals() -> None:
     )
     ax = axes[1]
     ax.plot(t_b, y_b, "o", color=DARK, ms=3.2, alpha=0.58, label="Observations (with 4 isolated spikes)")
-    assert pipe.trend_ci_low is not None and pipe.trend_ci_high is not None
+    assert pipe.slope_fan_low is not None and pipe.slope_fan_high is not None
     cuts = [int(j.valid_index) for j in (pipe.jumps.jumps if pipe.jumps else ())]
     bounds = [0, *sorted(cuts), t_b.size]
     for idx_b, (a_i, b_i) in enumerate(zip(bounds[:-1], bounds[1:], strict=True)):
         ax.fill_between(
             t_b[a_i:b_i],
-            pipe.trend_ci_low[a_i:b_i],
-            pipe.trend_ci_high[a_i:b_i],
+            pipe.slope_fan_low[a_i:b_i],
+            pipe.slope_fan_high[a_i:b_i],
             color=BLUE,
             alpha=0.28,
             lw=0,
-            label="95% Sen slope CI fan" if idx_b == 0 else None,
+            label="95% slope fan (slope uncertainty; not a trend CI)" if idx_b == 0 else None,
         )
         ax.plot(
             t_b[a_i:b_i],
@@ -622,7 +622,7 @@ def make_example_confidence_intervals() -> None:
         for k_j, j in enumerate(pipe.jumps.jumps):
             ax.axvline(j.time_year, color=ORANGE, ls="--", lw=1.6, label=f"JUST jump ({j.time_year:.2f})" if k_j == 0 else None)
     ax.set_ylabel("Value", fontweight="bold", color=DARK)
-    ax.set_title("B. Robust Guided Pipeline (robust='mm', slope_estimator='sen') — Median-Pivoted 95% Sen Slope-CI Fans",
+    ax.set_title("B. Robust Guided Pipeline (robust='mm', slope_estimator='sen') — Median-Pivoted 95% Sen Slope Fan",
                  fontsize=10.8, fontweight="bold", color=DARK, pad=6)
     ax.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper left", ncol=2, fontsize=8.1)
     _style_ax(ax)

@@ -37,20 +37,20 @@ print(res.explain())
 
 ## Step 2: Choosing the Right Repeated-Testing Strategy
 
-Under pure white noise over 25 monitoring steps ($\alpha = 0.05$), **unadjusted repeated testing (`parity_mode=True`) triggers false alarms in 72.5% of stable series**. `tspec` provides three calibrated strategies:
+Under pure white noise over about 24 monitoring steps ($\alpha = 0.05$), **unadjusted repeated testing (`parity_mode=True`) triggers false alarms in about 70% of stable series** (and about 98% over 96 steps). `tspec` provides these strategies:
 
 | Strategy | Setting | Best For |
 | :--- | :--- | :--- |
-| **Šidák + Pocock** *(default)* | `freq_correction="sidak", sequential_control="pocock"` | Fixed monitoring horizon (e.g., 1–2 years of updates); uniform sensitivity across every step. |
-| **Šidák + O'Brien–Fleming** | `sequential_control="obrien_fleming"` | Very strict protection against early false alarms; highest power later in the horizon. |
-| **Šidák + Consecutive-$k$** | `sequential_control="consecutive_k", consecutive_k=2` | **Open-ended live streams** with no fixed end date; ignores isolated single-sample glitches and sets `pending_confirmation=True` if the latest observation exceeds threshold once. |
+| **Šidák + Pocock** *(default)* | `freq_correction="sidak", sequential_control="pocock", horizon=24` | A planned monitoring horizon fixed in advance (e.g., 1–2 years of updates); uniform sensitivity across every step. Without `horizon`, open-ended spending keeps the familywise bound for any length but is strict at late steps. Familywise false-alarm rate ≤ α (0.1–0.6% at α = 0.05 in simulation, i.e. conservative). |
+| **Šidák + O'Brien–Fleming** | `sequential_control="obrien_fleming", horizon=24` | Very strict protection against early false alarms; more power later in the horizon. |
+| **Šidák + Consecutive-$k$** | `sequential_control="consecutive_k", consecutive_k=2` | Suppressing isolated single-sample glitches (sets `pending_confirmation=True` after a single exceedance). **Does not bound the familywise false-alarm rate**: about 3% over 24 steps but about 11% over 96 steps at α = 0.05, and it keeps growing with monitoring length. |
 | **Upstream Parity** | `parity_mode=True` | Reproducing Ghaderpour & Vujadinovic (2020b) exactly (unadjusted per-step testing). |
 
 ```python
 # Compare open-ended consecutive-2 confirmation vs. O'Brien-Fleming spending
 res_obf = just_monitor(
     t, evi, start=2022.5, season="ols", alpha=0.01,
-    sequential_control="obrien_fleming",
+    sequential_control="obrien_fleming", horizon=60,
 )
 res_k2 = just_monitor(
     t, evi, start=2022.5, season="ols", alpha=0.01,

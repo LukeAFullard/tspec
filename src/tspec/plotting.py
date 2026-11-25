@@ -484,19 +484,15 @@ def plot_pipeline(
     # Panel 1: Observed series + combined trend + jumps + TPs
     _plot_observations_with_censoring(axes[0], result.times_raw, result.values, result.censoring)
     if show_ci:
-        ci_lbl = (
-            f"{pct} Sen slope CI"
-            if result.slope_estimator == "sen"
-            else f"{pct} CI"
-        )
+        fan = result.slope_fan_low is not None and result.slope_fan_high is not None
         _plot_ci_band(
             axes[0],
             result.times_raw,
-            result.trend_ci_low,
-            result.trend_ci_high,
+            result.slope_fan_low if fan else result.trend_ci_low,
+            result.slope_fan_high if fan else result.trend_ci_high,
             color=_BLUE,
             alpha=0.22,
-            label=ci_lbl,
+            label=f"{pct} slope fan (not a trend CI)" if fan else f"{pct} CI",
             split_indices=jump_splits,
         )
     axes[0].plot(result.times_raw, result.combined_trend, color=_BLUE, lw=2.0, label="Combined trend")

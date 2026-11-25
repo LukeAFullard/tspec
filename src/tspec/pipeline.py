@@ -58,7 +58,36 @@ from .stpd import (
 
 @dataclass(frozen=True)
 class SegmentSummary:
-    """Per-segment linear trend estimate across detected jumps and turning points."""
+    """Per-segment linear trend estimate across detected jumps and turning points.
+
+    Attributes
+    ----------
+    segment_index : int
+        0-based segment number.
+    start_index, end_index : int
+        First/last observation of the segment on the input axis.
+    start_valid_index, end_valid_index : int
+        The same on the valid (NaN-dropped) axis.
+    start_time, end_time : Any
+        Segment bounds in the original time representation.
+    start_time_year, end_time_year : float
+        Segment bounds in decimal years.
+    n_obs, n_censored : int
+        Observations and censored observations in the segment.
+    estimator : {"ols", "ols_mi", "sen", "ats", "l1", "huber"}
+        Estimator used (``"ols_mi"`` = Rubin-pooled multiple imputation over censored
+        values; ``"ats"`` = Akritas-Theil-Sen).
+    slope, intercept : float
+        Slope per time unit and intercept. For ``"ols"``/``"ols_mi"``/``"sen"`` each
+        segment is fitted separately (the fits need not meet at turning points), so
+        these slopes can differ slightly from ``TurningPointEvent.slope_before/after``,
+        which come from the connected piecewise refit. ``"huber"`` and ``"l1"`` segment
+        slopes come from a connected fit within each epoch.
+    slope_ci_low, slope_ci_high : float or None
+        Confidence interval for the slope (conditional on the segment boundaries).
+    pvalue : float or None
+        Two-sided p-value for zero slope (Mann-Kendall for ``"sen"``/``"ats"``).
+    """
 
     segment_index: int
     start_index: int
@@ -71,7 +100,7 @@ class SegmentSummary:
     end_time_year: float
     n_obs: int
     n_censored: int
-    estimator: Literal["ols", "sen", "ats", "l1", "huber"]
+    estimator: Literal["ols", "ols_mi", "sen", "ats", "l1", "huber"]
     slope: float
     intercept: float
     slope_ci_low: float | None
@@ -81,7 +110,41 @@ class SegmentSummary:
 
 @dataclass(frozen=True)
 class PipelineResult(BaseResult):
-    """Unified result object returned by :func:`analyze_series`."""
+    """Unified result object returned by :func:`analyze_series`.
+
+    Attributes
+    ----------
+    jumps, decomposition, turning_points
+        Stage results (:class:`JustJumpResult`, :class:`JustDecomposeResult`,
+        :class:`StpdResult`), or ``None`` when a stage was skipped.
+    times_numeric, times_raw, values, is_datetime
+        Valid timestamps and (imputed) values.
+    adjusted_series : ndarray
+        Deseasonalized and jump-offset-adjusted series passed to STPD.
+    combined_trend : ndarray
+        Final trend on the original scale (STPD trend + step offsets, or the
+        estimator-specific segment fits).
+    step_offsets : ndarray
+        Cumulative vertical step offsets estimated at the JUST jumps.
+    jump_adjustment : str
+        ``"offset"`` or ``"segment"``.
+    censoring : CensoringProvenance or None
+        Censored-data provenance.
+    diagnostics : DiagnosticReport
+        Consolidated warnings and final red-noise diagnostics.
+    segments : tuple of SegmentSummary
+        Per-segment slope, CI and p-value.
+    robust, slope_estimator : str
+        Settings used.
+    ci_level : float
+        Confidence level.
+    trend_ci_low, trend_ci_high : ndarray or None
+        Pointwise trend band, conditional on the detected structure (``None`` for
+        ``"sen"`` and ``"l1"``).
+    slope_fan_low, slope_fan_high : ndarray or None
+        Median-pivoted Sen/ATS slope envelope for ``"sen"``. Not a pointwise trend
+        CI: it has zero width at each segment's median time.
+    """
 
     jumps: JustJumpResult | None
     decomposition: JustDecomposeResult | None
@@ -102,6 +165,8 @@ class PipelineResult(BaseResult):
     ci_level: float = 0.95
     trend_ci_low: FloatArray | None = None
     trend_ci_high: FloatArray | None = None
+    slope_fan_low: FloatArray | None = None
+    slope_fan_high: FloatArray | None = None
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
@@ -235,6 +300,9 @@ class PipelineResult(BaseResult):
         if self.trend_ci_low is not None and self.trend_ci_high is not None:
             data["trend_ci_low"] = self.trend_ci_low
             data["trend_ci_high"] = self.trend_ci_high
+        if self.slope_fan_low is not None and self.slope_fan_high is not None:
+            data["slope_fan_low"] = self.slope_fan_low
+            data["slope_fan_high"] = self.slope_fan_high
         if self.decomposition is not None:
             data["just_trend"] = self.decomposition.trend
             data["seasonal"] = self.decomposition.seasonal
@@ -326,6 +394,63 @@ def _estimate_vertical_step_offsets(
     return offsets
 
 
+def _mi_segment_slope(
+    t_s: FloatArray,
+    prov: CensoringProvenance,
+    seasonal_part: FloatArray,
+    s0: int,
+    s1: int,
+    D_s: FloatArray,
+    s_t: float,
+    pw_s: PreparedWeights,
+    alpha: float,
+    m: int,
+    seed: int,
+) -> tuple[float, float, float, float, float] | None:
+    """Rubin-pooled OLS slope over proper multiple imputations of a censored segment.
+
+    Imputation model: normal censored linear regression in time on the deseasonalized
+    values and limits (congenial with the segment OLS analysis model).
+    Returns ``(slope, intercept, ci_low, ci_high, pvalue)`` or ``None`` on failure.
+    """
+    from ._cenreg import fit_censored_regression, impute_censored_regression, rubin_pool
+
+    codes = prov.status_codes[s0:s1]
+    seas = seasonal_part[s0:s1]
+    vals = prov.original_values[s0:s1] - seas
+    left = prov.original_left[s0:s1] - seas if prov.original_left is not None else None
+    right = prov.original_right[s0:s1] - seas if prov.original_right is not None else None
+    w = pw_s.vector if pw_s.kind == "vector" else None
+    n_s = int(t_s.size)
+    try:
+        fit = fit_censored_regression(vals, codes, D_s, left=left, right=right, weights=w, dist="normal")
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    if not fit.converged:
+        return None
+    rng = np.random.default_rng(seed)
+    slopes = np.empty(m)
+    vars_ = np.empty(m)
+    icpts = np.empty(m)
+    for i in range(m):
+        y_i = impute_censored_regression(
+            fit, vals, codes, D_s, rng, left=left, right=right, weights=w, draw_params=True
+        )
+        ols_i = solve_weighted_ols(D_s, y_i, pw_s, compute_cov=True)
+        slopes[i] = float(ols_i.coeff[1]) / s_t
+        vars_[i] = float(ols_i.cov[1, 1]) / (s_t * s_t)
+        icpts[i] = float(ols_i.coeff[0]) - slopes[i] * float(t_s[0])
+    if not (np.all(np.isfinite(slopes)) and np.all(np.isfinite(vars_))):
+        return None
+    q, t_var, df = rubin_pool(slopes, vars_, float(n_s - 2))
+    se = float(np.sqrt(max(t_var, 0.0)))
+    if se <= 0.0:
+        return q, float(np.mean(icpts)), q, q, (0.0 if q != 0.0 else 1.0)
+    t_crit = float(t_dist.ppf(1.0 - 0.5 * alpha, df))
+    pval = float(2.0 * t_dist.sf(abs(q) / se, df))
+    return q, float(np.mean(icpts)), q - t_crit * se, q + t_crit * se, pval
+
+
 def _build_segment_summaries(
     t_valid: FloatArray,
     t_raw_valid: np.ndarray[Any, Any],
@@ -340,8 +465,18 @@ def _build_segment_summaries(
     huber_k: float,
     prov: CensoringProvenance | None,
     alpha: float = 0.05,
+    mk_correction: Literal["none", "hamed_rao", "ar1"] = "ar1",
+    n_imputations: int = 20,
+    mi_seed: int = 0,
+    mi_warnings: list[WarningItem] | None = None,
 ) -> tuple[tuple[SegmentSummary, ...], FloatArray | None, FloatArray | None, FloatArray | None]:
-    """Compute per-segment trend slopes, CIs, p-values, and pointwise trend CI bands."""
+    """Compute per-segment trend slopes, CIs, p-values, and pointwise trend CI bands.
+
+    For ``slope_estimator="ols"`` segments containing censored observations, slopes,
+    CIs and p-values come from ``n_imputations`` proper multiple imputations under a
+    segment-congenial censored linear regression (deseasonalized values and limits),
+    pooled with Rubin's rules and Barnard-Rubin degrees of freedom (``estimator="ols_mi"``).
+    """
     n = int(t_valid.size)
     if n == 0:
         return (), None, None, None
@@ -370,7 +505,7 @@ def _build_segment_summaries(
     def _make_seg(
         s0: int,
         s1: int,
-        est: Literal["ols", "sen", "ats", "l1", "huber"],
+        est: Literal["ols", "ols_mi", "sen", "ats", "l1", "huber"],
         slope: float,
         intercept: float,
         ci_low: float | None,
@@ -428,7 +563,34 @@ def _build_segment_summaries(
                     alpha=alpha,
                     status_codes=seg_codes,
                     original_values=seg_orig,
+                    autocorr_correction=mk_correction,
                 )
+                if mi_warnings is not None:
+                    n_seg = s1 - s0
+                    seg_has_cen = seg_codes is not None and bool(np.any(seg_codes != 0))
+                    if ts_fit.ci_low is None and n_seg > 2000:
+                        mi_warnings.append(
+                            WarningItem(
+                                code="SEN_CI_UNAVAILABLE",
+                                severity="caution",
+                                message=(
+                                    f"Segment {k} has {n_seg} observations (> 2000): its Theil-Sen slope "
+                                    "uses sampled pairs and no CI or Mann-Kendall p-value is reported."
+                                ),
+                            )
+                        )
+                    if seg_has_cen and ts_fit.estimator == "sen":
+                        mi_warnings.append(
+                            WarningItem(
+                                code="ATS_UNAVAILABLE",
+                                severity="caution",
+                                message=(
+                                    f"Segment {k} contains censored values but Akritas-Theil-Sen was not "
+                                    "applicable (interval censoring or > 2000 observations); Theil-Sen was "
+                                    "computed on imputed values instead."
+                                ),
+                            )
+                        )
                 t_seg = t_valid[s0:s1]
                 override_trend[s0:s1] = ts_fit.intercept + ts_fit.slope * t_seg
                 if ts_fit.ci_low is not None and ts_fit.ci_high is not None:
@@ -560,6 +722,29 @@ def _build_segment_summaries(
                 s_t = float(t0_s[-1]) if float(t0_s[-1]) > 0.0 else 1.0
                 D_s = np.column_stack([np.ones(n_s, dtype=np.float64), t0_s / s_t])
                 pw_s: PreparedWeights = prepare_weights(_slice_w(s0, s1), n_s)
+                if (
+                    prov is not None
+                    and n_imputations >= 2
+                    and bool(np.any(prov.status_codes[s0:s1] != 0))
+                ):
+                    mi = _mi_segment_slope(
+                        t_s, prov, seasonal_part, s0, s1, D_s, s_t, pw_s, alpha,
+                        n_imputations, mi_seed + 7919 * k,
+                    )
+                    if mi is not None:
+                        segments.append(_make_seg(s0, s1, "ols_mi", *mi))
+                        continue
+                    if mi_warnings is not None:
+                        mi_warnings.append(
+                            WarningItem(
+                                code="MI_SEGMENT_FALLBACK",
+                                severity="warning",
+                                message=(
+                                    f"Multiple imputation failed for censored segment {k}; its OLS "
+                                    "CI ignores imputation uncertainty."
+                                ),
+                            )
+                        )
                 ols_s = solve_weighted_ols(D_s, y_s, pw_s, compute_cov=True)
                 slope_k = float(ols_s.coeff[1]) / s_t
                 intercept_k = float(ols_s.coeff[0]) - slope_k * float(t_s[0])
@@ -598,6 +783,7 @@ def analyze_series(
     robust: RobustMethod = "none",
     slope_estimator: SlopeEstimator = "ols",
     huber_k: float = 1.345,
+    mk_correction: Literal["none", "hamed_rao", "ar1"] = "ar1",
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     just_kwargs: dict[str, Any] | None = None,
@@ -611,8 +797,8 @@ def analyze_series(
 
     1. Handles irregular timestamps, ``NaN``s, and optional censored data
        (defaulting to 20 stochastic stability draws when censoring is detected).
-    2. Detects abrupt jumps via :func:`just_jumps` (enabling scale-free
-       ``jump_alpha=0.05`` screening by default).
+    2. Detects abrupt jumps via :func:`just_jumps` with family-wise calibrated
+       selection (``jump_alpha=0.05``, Monte Carlo split-search calibration).
     3. Extracts seasonality and trend via :func:`just_decompose` with analytical
        pointwise confidence intervals at level ``ci_level``.
     4. Removes seasonality and vertical jump offsets (or segments by epoch)
@@ -625,16 +811,72 @@ def analyze_series(
 
        - ``'ols'``: weighted ordinary least squares with Student-t CIs.
        - ``'sen'``: exact **Theil–Sen** (uncensored) or **Akritas–Theil–Sen**
-         (left/right censored) with distribution-free CIs, Mann–Kendall
-         p-values, and median-pivoted slope-CI fans.
+         (left/right censored) with distribution-free CIs and Mann–Kendall
+         p-values. For uncensored segments ``mk_correction="ar1"`` (default)
+         inflates Var(S) for serial correlation via a bias-corrected AR(1)
+         effective-sample-size factor; ``"hamed_rao"`` is the significant-lags
+         Hamed & Rao (1998) correction (liberal in small samples); ``"none"``
+         assumes independence.
+         The median-pivoted slope envelope is exported as ``slope_fan_low/high``
+         (it is not a pointwise trend CI; ``trend_ci_*`` is ``None``).
        - ``'huber'``: continuous **Huber IRLS** hinge-spline with Huber (1981)
          asymptotic CIs.
        - ``'l1'``: globally optimal continuous **L1 (LAD)** hinge-spline via
-         sparse HiGHS linear programming (50% vertical breakdown; CIs are
+         sparse HiGHS linear programming (robust to isolated outliers; design-dependent
+         breakdown well below 50%; CIs are
          ``None``—use ``'sen'`` or ``'huber'`` for segment CIs).
 
-    Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'`` (Yohai
-    1987 Huber-initialized Tukey biweight MM-estimation, recommended for extreme
+    Parameters
+    ----------
+    t:
+        1D monotonically ascending timestamps (numeric decimal years or datetime).
+    y:
+        1D observations (numeric, censored strings such as ``'<0.05'``, or
+        ``(N, 2)`` intervals). ``NaN`` entries are dropped without interpolation.
+    weights:
+        Optional scalar, 1D, or 2D inverse-covariance weights (STPD and segment
+        fits use scalar/1D weights only).
+    detect_jumps:
+        Run Stage 1 (:func:`just_jumps`). Default ``True``.
+    detect_turning_points:
+        Run Stage 4 (:func:`detect_turning_points`). Default ``True``; also enables
+        the ``step_alpha`` filter in Stage 1.
+    remove_seasonality:
+        Subtract the JUST seasonal component before STPD and segment fits.
+    jump_adjustment:
+        ``'offset'`` (subtract estimated vertical step offsets, then fit one
+        connected trend) or ``'segment'`` (fit each inter-jump epoch separately).
+    ci_level:
+        Confidence level for all bands and segment CIs.
+    robust:
+        ``'none'``, ``'huber'``, or ``'mm'`` for all stages.
+    slope_estimator:
+        ``'ols'``, ``'sen'``, ``'l1'``, or ``'huber'`` (see above).
+    huber_k:
+        Huber tuning constant.
+    mk_correction:
+        Serial-correlation correction for ``slope_estimator='sen'``: ``'ar1'``
+        (default), ``'hamed_rao'``, or ``'none'``.
+    censor_status, censoring:
+        Optional censoring indicators and :class:`CensoredConfig`. When censored
+        input is detected and ``censoring`` is ``None``,
+        ``CensoredConfig(n_stability_draws=20)`` is used. OLS segments containing
+        censored values are estimated by Rubin-pooled multiple imputation
+        (``estimator='ols_mi'``).
+    just_kwargs, decompose_kwargs, stpd_kwargs:
+        Extra keyword arguments forwarded to :func:`just_jumps`,
+        :func:`just_decompose`, and :func:`detect_turning_points`.
+
+    Returns
+    -------
+    PipelineResult
+        Stage results, adjusted series, combined trend and bands, and per-segment
+        slope summaries (:attr:`PipelineResult.segments`). Trend bands and segment
+        CIs are conditional on the detected jumps/turning points and estimated
+        seasonality (empirically ~83-92% coverage at nominal 95%).
+
+    Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'``
+    (Huber-initialized Tukey biweight MM-type estimation, recommended for extreme
     isolated spikes) switches Phase 1 detection and decomposition
     (``just_jumps``, ``just_decompose``, step-offset estimation, and STPD) to
     outlier-resistant M/MM-estimation with Schrader–Hettmansperger (1980) robust
@@ -647,6 +889,8 @@ def analyze_series(
     if not (0.0 < ci_level < 1.0):
         raise ValueError(f"`ci_level` must lie in (0, 1); got {ci_level}.")
     rob_method = validate_robust_args(robust, huber_k)
+    if mk_correction not in ("none", "hamed_rao", "ar1"):
+        raise ValueError("`mk_correction` must be 'none', 'hamed_rao', or 'ar1'.")
     if slope_estimator not in ("ols", "sen", "l1", "huber"):
         raise ValueError(
             f"Unknown `slope_estimator` {slope_estimator!r}. "
@@ -693,14 +937,13 @@ def analyze_series(
     if slope_estimator in ("l1", "huber"):
         s_kw.setdefault("refit_mode", slope_estimator)
 
-    # Practitioner-friendly scale-free defaults in analyze_series unless overridden:
-    # - Bonferroni-adjusted within-window screening p-values suppress post-selection noise.
+    # Scale-free defaults in analyze_series unless overridden:
+    # - just_jumps' family-wise calibrated selection (jump_alpha=0.05, Monte Carlo
+    #   max-over-splits calibration + Holm across candidate locations).
     # - When STPD is also enabled, step_alpha isolates genuine vertical discontinuities in
     #   Stage 1 (JUST) so pure continuous slope bends pass cleanly to Stage 2 (STPD).
     if "jump_alpha" not in j_kw:
         j_kw["jump_alpha"] = 0.05
-    if "bonferroni_window" not in j_kw:
-        j_kw["bonferroni_window"] = True
     if detect_turning_points and "step_alpha" not in j_kw:
         j_kw["step_alpha"] = float(j_kw["jump_alpha"]) if j_kw["jump_alpha"] is not None else 0.05
     if "mag_th" not in j_kw and "dir_th" not in j_kw and j_kw["jump_alpha"] is not None:
@@ -927,8 +1170,19 @@ def analyze_series(
                             )
                         _add_warnings(seg_res.diagnostics.warnings)
                         continue
-                    except InsufficientDataError:
-                        pass
+                    except InsufficientDataError as exc:
+                        _add_warnings(
+                            [
+                                WarningItem(
+                                    code="STPD_SEGMENT_SKIPPED",
+                                    severity="info",
+                                    message=(
+                                        f"Turning-point detection skipped in epoch {seg_i} ({exc}); a "
+                                        "single linear trend was fitted there."
+                                    ),
+                                )
+                            ]
+                        )
                 eff_refit_mode: RefitMode = s_kw.get("refit_mode") or (
                     "huber" if rob_method != "none" else "sequential"
                 )
@@ -1098,6 +1352,7 @@ def analyze_series(
         cond_max = jumps_res.diagnostics.condition_number_max if jumps_res is not None else 1.0
 
     # Stage 5: Per-segment trend slopes, CIs, and p-values (OLS / Theil-Sen / ATS / L1 / Huber)
+    mi_warns: list[WarningItem] = []
     tp_valid_indices = (
         [tp.valid_index for tp in stpd_res.turning_points] if stpd_res is not None else []
     )
@@ -1114,11 +1369,27 @@ def analyze_series(
         huber_k=huber_k,
         prov=prov,
         alpha=1.0 - ci_level,
+        mk_correction=mk_correction,
+        n_imputations=int(eff_censoring.n_imputations) if eff_censoring is not None else 0,
+        mi_seed=int(eff_censoring.random_state) if (
+            eff_censoring is not None and isinstance(eff_censoring.random_state, (int, np.integer))
+        ) else 0,
+        mi_warnings=mi_warns,
     )
+    slope_fan_low: FloatArray | None = None
+    slope_fan_high: FloatArray | None = None
     if override_trend is not None:
         combined_trend = override_trend
-        trend_ci_low = override_ci_low
-        trend_ci_high = override_ci_high
+        if slope_estimator == "sen":
+            # Median-pivoted slope envelope: NOT a pointwise CI for the trend (zero width at
+            # each segment's median time), so it is exported separately.
+            slope_fan_low = override_ci_low
+            slope_fan_high = override_ci_high
+            trend_ci_low = None
+            trend_ci_high = None
+        else:
+            trend_ci_low = override_ci_low
+            trend_ci_high = override_ci_high
 
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
@@ -1130,6 +1401,7 @@ def analyze_series(
         if w.code not in ("MODERATE_AUTOCORRELATION", "STRONG_AUTOCORRELATION")
     ]
     filtered_warnings.extend(final_rn_warns)
+    filtered_warnings.extend(mi_warns)
 
     diag = DiagnosticReport(
         red_noise=rn_final,
@@ -1161,4 +1433,6 @@ def analyze_series(
         ci_level=ci_level,
         trend_ci_low=trend_ci_low,
         trend_ci_high=trend_ci_high,
+        slope_fan_low=slope_fan_low,
+        slope_fan_high=slope_fan_high,
     )

@@ -252,7 +252,7 @@ def solve_huber_irls(
     for it in range(1, max_iter + 1):
         n_iter = it
         u = np.abs(r_w) / scale
-        w_h = np.where(u <= k, 1.0, k / u)
+        w_h = np.where(u <= k, 1.0, k / np.maximum(u, k))
         cur_coeff_s, r_w = _fast_wls_step(w_h)
 
         # Allow MAD scale to stabilize on early iterations if not held fixed
@@ -270,7 +270,7 @@ def solve_huber_irls(
 
     # Final effective weight structure & WeightedOLSResult for downstream spectral/Q use
     u_final = np.abs(r_w) / scale
-    w_h = np.where(u_final <= k, 1.0, k / u_final)
+    w_h = np.where(u_final <= k, 1.0, k / np.maximum(u_final, k))
     pw_eff = pw.scale_entries(w_h)
     ols_final = solve_weighted_ols(
         D, y, pw_eff, col_scales=col_scales, rcond=rcond, compute_cov=compute_cov
@@ -340,7 +340,11 @@ def solve_mm_biweight(
     tol: float = 1e-6,
     compute_cov: bool = True,
 ) -> HuberIRLSResult:
-    """Fit linear model via Yohai (1987) MM-estimation (Huber init + Tukey biweight).
+    """Fit linear model via MM-type estimation (Huber IRLS start + Tukey biweight).
+
+    Unlike Yohai's (1987) MM-estimator, the start is a monotone Huber M-estimate rather
+    than a high-breakdown S-estimate, so the breakdown point is design-dependent (it
+    breaks down under ~35% sustained vertical contamination at one end of the record).
 
     Initializes from convex Huber IRLS (guaranteeing zero masking of genuine
     sustained jumps) and refines at the fixed finite-sample MAD scale with
@@ -543,7 +547,7 @@ def huber_nested_ftest(
     """Schrader–Hettmansperger (1980) robust nested F-test for ``D_null subset D_full``.
 
     Evaluates both models at the shared full-model residual scale ``s_1`` using
-    Huber (``method='huber'``) or Yohai MM-biweight (``method='mm'``), returning
+    Huber (``method='huber'``) or Huber-started Tukey-biweight MM-type (``method='mm'``), returning
     ``(F_rob, pval, full_fit, null_fit)``.
     """
     n = int(y.size)
@@ -603,7 +607,9 @@ def fit_l1_piecewise(
 
     Solves ``min sum_i w_i |y_i - (b0 + a0 * u_i + sum_k delta_k (u_i - u_tau_k)_+)|``
     exactly via HiGHS sparse linear programming. Strictly continuous at every
-    turning point with 50% vertical breakdown.
+    turning point. Robust to isolated vertical outliers; its breakdown point is
+    design-dependent (about 0.29 for an intercept + slope on a uniform design, He et al. 1990),
+    not 50%.
     """
     n = int(t_num.size)
     m = int(tp_sorted.size)
@@ -688,6 +694,61 @@ def _kendall_var_s_ties(y: FloatArray, t: FloatArray) -> float:
     return max(0.0, float(var_s))
 
 
+def hamed_rao_factor(t: FloatArray, y: FloatArray, slope: float, alpha_acf: float = 0.05) -> float:
+    """Hamed & Rao (1998) variance inflation factor ``n / n*`` for the Mann-Kendall S.
+
+    Ranks of the Sen-detrended series are autocorrelated at lags ``1..n-1`` and only
+    lags significant at ``alpha_acf`` contribute (as in ``pymannkendall``'s
+    ``hamed_rao_modification_test``). Lags are in observation order.
+    """
+    from scipy.stats import rankdata
+
+    n = int(y.size)
+    if n < 4:
+        return 1.0
+    ranks = rankdata(y - slope * t)
+    r = ranks - ranks.mean()
+    den = float(np.dot(r, r))
+    if den <= 0.0:
+        return 1.0
+    acf = np.correlate(r, r, mode="full")[n - 1 :] / den
+    bound = float(norm.ppf(1.0 - alpha_acf / 2.0) / np.sqrt(n))
+    lags = np.arange(1, n)
+    a = acf[1:]
+    sig = np.abs(a) > bound
+    sni = float(np.sum(((n - lags) * (n - lags - 1) * (n - lags - 2) * a)[sig]))
+    factor = 1.0 + 2.0 * sni / (n * (n - 1) * (n - 2))
+    return factor if factor > 0.0 else 1.0
+
+
+def ar1_rank_factor(t: FloatArray, y: FloatArray, slope: float) -> float:
+    """AR(1) effective-sample-size inflation ``n / n*`` for the Mann-Kendall S.
+
+    Estimates the lag-1 autocorrelation of the Sen-detrended series with the
+    small-sample bias correction ``(n r + 1)/(n - 4)`` (Marriott & Pope, 1954),
+    truncated to ``[0, 0.95]`` (the variance is never deflated), maps the implied
+    Gaussian AR(1) correlations to rank (Spearman) correlations
+    ``(6/pi) arcsin(rho^k / 2)``, and applies the Hamed & Rao (1998) summation.
+    In simulations (``audit/``) this keeps Type-I error near 5% for AR(1) rho in
+    [0, 0.5], unlike the significant-lags-only Hamed-Rao estimate.
+    """
+    n = int(y.size)
+    if n < 6:
+        return 1.0
+    r = y - slope * t
+    r = r - float(np.mean(r))
+    den = float(np.dot(r, r))
+    if den <= 0.0:
+        return 1.0
+    rho = float(np.dot(r[:-1], r[1:]) / den)
+    rho = float(np.clip((n * rho + 1.0) / (n - 4.0), 0.0, 0.95))
+    if rho <= 0.0:
+        return 1.0
+    k = np.arange(1, n, dtype=np.float64)
+    rs = (6.0 / np.pi) * np.arcsin(rho**k / 2.0)
+    return float(1.0 + 2.0 * np.sum((n - k) * (n - k - 1) * (n - k - 2) * rs) / (n * (n - 1) * (n - 2)))
+
+
 def _censored_kendall_score(
     t: FloatArray,
     vals: FloatArray,
@@ -713,6 +774,42 @@ def _censored_kendall_score(
     # and j is not right-censored (<= r_j).
     disc = valid_t & (dr < 0.0) & (ci >= 0) & (cj <= 0)
     return float(np.sum(conc) - np.sum(disc))
+
+
+def _censored_kendall_var(
+    t: FloatArray,
+    vals: FloatArray,
+    codes: IntArray,
+    slope: float,
+) -> float:
+    """Permutation (exchangeability) variance of the censored Kendall S at ``slope``.
+
+    Uses Daniels' (1944) generalized-correlation variance for antisymmetric scores
+    ``a_ij = sign(t_j - t_i)`` and ``b_ij`` = definite concordance of the residual
+    responses ``r = vals - slope * t`` (``+1``/``-1`` when the censoring status allows a
+    definite ordering, ``0`` otherwise):
+    ``Var(Gamma) = 2 A2 B2 / (n(n-1)) + 4 (A3 - A2)(B3 - B2) / (n(n-1)(n-2))`` with
+    ``Gamma = 2 S``, ``A2 = sum a_ij^2`` and ``A3 = sum_i (sum_j a_ij)^2`` (likewise B).
+    Without censoring or ties this equals ``n(n-1)(2n+5)/18``; with censoring it is
+    smaller, so CIs and p-values are no longer conservative.
+    """
+    n = int(t.size)
+    if n < 3:
+        return 0.0
+    r = vals - slope * t
+    a = np.sign(t[None, :] - t[:, None]).astype(np.int8)
+    dr = r[None, :] - r[:, None]
+    ci = codes[:, None]
+    cj = codes[None, :]
+    b = ((dr > 0.0) & (ci <= 0) & (cj >= 0)).astype(np.int8) - (
+        (dr < 0.0) & (ci >= 0) & (cj <= 0)
+    ).astype(np.int8)
+    a2 = float(np.sum(a.astype(np.int64) ** 2))
+    b2 = float(np.sum(b.astype(np.int64) ** 2))
+    a3 = float(np.sum(np.sum(a, axis=1, dtype=np.int64).astype(np.float64) ** 2))
+    b3 = float(np.sum(np.sum(b, axis=1, dtype=np.int64).astype(np.float64) ** 2))
+    var_g = 2.0 * a2 * b2 / (n * (n - 1)) + 4.0 * (a3 - a2) * (b3 - b2) / (n * (n - 1) * (n - 2))
+    return max(0.0, var_g / 4.0)
 
 
 def _invert_censored_score(
@@ -767,6 +864,7 @@ def fit_theil_sen_segment(
     status_codes: IntArray | None = None,
     original_values: FloatArray | None = None,
     max_exact_n: int = 2000,
+    autocorr_correction: Literal["none", "hamed_rao", "ar1"] = "none",
 ) -> RobustSegmentFit:
     """Estimate robust segment slope, intercept, CI, and Mann–Kendall p-value.
 
@@ -817,9 +915,12 @@ def fit_theil_sen_segment(
         intercept = float(np.median(y - slope * t))
 
         s0 = _censored_kendall_score(t, vals, codes, 0.0)
-        var_s = n * (n - 1) * (2 * n + 5) / 18.0
-        if var_s > 0.0:
-            z_mk = (s0 - np.sign(s0)) / np.sqrt(var_s) if abs(s0) > 0.0 else 0.0
+        # Censoring-aware permutation variances: at slope 0 for the trend test, and at
+        # the ATS estimate for the confidence interval inversion.
+        var_s0 = _censored_kendall_var(t, vals, codes, 0.0)
+        var_s = _censored_kendall_var(t, vals, codes, slope)
+        if var_s0 > 0.0 and var_s > 0.0:
+            z_mk = (s0 - np.sign(s0)) / np.sqrt(var_s0) if abs(s0) > 0.0 else 0.0
             pval: float | None = float(2.0 * norm.sf(abs(z_mk)))
             c_alpha = float(norm.isf(0.5 * alpha) * np.sqrt(var_s))
             ci_lo_v = _invert_censored_score(t, vals, codes, c_alpha, s_lo, s_hi)
@@ -872,15 +973,19 @@ def fit_theil_sen_segment(
     n_p = int(slopes_sorted.size)
     slope = float(np.median(slopes_sorted))
     intercept = float(np.median(y - slope * t))
+    if autocorr_correction == "hamed_rao" and var_s > 0.0:
+        var_s *= hamed_rao_factor(t, y, slope)
+    elif autocorr_correction == "ar1" and var_s > 0.0:
+        var_s *= ar1_rank_factor(t, y, slope)
 
     if n <= max_exact_n and var_s > 0.0:
         z_mk = (s_stat - np.sign(s_stat)) / np.sqrt(var_s) if abs(s_stat) > 0.0 else 0.0
         pval = float(2.0 * norm.sf(abs(z_mk)))
         c_alpha = float(norm.isf(0.5 * alpha) * np.sqrt(var_s))
-        m1 = int(np.floor((n_p - c_alpha) / 2.0))
-        m2 = int(np.ceil((n_p + c_alpha) / 2.0))
-        idx_lo = max(0, min(n_p - 1, m1 - 1))
-        idx_hi = max(0, min(n_p - 1, m2 - 1))
+        # Gilbert (1987, Sec. 16.4): lower = M1-th, upper = (M2 + 1)-th ordered slope
+        # with M1 = (N' - C)/2 and M2 = (N' + C)/2 (rounded, as in R trend::sens.slope).
+        idx_lo = max(0, min(n_p - 1, int(np.round((n_p - c_alpha) / 2.0)) - 1))
+        idx_hi = max(0, min(n_p - 1, int(np.round((n_p + c_alpha) / 2.0))))
         ci_low = float(slopes_sorted[idx_lo])
         ci_high = float(slopes_sorted[idx_hi])
     else:

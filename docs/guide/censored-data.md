@@ -23,27 +23,37 @@ Substituting half the detection limit (`DL/2`) is still common in spreadsheets, 
 You can pass censored data in any of three idiomatic forms:
 
 ```python
+import numpy as np
+import pandas as pd
 from tspec import CensoredConfig, analyze_series
 
+rng = np.random.default_rng(0)
+dates = pd.date_range("2012-01-01", periods=144, freq="MS")
+conc = np.exp(0.3 * np.cos(2 * np.pi * np.arange(144) / 12) + rng.normal(0.0, 0.3, 144))
+
 # 1. Mixed strings & floats (auto-detected!)
-y_strings = ["<0.05", 0.12, "<0.05", 0.34, None, ">10.0"]
+y_strings = [f"<{0.8}" if v < 0.8 else float(v) for v in conc]
 res = analyze_series(dates, y_strings)
 
 # 2. Numeric array + boolean/integer/LWPTrends status array
 #    status: True/1 = left-censored (default), or -1=left, 0=obs, 1=right, or 'lt'/'gt'/'not'
+is_left_censored = conc < 0.8
+values = np.where(is_left_censored, 0.8, conc)
 res = analyze_series(dates, values, censor_status=is_left_censored)
 
 # 3. Interval bounds: (N, 2) array of [lower, upper]
+bounds_nx2 = np.column_stack([np.where(is_left_censored, 0.0, conc), np.where(is_left_censored, 0.8, conc)])
 res = analyze_series(
     dates,
     bounds_nx2,
     censoring=CensoredConfig(method="parametric", censoring_type="interval"),
 )
+print(res.segments_to_dataframe())
 ```
 
 ---
 
-## Five Built-In Statistical Safeguards
+## Six Built-In Statistical Safeguards
 
 ### 1. Eliminating the ROS Quantile Temporal-Trend Artifact
 In standard Robust ROS (`NADA::ros` and `ndimpute`'s default `impute_type="quantile"`), plotting positions are assigned using a **stable sort** on values. On a chronologically ordered time series, all non-detects tied at a detection limit $L$ are ranked $1, 2, \dots, C$ **from earliest timestamp to latest timestamp** — deterministically injecting a fake upward trend!
@@ -52,26 +62,31 @@ In standard Robust ROS (`NADA::ros` and `ndimpute`'s default `impute_type="quant
 - Defaults to **`impute_type="stochastic"`** (seeded with `random_state=0`), which preserves residual spread and has zero temporal rank correlation.
 - If you explicitly request `impute_type="quantile"`, `tspec` **randomly permutes tied detection-limit groups** before calling `ndimpute` and maps them back afterward, preserving exact NADA marginal quantiles with zero artificial slope.
 
-### 2. Imputation Scopes for Non-Stationary Series
+### 2. Time-Conditional Imputation (default) and Multiple Imputation
+By default (`CensoredConfig(imputation_model="trend", scope="global")`), censored values are imputed from a **censored-regression (Tobit-type) MLE on time**: a linear trend plus annual and semi-annual harmonics for datetime input (`trend_harmonics`), with lognormal or normal errors (`dist`). Each censored value is drawn from its *conditional* truncated distribution given its timestamp, so imputations keep the series' trend. The legacy `imputation_model="marginal"` draws from one time-invariant `ndimpute` distribution instead; this erases the trend among censored values and biased OLS slopes by about −27%, with 95% CIs covering only 63% at 50% censoring in simulation.
+
+A single imputation still understates uncertainty. For `analyze_series(..., slope_estimator="ols")`, segments that contain censored values are therefore re-estimated from `n_imputations` (default 20) proper multiple imputations, under a segment-congenial censored regression, pooled with **Rubin's rules** (segment `estimator="ols_mi"`). `slope_estimator="sen"` uses the Akritas–Theil–Sen estimator directly on the censored ranks. JUST/STPD detection p-values on censored data still condition on the single imputation; use `n_stability_draws` to check breakpoint stability.
+
+### 3. Imputation Scopes for Non-Stationary Series
 Because `ndimpute` fits a single marginal distribution, a huge regime jump (e.g., 60% `<DL` before a factory opens, 5% `<DL` afterward) can distort global imputations. Choose from three explicit scopes:
 
 - `scope="global"` *(default)*: Lowest variance; best when censoring is $<30\%$ and regimes are comparable. Automatically emits `NONSTATIONARY_CENSORING_PATTERN` if censoring differs by $>30\%$ between halves of the record.
 - `scope="windowed"`: Re-fits `ndimpute` locally inside each sliding JUST/STPD window (falling back to global when a window has $<5$ detects or $>80\%$ censoring).
 - `scope="seasonal_stratified"`: Imputes separately by calendar quarter so summer baseflow non-detects aren't distorted by winter stormflow peaks.
 
-### 3. Laboratory Detection-Limit Shift Defense
+### 4. Laboratory Detection-Limit Shift Defense
 With `detect_dl_shifts=True` (default), `tspec` scans for both explicit step changes in active censoring limits AND implicit DL upgrades (where censoring at $L_{\text{old}}$ stops and uncensored detections appear below $L_{\text{old}}$):
 
 - Any jump or turning point near a detected DL shift is marked `coincides_with_dl_shift = True` with a prominent `DL_SHIFT_COINCIDENCE` warning in `.explain()` and a dotted vertical marker in `.plot()`.
 - Set **`recensor_check=True`** to run Helsel's common-limit recensoring verification: temporarily recensors everything below $L_{\max}$ in the jump window and re-tests whether the jump survives. If it disappears, `dl_artifact_likely = True` is flagged explicitly.
 
-### 4. Breakpoint Stability Across Imputation Uncertainty
+### 5. Breakpoint Stability Across Imputation Uncertainty
 Single imputations condition on fitted parameters $\hat\theta$ (see `ndimpute`'s statistical documentation). To measure whether a detected jump or turning point is robust rather than an artifact of one random tail draw:
 
 - `analyze_series()` automatically runs **`n_stability_draws=20`** stochastic draws and reports `stability_rate` (e.g., *"Stable in 19/20 draws"*).
 - For full parameter-uncertainty propagation (proper resampling of $\hat\theta$ as well as tail draws), pass **`CensoredConfig(n_stability_draws=50, stability_mode="bootstrap")`**.
 
-### 5. Tiered Censoring Guardrails
+### 6. Tiered Censoring Guardrails
 - **0–20% censored:** Informational provenance note.
 - **20–50% censored:** `MODERATE_CENSORING` caution recommending `n_stability_draws >= 20`.
 - **50–80% censored:** `HEAVY_CENSORING` warning (results depend strongly on distributional shape).

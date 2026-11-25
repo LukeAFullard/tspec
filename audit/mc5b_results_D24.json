@@ -1,0 +1,9 @@
+{
+ "R": 400,
+ "D": 24,
+ "alpha": 0.05,
+ "FWER_single_retrospective_call": 0.0,
+ "FWER_realtime_loop_default_horizon": 0.0,
+ "FWER_realtime_loop_fixed_horizon=D": 0.0,
+ "MCSE_at_alpha": 0.010897247358851683
+}

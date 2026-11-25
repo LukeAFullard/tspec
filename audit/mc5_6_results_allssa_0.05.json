@@ -1,0 +1,42 @@
+{
+ "allssa,alpha=0.05,n_his=96,D=24": {
+  "R": 1000,
+  "MCSE_at_alpha": 0.006892024376045111,
+  "FWER[sidak+pocock(default)]": 0.001,
+  "FWER[sidak+obrien_fleming]": 0.001,
+  "FWER[sidak+consecutive_k2]": 0.028,
+  "FWER[sidak+none]": 0.037,
+  "FWER[parity_mode]": 0.738,
+  "errors": {
+   "sidak+pocock(default)": 0,
+   "sidak+obrien_fleming": 0,
+   "sidak+consecutive_k2": 0,
+   "sidak+none": 0,
+   "parity_mode": 0
+  },
+  "PI95_coverage": 0.9449166666666666,
+  "PI95_cov_first_quarter": 0.9418333333333333,
+  "PI95_cov_last_quarter": 0.9458333333333333,
+  "meanCI95_coverage_of_mu": 0.92025
+ },
+ "allssa,alpha=0.05,n_his=96,D=96": {
+  "R": 1000,
+  "MCSE_at_alpha": 0.006892024376045111,
+  "FWER[sidak+pocock(default)]": 0.003,
+  "FWER[sidak+obrien_fleming]": 0.003,
+  "FWER[sidak+consecutive_k2]": 0.115,
+  "FWER[sidak+none]": 0.14,
+  "FWER[parity_mode]": 0.984,
+  "errors": {
+   "sidak+pocock(default)": 0,
+   "sidak+obrien_fleming": 0,
+   "sidak+consecutive_k2": 0,
+   "sidak+none": 0,
+   "parity_mode": 0
+  },
+  "PI95_coverage": 0.9439270833333333,
+  "PI95_cov_first_quarter": 0.9439583333333333,
+  "PI95_cov_last_quarter": 0.9439583333333333,
+  "meanCI95_coverage_of_mu": 0.92865625
+ }
+}

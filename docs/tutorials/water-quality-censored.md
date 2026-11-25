@@ -63,10 +63,7 @@ If a laboratory upgraded its analyzer mid-record (e.g., `<0.80` → `<0.10`), `r
 res_check = tspec.just_jumps(
     dates,
     lab_strings,
-    jump_alpha=0.05,
-    bonferroni_window=True,
-    mag_th=0.0,
-    dir_th=0.0,
+    jump_alpha=0.05,  # family-wise calibrated by default (jump_calibration="montecarlo")
     censoring=CensoredConfig(
         method="ros",
         dist="lognormal",

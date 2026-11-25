@@ -16,7 +16,12 @@ from typing import Any, Literal
 import numpy as np
 from scipy.stats import t as student_t
 
-from ._diagnostics import DiagnosticReport, WarningItem, compute_red_noise_diagnostics
+from ._diagnostics import (
+    DiagnosticReport,
+    WarningItem,
+    compute_red_noise_diagnostics,
+    time_unit_warning,
+)
 from ._linalg import prepare_weights, solve_weighted_ols
 from ._robust import (
     RobustMethod,
@@ -54,7 +59,30 @@ RefitMode = Literal["sequential", "joint", "l1", "huber"]
 
 @dataclass(frozen=True)
 class TurningPointEvent:
-    """Accepted continuous trend turning point detected by STPD."""
+    """Accepted continuous trend turning point detected by STPD.
+
+    Attributes
+    ----------
+    index, valid_index : int
+        Turning-point observation on the input / valid axis.
+    time, time_year
+        Its timestamp (original representation / decimal years).
+    slope_before, slope_after, direction : float
+        Adjacent segment slopes from the global connected refit and their difference
+        (``analyze_series`` segment slopes from separate per-segment fits can differ
+        slightly).
+    pvalue : float
+        Window screening p-value for the slope change (computed at the selected
+        knot; optimistic).
+    snr_raw, snr_centered, ndri_l2, ndri_rmse : float
+        Local SNR and NDRI over the adjacent segments.
+    fb_diff : int
+        Index difference between forward and backward estimates.
+    window_center_distance : float
+        Distance from the detecting window's center.
+    window_censored_fraction, coincides_with_dl_shift, stability_rate
+        Censored-data diagnostics.
+    """
 
     index: int
     valid_index: int
@@ -92,7 +120,35 @@ class FlaggedJumpCandidate:
 
 @dataclass(frozen=True)
 class PiecewiseTrendResult(BaseResult):
-    """Global connected piecewise-linear trend fit across turning points."""
+    """Global connected piecewise-linear trend fit across turning points.
+
+    Attributes
+    ----------
+    tp_indices, tp_valid_indices : ndarray
+        Turning-point indices on the input axis / valid (NaN-dropped) axis.
+    slopes, intercepts : ndarray
+        Per-segment slopes (per time unit) and intercepts.
+    fitted_trend, residuals : ndarray
+        Fitted connected trend and residuals on the valid observations.
+    directions : ndarray
+        Slope change at each turning point.
+    local_snr_raw, local_snr_centered, local_ndri_l2, local_ndri_rmse : ndarray
+        SNR and NDRI over the two segments adjacent to each turning point.
+    mode : str
+        ``"sequential"``, ``"joint"``, ``"l1"``, ``"huber"`` (or ``"segmented"``
+        from ``analyze_series``).
+    selected_direction : {"forward", "backward", "joint"}
+        Which sequential fit direction was retained.
+    times_numeric, times_raw, is_datetime
+        Valid timestamps.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    ci_level : float
+        Pointwise confidence level.
+    trend_ci_low, trend_ci_high : ndarray or None
+        Pointwise band, conditional on the turning-point locations (``None`` for
+        ``mode="l1"``).
+    """
 
     tp_indices: IntArray
     tp_valid_indices: IntArray
@@ -175,7 +231,27 @@ class PiecewiseTrendResult(BaseResult):
 
 @dataclass(frozen=True)
 class StpdResult(BaseResult):
-    """Result object returned by :func:`detect_turning_points` (:func:`stpd`)."""
+    """Result object returned by :func:`detect_turning_points` (:func:`stpd`).
+
+    Attributes
+    ----------
+    turning_points : tuple of TurningPointEvent
+        Accepted continuous turning points.
+    flagged_jumps : tuple of FlaggedJumpCandidate
+        Significant candidates rejected because of high NDRI (likely vertical jumps).
+    piecewise_trend : PiecewiseTrendResult
+        Global connected piecewise-linear refit across the accepted turning points.
+    times_numeric, times_raw, values, is_datetime
+        Valid timestamps and (imputed) values.
+    window_mode, snr_mode, ndri_mode : str
+        Settings used.
+    alpha, snr_th, ndri_th, dir_th, tp_th : float
+        Thresholds used.
+    censoring : CensoringProvenance or None
+        Censored-data provenance.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    """
 
     turning_points: tuple[TurningPointEvent, ...]
     flagged_jumps: tuple[FlaggedJumpCandidate, ...]
@@ -256,7 +332,7 @@ class StpdResult(BaseResult):
                     f"  {k}. Around {t_str} (index {tp.index}): slope changed from "
                     f"{tp.slope_before:+.4g} to {tp.slope_after:+.4g} per unit time "
                     f"(change {tp.direction:+.4g}, screening t-test p={tp.pvalue:.2e}, "
-                    f"NDRI={ndri_disp:.2f} — low NDRI confirms a smooth bend)."
+                    f"NDRI={ndri_disp:.2f} — low NDRI is consistent with a smooth bend)."
                 )
                 if tp.stability_rate is not None:
                     desc += f" Recovered in {tp.stability_rate:.0%} of censoring stability draws."
@@ -578,7 +654,7 @@ def _huber_line_2param(
 
     for it in range(1, max_iter + 1):
         au = np.abs(rw) / scale
-        wh = np.where(au <= k, 1.0, k / au)
+        wh = np.where(au <= k, 1.0, k / np.maximum(au, k))
         nb, na = _wls2(w0 * wh)
         rw = (y - (nb + na * u)) * sw0
         if it <= 3:
@@ -621,7 +697,7 @@ def _huber_slope_1param(
 
     for it in range(1, max_iter + 1):
         au = np.abs(rw) / scale
-        wh = np.where(au <= k, 1.0, k / au)
+        wh = np.where(au <= k, 1.0, k / np.maximum(au, k))
         wt = w0 * wh
         den = float(np.dot(wt, d2))
         if den <= 0.0:
@@ -722,7 +798,7 @@ def _fit_two_piece_sequential_huber(
             # Isolated spikes only: zero extreme spikes without masking contiguous step cliffs
             w_huber = np.maximum(tukey_weight(u_signed), 1e-12)
         else:
-            w_huber = np.where(u_abs <= huber_k, 1.0, huber_k / u_abs)
+            w_huber = np.where(u_abs <= huber_k, 1.0, huber_k / np.maximum(u_abs, huber_k))
     else:
         w_huber = np.ones(n, dtype=np.float64)
 
@@ -1005,6 +1081,7 @@ def _fit_piecewise_core(
 
     t0 = t_num - t_num[0]
     cond_num = 1.0
+    huber_converged = True
     trend_ci_low: FloatArray | None = None
     trend_ci_high: FloatArray | None = None
 
@@ -1025,6 +1102,7 @@ def _fit_piecewise_core(
         if mode == "huber":
             hr = solve_huber_irls(D, y, pw, k=huber_k, compute_cov=True)
             ols = hr.ols
+            huber_converged = bool(hr.converged)
         else:
             ols = solve_weighted_ols(D, y, pw, compute_cov=True)
         cond_num = float(ols.condition_number)
@@ -1152,6 +1230,16 @@ def _fit_piecewise_core(
 
     residuals = y - y_fit
     rn, rn_warns = compute_red_noise_diagnostics(t_num, residuals)
+    if not huber_converged:
+        rn_warns = (
+            *rn_warns,
+            WarningItem(
+                code="ROBUST_NOT_CONVERGED",
+                severity="caution",
+                message="Huber IRLS hinge-spline fit reached its iteration limit before converging.",
+                suggestion="Treat the robust trend and its CI as approximate.",
+            ),
+        )
     diag = DiagnosticReport(
         red_noise=rn,
         condition_number_max=cond_num,
@@ -1210,7 +1298,8 @@ def fit_piecewise_trend(
         - ``'sequential'``: Ghaderpour et al. (2024) ``TPTR`` forward/backward chained OLS.
         - ``'joint'``: globally optimal simultaneous continuous hinge-spline OLS.
         - ``'l1'``: globally optimal continuous L1 (LAD) hinge-spline via linear
-          programming (50% vertical breakdown, strictly continuous at knots;
+          programming (robust to isolated outliers, design-dependent breakdown well
+          below 50%, strictly continuous at knots;
           pointwise CIs are ``None``).
         - ``'huber'``: globally optimal continuous Huber IRLS hinge-spline.
     huber_k:
@@ -1429,8 +1518,14 @@ def detect_turning_points(
         Observation-count window size and step (defaults: ``5*M`` and ``M``).
     window_mode:
         ``'count'`` (default) or ``'duration'`` (fixed calendar span).
+    window_duration, step_duration, min_window_obs:
+        Window span (default ``min(5, span)`` years), step (default
+        ``window_duration/3``) and minimum observations per window (default ``10``)
+        for ``window_mode='duration'``.
     snr_th, snr_mode:
-        SNR threshold (default ``1.0``) and mode: ``'centered'`` (default,
+        SNR threshold (default ``1.0``; this hard gate is independent of sample
+        size, so turning points whose within-window trend range is comparable to the
+        noise level are rejected however small their p-value) and mode: ``'centered'`` (default,
         shift-invariant for non-zero baselines) or ``'raw'`` (Ghaderpour 2024).
         ``parity_mode=True`` forces ``'raw'``.
     ndri_th, ndri_mode:
@@ -1525,6 +1620,7 @@ def detect_turning_points(
         )
 
     warnings_list: list[WarningItem] = list(prep.warnings)
+    warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     n = series.n_valid
     span = float(series.times_numeric[-1] - series.times_numeric[0])
     if span <= 0.0:
@@ -1675,7 +1771,20 @@ def detect_turning_points(
     if n_stab > 0 and accepted_raw and prov is not None and cfg is not None:
         dt_med = float(np.median(np.diff(series.times_numeric))) if n > 1 else 0.1
         match_tol = max(0.4, 3.0 * dt_med)
-        stab_draws = generate_stability_draws(prov, cfg, series.times_numeric)
+        stab_fb = [0]
+        stab_draws = generate_stability_draws(prov, cfg, series.times_numeric, stab_fb)
+        if stab_fb[0] > 0:
+            warnings_list.append(
+                WarningItem(
+                    code="STABILITY_DRAW_FALLBACK",
+                    severity="caution",
+                    message=(
+                        f"{stab_fb[0]} censoring stability draw(s) could not refit the imputation "
+                        "model and reused fixed parameters, so stability rates understate "
+                        "parameter uncertainty."
+                    ),
+                )
+            )
         win_rngs = (
             _spawn_stability_rngs(cfg.random_state, len(stab_draws))
             if cfg.scope == "windowed"

@@ -28,6 +28,7 @@ from ._diagnostics import (
     DiagnosticReport,
     WarningItem,
     compute_red_noise_diagnostics,
+    time_unit_warning,
 )
 from ._linalg import PreparedWeights, prepare_weights, whiten_matrix, whiten_vector
 from ._robust import RobustMethod, tukey_weight, validate_robust_args
@@ -46,6 +47,9 @@ DisturbanceType = Literal["none", "abrupt", "phenological"]
 FreqCorrection = Literal["sidak", "bonferroni", "none"]
 SequentialControl = Literal["pocock", "obrien_fleming", "consecutive_k", "none"]
 MonitorWindowMode = Literal["expanding", "sliding"]
+
+# sum_{k>=2} 1 / (k ln(k)^2)
+_OPEN_SPEND_C = 2.1097428012368
 
 
 @dataclass(frozen=True)
@@ -165,7 +169,8 @@ class MonitorResult(BaseResult):
     sequential_control : {"pocock", "obrien_fleming", "consecutive_k", "none"}
         Across-time repeated-testing control applied across monitoring steps.
     horizon : int
-        Monitoring horizon ``D_max`` used for alpha-spending rules.
+        Monitoring horizon ``D_max`` used for alpha-spending rules (``0`` = open-ended
+        spending because no horizon was supplied).
     diagnostics : DiagnosticReport
         Structured diagnostics and warnings.
     censoring : CensoringProvenance | None
@@ -277,10 +282,17 @@ class MonitorResult(BaseResult):
                 "Over long monitoring horizons, unadjusted per-step testing increases cumulative "
                 "false-alarm probability."
             )
+        elif self.sequential_control == "consecutive_k":
+            parts.append(
+                f"Note: sequential_control='consecutive_k' requires repeated exceedances but does "
+                f"not bound the familywise false-alarm rate at alpha={self.alpha:g}; it grows with "
+                "the monitoring length (about 10% over 96 steps at alpha=0.05 in simulations)."
+            )
         else:
             parts.append(
                 f"Repeated-testing protection active: freq_correction='{self.freq_correction}' "
-                f"and sequential_control='{self.sequential_control}' at nominal alpha={self.alpha:g}."
+                f"and sequential_control='{self.sequential_control}' bound the familywise "
+                f"false-alarm rate at alpha={self.alpha:g}."
             )
 
         for w in self.diagnostics.warnings:
@@ -359,9 +371,15 @@ def _step_alpha_budget(
     sequential_control: SequentialControl,
 ) -> float:
     """Return the per-step familywise alpha budget at 1-based step ``step_d``."""
-    h = max(1, int(horizon))
     if sequential_control in ("none", "consecutive_k"):
         return alpha
+    if horizon <= 0 and sequential_control in ("pocock", "obrien_fleming"):
+        # Open-ended spending (no planned horizon): alpha_d = alpha / (C (d+1) ln^2(d+1)),
+        # C = sum_{k>=2} 1/(k ln^2 k) = 2.1097428..., so sum_d alpha_d = alpha over an
+        # unbounded horizon and thresholds never depend on future data.
+        k = float(step_d) + 1.0
+        return float(alpha / (_OPEN_SPEND_C * k * np.log(k) ** 2))
+    h = max(1, int(horizon))
     if sequential_control == "pocock":
         # Exact Sidak-Pocock constant per-step allocation: 1 - (1 - alpha)^(1 / H)
         return float(1.0 - np.power(1.0 - alpha, 1.0 / h))
@@ -553,16 +571,21 @@ def just_monitor(
         - ``"pocock"``: constant Šidák alpha-spending across ``horizon`` steps.
         - ``"obrien_fleming"``: Lan–DeMets O'Brien–Fleming alpha-spending
           (very conservative early, higher power later in the horizon).
-        - ``"consecutive_k"``: requires ``consecutive_k`` consecutive exceedances
-          (suited to open-ended streams without a fixed horizon).
+        - ``"consecutive_k"``: requires ``consecutive_k`` consecutive exceedances at
+          the unadjusted per-step level. This does **not** control the familywise rate,
+          which grows with monitoring length; for open-ended streams with error control,
+          use ``"pocock"`` without ``horizon`` (open-ended spending).
         - ``"none"``: unadjusted per-step testing (used by ``parity_mode=True``).
     consecutive_k : int, default 2
         Number of consecutive exceedances required when
         ``sequential_control="consecutive_k"``.
     horizon : int, optional
         Total number of planned monitoring steps ``D_max`` for ``"pocock"`` or
-        ``"obrien_fleming"`` spending. Defaults to the actual number of
-        monitoring observations ``n_valid - start_idx``.
+        ``"obrien_fleming"`` spending. It must be fixed in advance: if omitted,
+        open-ended spending ``alpha_d = alpha / (2.11 (d+1) ln^2(d+1))`` is used (reported as
+        ``horizon=0``) so thresholds never depend on how many future observations
+        exist. ``parity_mode=True`` keeps the legacy default (number of monitoring
+        observations).
     window_mode : {"expanding", "sliding"}, default "expanding"
         Whether the monitoring residual window expands from ``Lh`` as new points
         arrive (``"expanding"``, matching Ghaderpour & Vujadinovic, 2020b) or
@@ -580,7 +603,7 @@ def just_monitor(
         Forced to ``False`` when ``parity_mode=True``.
     robust : {"none", "huber", "mm"}, default "none"
         If ``"huber"`` or ``"mm"``, fits the stable historical baseline via
-        convex Huber IRLS or Yohai MM-biweight (down-weighting historical spikes
+        convex Huber IRLS or Huber-started Tukey biweight (down-weighting historical spikes
         without ever down-weighting incoming monitoring observations so new
         disturbances are never masked). Forced to ``"none"`` when
         ``parity_mode=True``.
@@ -661,6 +684,7 @@ def just_monitor(
         pw_full = pw_full.scale_entries(prepared.weight_factors)
 
     warnings_list: list[WarningItem] = list(prepared.warnings)
+    warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
 
     n = series.n_valid
     if n < 5:
@@ -799,7 +823,7 @@ def just_monitor(
             w_his_h = (
                 np.maximum(tukey_weight(rw_his / s_his), 1e-12)
                 if eff_robust == "mm"
-                else np.where(u_his <= huber_k, 1.0, huber_k / u_his)
+                else np.where(u_his <= huber_k, 1.0, huber_k / np.maximum(u_his, huber_k))
             )
             act_factors = np.concatenate(
                 [w_his_h, np.ones(int(t_act.size) - n_his, dtype=np.float64)]
@@ -875,11 +899,33 @@ def just_monitor(
     warnings_list.extend(rn_warns)
 
     n_mon = n - start_idx
-    eff_horizon = int(horizon) if horizon is not None else n_mon
-    if eff_horizon < 1:
-        raise ValueError(f"horizon must be >= 1, got {eff_horizon}.")
+    if horizon is not None:
+        eff_horizon = int(horizon)
+        if eff_horizon < 1:
+            raise ValueError(f"horizon must be >= 1, got {eff_horizon}.")
+    elif parity_mode or eff_seq_ctrl not in ("pocock", "obrien_fleming"):
+        eff_horizon = n_mon
+    else:
+        # Never infer the spending horizon from the amount of data present: that would make
+        # thresholds at past steps depend on future observations (look-ahead).
+        eff_horizon = 0
+        warnings_list.append(
+            WarningItem(
+                code="OPEN_ENDED_SPENDING",
+                severity="caution",
+                message=(
+                    f"No `horizon` given for sequential_control={eff_seq_ctrl!r}; used open-ended "
+                    "alpha spending alpha_d = alpha / (2.11 (d+1) ln^2(d+1)), which controls the familywise "
+                    "false-alarm rate over any monitoring length without using future data."
+                ),
+                suggestion=(
+                    "Open-ended spending is strict at later steps; pass the planned number of "
+                    "monitoring steps as `horizon` (fixed in advance) for substantially more power."
+                ),
+            )
+        )
 
-    if (not parity_mode) and eff_seq_ctrl in ("pocock", "obrien_fleming") and n_mon > eff_horizon:
+    if (not parity_mode) and eff_seq_ctrl in ("pocock", "obrien_fleming") and 0 < eff_horizon < n_mon:
         warnings_list.append(
             WarningItem(
                 code="HORIZON_EXCEEDED",
@@ -890,8 +936,8 @@ def just_monitor(
                     "is not guaranteed beyond the planned horizon."
                 ),
                 suggestion=(
-                    "Increase `horizon` to cover the monitoring period or switch to "
-                    "`sequential_control='consecutive_k'` for open-ended streams."
+                    "Increase `horizon` to cover the monitoring period, or omit `horizon` "
+                    "to use open-ended alpha spending."
                 ),
             )
         )

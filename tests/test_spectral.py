@@ -18,7 +18,8 @@ def test_lssa_recovers_sinusoid_on_irregular_grid(rng: np.random.Generator) -> N
     assert abs(peak_freq - 1.25) <= 0.025
     assert res.spectrum.max() > res.critical_value
     assert "LSSA Result" in res.summary()
-    assert "strongest cycle" in res.explain()
+    assert "highest spectral peak" in res.explain()
+    assert res.peak_fap < 0.01
 
 
 def test_lssa_trend_none_works_without_unbound_error() -> None:

@@ -1,4 +1,4 @@
-"""Smoke-test every Python code block inside docs/tutorials/ and docs/guide/concepts.md."""
+"""Smoke-test every Python code block in the tutorials and the runnable guide pages."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ TUTORIAL_FILES = [
     DOCS_DIR / "index.md",
     DOCS_DIR / "guide" / "concepts.md",
     DOCS_DIR / "guide" / "interpreting-results.md",
+    DOCS_DIR / "guide" / "censored-data.md",
     DOCS_DIR / "tutorials" / "water-quality-censored.md",
     DOCS_DIR / "tutorials" / "vegetation-ndvi-wildfire.md",
     DOCS_DIR / "tutorials" / "subsidence-turning-point.md",

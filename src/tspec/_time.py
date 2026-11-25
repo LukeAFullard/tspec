@@ -9,6 +9,7 @@ frequencies are naturally expressed in cycles/year.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
@@ -66,6 +67,20 @@ def _datetime64_to_decimal_year(dt64: np.ndarray[Any, Any]) -> FloatArray:
     return np.asarray(year_int.astype(np.float64) + elapsed / year_length, dtype=np.float64)
 
 
+def _check_datetime_ns_range(dt: np.ndarray[Any, Any]) -> None:
+    """Reject datetimes outside the datetime64[ns] range (1678-2262), which would wrap silently."""
+    d = dt.astype("datetime64[us]")
+    fin = ~np.isnat(d)
+    if np.any(fin):
+        lo = np.datetime64("1678-01-01", "us")
+        hi = np.datetime64("2262-04-11", "us")
+        if np.any(d[fin] < lo) or np.any(d[fin] > hi):
+            raise ValueError(
+                "Datetime values outside 1678-2262 cannot be represented at nanosecond precision; "
+                "pass numeric decimal years instead."
+            )
+
+
 def coerce_times(
     t: TimeLike,
     *,
@@ -96,9 +111,15 @@ def coerce_times(
     if arr.size == 0:
         raise InsufficientDataError("Time vector `t` must not be empty.")
 
+    if np.issubdtype(arr.dtype, np.str_):
+        # Plain numeric strings (e.g. "2001.5", "3") are numbers, not dates.
+        with contextlib.suppress(ValueError):
+            arr = arr.astype(np.float64)
+
     is_datetime = False
     if np.issubdtype(arr.dtype, np.datetime64):
         is_datetime = True
+        _check_datetime_ns_range(arr)
         raw_dt = arr.astype("datetime64[ns]")
         t_num = _datetime64_to_decimal_year(raw_dt)
         t_raw: np.ndarray[Any, Any] = raw_dt
@@ -130,14 +151,16 @@ def coerce_times(
             t_raw = t_num.copy()
     elif np.issubdtype(arr.dtype, np.str_):
         try:
-            raw_dt = arr.astype("datetime64[ns]")
-            is_datetime = True
-            t_num = _datetime64_to_decimal_year(raw_dt)
-            t_raw = raw_dt
+            parsed = arr.astype("datetime64[us]")
         except ValueError as exc:
             raise ValueError(
                 "String time vector `t` could not be parsed as ISO-8601 datetime64."
             ) from exc
+        _check_datetime_ns_range(parsed)
+        raw_dt = parsed.astype("datetime64[ns]")
+        is_datetime = True
+        t_num = _datetime64_to_decimal_year(raw_dt)
+        t_raw = raw_dt
     else:
         t_num = np.asarray(arr, dtype=np.float64)
         t_raw = t_num.copy()

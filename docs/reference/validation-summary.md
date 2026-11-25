@@ -1,5 +1,8 @@
 # Validation & Verification Summary
 
+!!! warning "Superseded calibration claims"
+    The Tier 2 Monte Carlo gates below used 25–50 replicates and permissive thresholds, and several of the tested procedures have since changed. An independent audit (`audit/AUDIT_REPORT.md` in the repository) found that the raw JUST screening p-values, the per-frequency ALLSSA rule, the model-based decomposition trend band and marginal censored imputation were badly miscalibrated. Those defaults have been replaced (calibrated jump selection, family-wise ALLSSA significance, bias-corrected trend band, time-conditional imputation with Rubin pooling, AR(1)-corrected Mann–Kendall). Treat the Tier 2 numbers below as historical.
+
 `tspec` is validated across four independent verification tiers prior to release.
 
 ## Tier 1: Numerical Parity Against `Ghaderpour/LSWAVE-SignalProcessing`
@@ -55,7 +58,7 @@ Full quantitative tables are published in `validation/reports/benchmarks_report.
 
 ## Tier 3: Unit, Invariance, Edge-Case & Property-Based Tests
 
-- 99 automated `pytest` tests (92 unit/property/robust/audit-regression tests + 7 end-to-end documentation tutorial smoke tests) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), extreme baseline/scale numerical stability, Huber/MM-biweight/Theil–Sen/Akritas–Theil–Sen/$L_1$ robustness, causal NRT censoring, degenerate/constant/rank-deficient inputs, unpacked sdist verification, and headless plotting smoke tests.
+- Automated `pytest` tests (unit, property, robust, audit-regression and end-to-end documentation smoke tests) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), extreme baseline/scale numerical stability, Huber/MM-biweight/Theil–Sen/Akritas–Theil–Sen/$L_1$ robustness, causal NRT censoring, degenerate/constant/rank-deficient inputs, unpacked sdist verification, and headless plotting smoke tests.
 - Dedicated lite-environment CI job verifying zero `ndimpute`/`pandas` imports for core numerical functions (`pip install --no-deps tspec` with `numpy` + `scipy` only).
 
 ## Tier 4: Speed & $O(n)$ Memory Profiling

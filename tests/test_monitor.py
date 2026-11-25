@@ -58,6 +58,7 @@ def test_just_monitor_detects_phenological_shift() -> None:
         alpha=0.01,
         freq_correction="sidak",
         sequential_control="pocock",
+        horizon=60,
     )
     assert res.detected
     assert res.disturbance_type == "phenological"
@@ -177,3 +178,17 @@ def test_just_monitor_validation_errors() -> None:
         just_monitor(t, y, h=1.5)
     with pytest.raises(ValueError, match="history start must precede"):
         just_monitor(t, y, history=30, start=20)
+
+
+def test_just_monitor_thresholds_do_not_depend_on_future_data() -> None:
+    """Audit CRT-02: without `horizon`, step thresholds must not change as data accrue."""
+    rng = np.random.default_rng(31)
+    t = np.sort(rng.uniform(2000, 2010, 240))
+    y = 2 + 0.1 * (t - 2000) + 0.5 * np.cos(2 * np.pi * t) + rng.normal(0, 0.15, t.size)
+    crit = []
+    for n_total in (96 + 12, 96 + 144):
+        r = just_monitor(t[:n_total], y[:n_total], start=96, season="ols", alpha=0.05, stop_on_first=False)
+        crit.append([s.critical_value for s in r.steps[:12]])
+        assert r.horizon == 0
+        assert "OPEN_ENDED_SPENDING" in {w.code for w in r.diagnostics.warnings}
+    np.testing.assert_allclose(crit[0], crit[1], rtol=0, atol=1e-12)

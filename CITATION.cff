@@ -242,3 +242,84 @@ references:
     repository-code: "https://github.com/LukeAFullard/ndimpute"
     license: MIT
     year: 2026
+  - type: article
+    title: "Tests for Parameter Instability and Structural Change With Unknown Change Point"
+    authors:
+      - family-names: Andrews
+        given-names: Donald W. K.
+    journal: "Econometrica"
+    volume: 61
+    issue: 4
+    pages: "821-856"
+    year: 1993
+    doi: "10.2307/2951764"
+  - type: article
+    title: "A Simple Sequentially Rejective Multiple Test Procedure"
+    authors:
+      - family-names: Holm
+        given-names: Sture
+    journal: "Scandinavian Journal of Statistics"
+    volume: 6
+    issue: 2
+    pages: "65-70"
+    year: 1979
+  - type: article
+    title: "On the Effect of Bias Estimation on Coverage Accuracy in Nonparametric Inference"
+    authors:
+      - family-names: Calonico
+        given-names: Sebastian
+      - family-names: Cattaneo
+        given-names: Matias D.
+      - family-names: Farrell
+        given-names: Max H.
+    journal: "Journal of the American Statistical Association"
+    volume: 113
+    issue: 522
+    pages: "767-779"
+    year: 2018
+    doi: "10.1080/01621459.2017.1285776"
+  - type: article
+    title: "A modified Mann-Kendall trend test for autocorrelated data"
+    authors:
+      - family-names: Hamed
+        given-names: Khaled H.
+      - family-names: Rao
+        given-names: A. Ramachandra
+    journal: "Journal of Hydrology"
+    volume: 204
+    pages: "182-196"
+    year: 1998
+    doi: "10.1016/S0022-1694(97)00125-X"
+  - type: article
+    title: "Estimation of Relationships for Limited Dependent Variables"
+    authors:
+      - family-names: Tobin
+        given-names: James
+    journal: "Econometrica"
+    volume: 26
+    issue: 1
+    pages: "24-36"
+    year: 1958
+    doi: "10.2307/1907382"
+  - type: article
+    title: "Small-sample degrees of freedom with multiple imputation"
+    authors:
+      - family-names: Barnard
+        given-names: John
+      - family-names: Rubin
+        given-names: Donald B.
+    journal: "Biometrika"
+    volume: 86
+    issue: 4
+    pages: "948-955"
+    year: 1999
+    doi: "10.1093/biomet/86.4.948"
+  - type: book
+    title: "Multiple Imputation for Nonresponse in Surveys"
+    authors:
+      - family-names: Rubin
+        given-names: Donald B.
+    publisher:
+      name: "John Wiley & Sons"
+    year: 1987
+    doi: "10.1002/9780470316696"

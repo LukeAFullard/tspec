@@ -68,7 +68,68 @@ def _require_ndimpute() -> Any:
 
 @dataclass(frozen=True)
 class CensoredConfig:
-    """Configuration for ``ndimpute``-backed censored time-series analysis."""
+    """Configuration for censored time-series analysis.
+
+    Attributes
+    ----------
+    method : {"ros", "parametric", "substitution"}
+        ``ndimpute`` method for the marginal imputation path (default ``"ros"``).
+    censoring_type : {"left", "right", "mixed", "interval"} or None
+        Censoring type; inferred from the data when ``None``.
+    dist : {"lognormal", "normal", "weibull", "auto"}
+        Error distribution. ``"auto"`` chooses lognormal for strictly positive data.
+        ``"weibull"`` always uses the marginal ``ndimpute`` path.
+    impute_type : {"stochastic", "mean", "quantile"}
+        Single-imputation rule: random conditional draw (default), conditional mean,
+        or conditional median/quantile.
+    scope : {"global", "windowed", "seasonal_stratified"}
+        Where the imputation model is fitted. The time-conditional model applies to
+        ``"global"``; the other scopes use ``ndimpute`` marginal fits per window or
+        calendar quarter.
+    random_state : int, Generator, or None
+        Seed for all imputation draws (default ``0``, deterministic).
+    clamp : bool
+        Keep imputed values within their censoring bounds (marginal path).
+    imputed_weight_factor : float
+        Multiplicative weight in ``(0, 1]`` applied to imputed observations in
+        downstream fits (values below 0.5 trigger a warning).
+    n_stability_draws : int
+        Number of alternative imputations used to report how often each detected
+        jump/turning point recurs (``stability_rate``). ``0`` disables.
+    stability_mode : {"stochastic", "bootstrap"}
+        How marginal-path stability draws are generated (parameter-fixed draws or
+        bootstrap refits). Time-conditional draws always sample parameters from
+        their asymptotic distribution.
+    detect_dl_shifts : bool
+        Scan for changes in the active detection limits (default ``True``).
+    dl_shift_rel_threshold : float
+        Minimum relative change in the active limit treated as a DL shift (0.20).
+    recensor_check : bool
+        Re-test jumps after recensoring the window to its highest detection limit.
+    warn_censor_fraction : float
+        Censored fraction above which a ``MODERATE_CENSORING`` caution is emitted.
+    max_censor_fraction : float
+        Censored fraction above which analysis is refused unless
+        ``allow_heavy_censoring=True`` (default 0.80).
+    allow_heavy_censoring : bool
+        Override the ``max_censor_fraction`` and minimum-detects guardrails.
+    left_marker, right_marker : str
+        String prefixes marking left- and right-censored entries (``"<"``, ``">"``).
+    ndimpute_kwargs : dict
+        Extra keyword arguments passed to ``ndimpute.impute``.
+    imputation_model : {"trend", "marginal"}
+        ``"trend"`` (default with ``scope="global"``) imputes from a censored
+        regression (Tobit-type) MLE conditional on time (linear trend plus
+        ``trend_harmonics``), keeping the series' temporal structure. ``"marginal"``
+        uses ``ndimpute``'s time-invariant model, which flattens trends among censored
+        values and biases slopes toward zero.
+    trend_harmonics : tuple of float or None
+        Harmonic frequencies (cycles per time unit) in the imputation design.
+        Default: ``(1, 2)`` for datetime input, none for numeric time.
+    n_imputations : int
+        Multiple imputations pooled with Rubin's rules for ``analyze_series`` OLS
+        segment slopes in censored segments (default 20; ``1`` disables).
+    """
 
     method: Literal["ros", "parametric", "substitution"] = "ros"
     censoring_type: Literal["left", "right", "mixed", "interval"] | None = None
@@ -89,8 +150,15 @@ class CensoredConfig:
     left_marker: str = "<"
     right_marker: str = ">"
     ndimpute_kwargs: dict[str, Any] = field(default_factory=dict)
+    imputation_model: Literal["trend", "marginal"] = "trend"
+    trend_harmonics: tuple[float, ...] | None = None
+    n_imputations: int = 20
 
     def __post_init__(self) -> None:
+        if self.imputation_model not in ("trend", "marginal"):
+            raise ValueError("`imputation_model` must be 'trend' or 'marginal'.")
+        if self.n_imputations < 1:
+            raise ValueError("`n_imputations` must be >= 1.")
         if not (0.0 < self.imputed_weight_factor <= 1.0):
             raise ValueError(
                 f"`imputed_weight_factor` must lie in (0, 1]; got {self.imputed_weight_factor}."
@@ -700,6 +768,7 @@ def _bootstrap_refit_draw(
     provenance: CensoringProvenance,
     config: CensoredConfig,
     rng: np.random.Generator,
+    fallback_counter: list[int] | None = None,
 ) -> FloatArray:
     """Generate one proper bootstrap-refit imputation draw propagating parameter uncertainty.
 
@@ -726,6 +795,8 @@ def _bootstrap_refit_draw(
             boot_idx = cand
             break
     if boot_idx is None:
+        if fallback_counter is not None:
+            fallback_counter[0] += 1
         # Fallback to fixed-theta stochastic draw
         cfg_stoch = CensoredConfig(
             method=config.method,
@@ -830,6 +901,8 @@ def _bootstrap_refit_draw(
         _ = lognorm
         return np.asarray(out, dtype=np.float64)
     except Exception:
+        if fallback_counter is not None:
+            fallback_counter[0] += 1
         cfg_stoch = CensoredConfig(
             method=config.method,
             censoring_type=config.censoring_type,
@@ -870,8 +943,13 @@ def generate_stability_draws(
     provenance: CensoringProvenance,
     config: CensoredConfig,
     t_valid: FloatArray,
+    fallback_counter: list[int] | None = None,
 ) -> list[FloatArray]:
-    """Generate ``config.n_stability_draws`` alternative imputed series for stability checks."""
+    """Generate ``config.n_stability_draws`` alternative imputed series for stability checks.
+
+    ``fallback_counter`` (a one-element list), if given, is incremented whenever a draw
+    could not propagate parameter uncertainty and fell back to a fixed-parameter draw.
+    """
     n_draws = int(config.n_stability_draws)
     if n_draws <= 0 or provenance.n_censored == 0:
         return []
@@ -879,9 +957,31 @@ def generate_stability_draws(
     child_rngs = _spawn_stability_rngs(config.random_state, n_draws)
 
     draws: list[FloatArray] = []
+    attrs_p = provenance.ndimpute_attrs
+    if attrs_p.get("imputation_model") == "trend" and config.scope == "global":
+        for rng in child_rngs:
+            try:
+                imp, _ = impute_trend_model(
+                    provenance.original_values,
+                    provenance.status_codes,
+                    provenance.original_left,
+                    provenance.original_right,
+                    t_valid,
+                    tuple(attrs_p.get("trend_harmonics", ())),
+                    str(attrs_p.get("dist", config.dist)),
+                    "stochastic",
+                    rng,
+                    draw_params=True,
+                )
+            except (ValueError, np.linalg.LinAlgError):
+                if fallback_counter is not None:
+                    fallback_counter[0] += 1
+                imp = provenance.imputed_values.copy()
+            draws.append(imp)
+        return draws
     for rng in child_rngs:
         if config.stability_mode == "bootstrap":
-            imp = _bootstrap_refit_draw(provenance, config, rng)
+            imp = _bootstrap_refit_draw(provenance, config, rng, fallback_counter)
             if config.scope == "seasonal_stratified":
                 quarters = np.floor((t_valid % 1.0) * 4.0).astype(np.intp) % 4
                 for q in range(4):
@@ -919,7 +1019,7 @@ def generate_stability_draws(
                         n_stability_draws=0,
                         stability_mode=provenance.stability_mode,
                     )
-                    imp[mask] = _bootstrap_refit_draw(sub_prov, config, rng)
+                    imp[mask] = _bootstrap_refit_draw(sub_prov, config, rng, fallback_counter)
             draws.append(imp)
         else:
             cfg_draw = CensoredConfig(
@@ -1036,6 +1136,58 @@ def _impute_causal_history_and_monitoring(
     return imp_out, attrs
 
 
+def _resolve_trend_dist(
+    vals: FloatArray, codes: IntArray, left: FloatArray | None, right: FloatArray | None, dist: str
+) -> str:
+    if dist in ("normal", "lognormal"):
+        return dist
+    if dist == "weibull":
+        raise ValueError("Weibull is not supported by the trend imputation model.")
+    pos = bool(np.all(vals[codes == 0] > 0))
+    if codes.size and np.any(codes == -1):
+        pos = pos and bool(np.all(vals[codes == -1] > 0))
+    if left is not None:
+        fin = np.isfinite(left) & (codes == 2)
+        pos = pos and bool(np.all(left[fin] > 0))
+    return "lognormal" if pos else "normal"
+
+
+def impute_trend_model(
+    vals: FloatArray,
+    codes: IntArray,
+    left: FloatArray | None,
+    right: FloatArray | None,
+    t_valid: FloatArray,
+    harmonics: tuple[float, ...],
+    dist: str,
+    impute_type: str,
+    rng: np.random.Generator,
+    *,
+    draw_params: bool = False,
+) -> tuple[FloatArray, dict[str, Any]]:
+    """Impute censored values conditionally on time via censored-regression MLE."""
+    from ._cenreg import fit_censored_regression, impute_censored_regression, trend_design
+
+    d = _resolve_trend_dist(vals, codes, left, right, dist)
+    X = trend_design(t_valid, harmonics)
+    fit = fit_censored_regression(vals, codes, X, left=left, right=right, dist=d)
+    if not fit.converged:
+        raise ValueError("Censored-regression MLE did not converge.")
+    imp = impute_censored_regression(
+        fit, vals, codes, X, rng, left=left, right=right, mode=impute_type, draw_params=draw_params
+    )
+    attrs = {
+        "method": "censored_regression",
+        "imputation_model": "trend",
+        "dist": d,
+        "impute_type": impute_type,
+        "trend_harmonics": tuple(float(f) for f in harmonics),
+        "trend_coef": fit.beta.tolist(),
+        "trend_sigma": float(np.exp(fit.log_sigma)),
+    }
+    return imp, attrs
+
+
 def prepare_series_with_censoring(
     t: TimeLike,
     y: ValueLike,
@@ -1096,9 +1248,38 @@ def prepare_series_with_censoring(
 
     warnings_list: list[WarningItem] = []
 
+    rate_ratio = estimate_sampling_rate_ratio(t_valid)
+    pre_series = TimeSeriesInput(
+        times_numeric=t_valid,
+        times_raw=t_raw_valid,
+        is_datetime=is_dt,
+        values=vals_valid,
+        valid_mask=valid_mask,
+        valid_to_orig=valid_to_orig,
+        n_input=n_input,
+        n_valid=n_valid,
+        n_dropped_nan=n_input - n_valid,
+        sampling_rate_ratio=rate_ratio,
+    )
+    hist_idx, start_idx = 0, n_valid
+    if causal_split_fn is not None:
+        hist_idx, start_idx = causal_split_fn(pre_series)
+
+    # Guardrails are evaluated on the data the imputation model is fitted to. For causal
+    # (monitoring) use that is the historical period only, so the decision never depends
+    # on observations after the monitoring start.
+    g_cen = is_cen[hist_idx:start_idx] if causal_split_fn is not None else is_cen
+    g_vals = vals_valid[hist_idx:start_idx] if causal_split_fn is not None else vals_valid
+    n_cen_g = int(np.sum(g_cen))
+    n_obs_g = int(g_cen.size) - n_cen_g
+    cen_frac_g = n_cen_g / max(1, int(g_cen.size))
+    scope_txt = " in the historical period" if causal_split_fn is not None else ""
+
     # Tiered guardrails BEFORE calling ndimpute
     if n_cen > 0:
-        n_distinct_det = int(np.unique(vals_valid[~is_cen]).size) if n_obs > 0 else 0
+        n_obs, cen_frac = n_obs_g, cen_frac_g
+        n_cen_report = n_cen_g
+        n_distinct_det = int(np.unique(g_vals[~g_cen]).size) if n_obs > 0 else 0
         if n_obs < 2 or n_distinct_det < 2:
             raise CensoringError(
                 f"Too few uncensored observations to fit imputation model "
@@ -1106,7 +1287,7 @@ def prepare_series_with_censoring(
             )
         if cen_frac > cfg.max_censor_fraction and not cfg.allow_heavy_censoring:
             raise CensoringError(
-                f"{cen_frac:.1%} of observations are censored (exceeds max_censor_fraction="
+                f"{cen_frac:.1%} of observations{scope_txt} are censored (exceeds max_censor_fraction="
                 f"{cfg.max_censor_fraction:.0%}). Refusing to fit change-point model on mostly "
                 "imputed data; pass `CensoredConfig(allow_heavy_censoring=True)` to override."
             )
@@ -1121,7 +1302,7 @@ def prepare_series_with_censoring(
                     code="HEAVY_CENSORING",
                     severity="warning",
                     message=(
-                        f"{cen_frac:.1%} of observations ({n_cen}/{n_valid}) are censored (>50%). "
+                        f"{cen_frac:.1%} of observations{scope_txt} ({n_cen_report}/{g_cen.size}) are censored (>50%). "
                         "Change-point estimates depend strongly on distributional assumptions."
                     ),
                     suggestion=(
@@ -1136,7 +1317,7 @@ def prepare_series_with_censoring(
                     code="MODERATE_CENSORING",
                     severity="caution",
                     message=(
-                        f"{cen_frac:.1%} of observations ({n_cen}/{n_valid}) are censored "
+                        f"{cen_frac:.1%} of observations{scope_txt} ({n_cen_report}/{g_cen.size}) are censored "
                         f"(>{cfg.warn_censor_fraction:.0%})."
                     ),
                     suggestion=(
@@ -1206,29 +1387,18 @@ def prepare_series_with_censoring(
                     )
                 )
 
+    # Provenance reports the whole series
+    n_obs = n_valid - n_cen
+    cen_frac = n_cen / n_valid
+
     rng = (
         cfg.random_state
         if isinstance(cfg.random_state, np.random.Generator)
         else np.random.default_rng(cfg.random_state)
     )
 
-    rate_ratio = estimate_sampling_rate_ratio(t_valid)
-    pre_series = TimeSeriesInput(
-        times_numeric=t_valid,
-        times_raw=t_raw_valid,
-        is_datetime=is_dt,
-        values=vals_valid,
-        valid_mask=valid_mask,
-        valid_to_orig=valid_to_orig,
-        n_input=n_input,
-        n_valid=n_valid,
-        n_dropped_nan=n_input - n_valid,
-        sampling_rate_ratio=rate_ratio,
-    )
-
     fallback_count = 0
     if causal_split_fn is not None and n_cen > 0:
-        hist_idx, start_idx = causal_split_fn(pre_series)
         imp_values, attrs = _impute_causal_history_and_monitoring(
             vals_valid,
             codes_valid,
@@ -1241,9 +1411,39 @@ def prepare_series_with_censoring(
             start_idx,
         )
     else:
-        imp_global, attrs = _call_ndimpute_single(
-            vals_valid, codes_valid, left_valid, right_valid, ctype, cfg, rng
+        use_trend = (
+            cfg.imputation_model == "trend"
+            and cfg.scope == "global"
+            and cfg.method != "substitution"
+            and n_cen > 0
         )
+        imp_global = None
+        if use_trend:
+            harm = cfg.trend_harmonics if cfg.trend_harmonics is not None else ((1.0, 2.0) if is_dt else ())
+            try:
+                imp_global, attrs = impute_trend_model(
+                    vals_valid, codes_valid, left_valid, right_valid, t_valid, tuple(harm),
+                    cfg.dist, cfg.impute_type, rng,
+                )
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                warnings_list.append(
+                    WarningItem(
+                        code="TREND_IMPUTATION_FALLBACK",
+                        severity="warning",
+                        message=(
+                            f"Time-conditional censored-regression imputation failed ({exc}); fell back "
+                            "to ndimpute's time-invariant marginal model, which biases trends toward zero."
+                        ),
+                    )
+                )
+                imp_global = None
+        if imp_global is None:
+            imp_global, attrs = _call_ndimpute_single(
+                vals_valid, codes_valid, left_valid, right_valid, ctype, cfg, rng
+            )
+            if n_cen > 0 and cfg.method != "substitution" and cfg.scope == "global":
+                attrs = dict(attrs)
+                attrs["imputation_model"] = "marginal"
         if cfg.scope == "seasonal_stratified" and n_cen > 0:
             imp_values, fallback_count = _impute_seasonal_stratified(
                 t_valid,

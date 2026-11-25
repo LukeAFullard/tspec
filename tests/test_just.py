@@ -66,9 +66,57 @@ def test_just_duration_window_mode_and_variable_rate_hint(rng: np.random.Generat
 def test_just_scale_mismatch_warning_on_large_units(rng: np.random.Generator) -> None:
     t = np.linspace(0.0, 6.0, 120)
     y = 500.0 + 20.0 * t + rng.normal(0.0, 5.0, size=t.size)
-    res = just_jumps(t, y, season="none")
+    # Threshold-only (uncalibrated) selection with NDVI-scale mag_th on large units
+    res = just_jumps(t, y, season="none", jump_alpha=None, mag_th=0.05)
     codes = {w.code for w in res.diagnostics.warnings}
     assert "THRESHOLD_SCALE_MISMATCH" in codes
+    assert "UNCALIBRATED_JUMP_SELECTION" in codes
+
+
+def test_just_default_calibrated_selection_controls_false_positives() -> None:
+    """Audit BLK-01: default just_jumps must bound P(any false jump) near jump_alpha."""
+    hits = 0
+    R = 120
+    for r in range(R):
+        rng = np.random.default_rng(10_000 + r)
+        t = np.sort(rng.uniform(2000.0, 2006.25, 150))
+        y = 0.5 + 0.1 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.02, t.size)
+        res = just_jumps(t, y, season="ols", n_mc=199)
+        hits += len(res.jumps) > 0
+    # nominal 5%; 120 reps -> MCSE ~2%; old behaviour was ~98%
+    assert hits / R <= 0.11
+    assert res.jump_calibration == "montecarlo"
+
+
+def test_mc_maxf_pvalue_matches_bruteforce_null() -> None:
+    """The Monte Carlo max-over-splits p-value equals a brute-force refit estimate."""
+    from scipy import stats
+
+    from tspec._linalg import prepare_weights
+    from tspec.just import _mc_maxf_pvalue
+
+    rng = np.random.default_rng(0)
+    n = 60
+    t0 = np.sort(rng.uniform(0, 3, n))
+    t0 -= t0[0]
+    u = t0 / t0[-1]
+    pw = prepare_weights(None, n)
+
+    def max_f(y: np.ndarray) -> float:
+        x0 = np.column_stack([np.ones(n), u])
+        r0 = np.linalg.lstsq(x0, y, rcond=None)[1][0]
+        best = 0.0
+        for j in range(3, n - 2):
+            d = (np.arange(n) >= j).astype(float)
+            r1 = np.linalg.lstsq(np.column_stack([x0, d, d * u]), y, rcond=None)[1][0]
+            best = max(best, ((r0 - r1) / 2) / (r1 / (n - 4)))
+        return best
+
+    null = np.array([max_f(rng.normal(size=n)) for _ in range(300)])
+    f_obs = float(np.quantile(null, 0.9))
+    p = _mc_maxf_pvalue(t0, pw, np.empty(0), f_obs, 3, n - 2, 2999, 1)
+    assert abs(p - 0.10) < 0.05
+    assert p > 5 * stats.f.sf(f_obs, 2, n - 4)  # naive fixed-split p is far smaller
 
 
 def test_just_nan_remapping_to_original_axis(rng: np.random.Generator) -> None:
