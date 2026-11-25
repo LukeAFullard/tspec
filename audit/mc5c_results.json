@@ -1,0 +1,44 @@
+{
+ "drop=1.0sigma": {
+  "pocock": {
+   "power": 0.045,
+   "median_delay_steps": 21.0
+  },
+  "consecutive_k2": {
+   "power": 0.3,
+   "median_delay_steps": 24.5
+  },
+  "obrien_fleming": {
+   "power": 0.035,
+   "median_delay_steps": 25.0
+  }
+ },
+ "drop=2.0sigma": {
+  "pocock": {
+   "power": 0.505,
+   "median_delay_steps": 17.0
+  },
+  "consecutive_k2": {
+   "power": 0.85,
+   "median_delay_steps": 12.0
+  },
+  "obrien_fleming": {
+   "power": 0.51,
+   "median_delay_steps": 23.0
+  }
+ },
+ "drop=4.0sigma": {
+  "pocock": {
+   "power": 1.0,
+   "median_delay_steps": 8.0
+  },
+  "consecutive_k2": {
+   "power": 1.0,
+   "median_delay_steps": 5.0
+  },
+  "obrien_fleming": {
+   "power": 1.0,
+   "median_delay_steps": 12.5
+  }
+ }
+}
