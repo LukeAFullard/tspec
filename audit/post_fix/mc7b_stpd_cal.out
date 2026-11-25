@@ -1,0 +1,1 @@
+{"R": 200, "correct_structure_rate": 0.965, "spurious_jump_rate": 0.005, "segment_slope_CI95_cov|correct": 0.9015544041450777, "n_slopes": 386, "trend_band_cov|correct": 0.8322358952216465, "trend_band_cov_all": 0.8268402777777779}

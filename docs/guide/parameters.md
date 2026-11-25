@@ -32,7 +32,8 @@ A plain-English translation of every key parameter in `tspec`, its default value
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | `ndri_th` | Maximum residual imbalance allowed ("jump alarm bell"). | `0.30` | Accepts slightly jump-like bends. | Rejects anything even mildly asymmetric as a jump. | `0.25–0.35` is well calibrated (Ghaderpour et al., 2024). |
 | `ndri_mode` | How NDRI compares left vs. right residuals. | `"rmse"` (`"l2"` in parity) | — | — | Keep `"rmse"` for uneven sampling; use `parity_mode=True` for Ghaderpour (2024) exact parity. |
-| `snr_th` / `snr_mode` | Minimum signal-to-noise ratio for a turning point. | `1.0` / `"centered"` | Requires stronger trend relative to scatter. | Allows subtler bends in noisy records. | Keep `"centered"` for data with non-zero baselines (pH, temperature, elevation). |
+| `tp_calibration` | How `stpd()` corrects turning-point p-values for searching every knot in a window (`"montecarlo"`, `"bonferroni"`, `"none"`). | `"montecarlo"` (`"bonferroni"` for robust fits, `"none"` in parity) | — | — | Keep the default; `"none"` gives raw screening p-values with no false-positive control. |
+| `snr_th` / `snr_mode` | Optional minimum signal-to-noise ratio for a turning point. | `None` → `0` (no gate; `1.0` in parity) / `"centered"` | Requires stronger trend relative to scatter, whatever the sample size. | Allows subtler bends in noisy records. | Leave the gate off: the calibrated test already controls false detections, and `snr_th=1.0` cut detection from 82% to 26% in simulation. Keep `"centered"` for data with non-zero baselines. |
 | `margin` | Points ignored near each window edge so slopes aren't fit to 1–2 points. | `max(2, min(M, size // 5))` | More stable slopes; cannot detect bends near record edges. | Detects bends closer to window edges, noisier slopes. | Always $\ge 2$ (`tspec` enforces this automatically). |
 
 ## Censored Data (`CensoredConfig`)

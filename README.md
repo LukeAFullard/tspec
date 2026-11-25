@@ -156,12 +156,13 @@ pip install --no-deps tspec
 - **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall and the O(n) TPTR variance match `statsmodels`, `astropy`, `scipy` and `pymannkendall` (or brute force) to about 1e-14.
 - **Calibration of the default procedures** (Monte Carlo, ≥ 300–1000 replicates):
   - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 3–5% (raw screening p-values: 70–100%).
+  - `stpd()` false turning-point probability at `alpha=0.01`: 0.2–0.6% (raw screening p-values: up to 2.2%), while detection of a single turning point rises (e.g. 0% → 52% at n=150, σ=1; 32% → 82% at n=500, σ=0.6).
   - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–0.5% with Monte Carlo significance (published per-frequency rule: 18–25%).
   - `just_decompose()` trend-band coverage: ~95% for linear, jump and smoothly curved trends.
   - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
   - Mann–Kendall Type-I error under AR(1) ρ = 0.5: ≈ 5–7% with the default `mk_correction="ar1"` (uncorrected: ~25%).
   - `just_monitor()` prediction-interval coverage: ~95%.
-- **Known limitations:** bands from `stpd`/`analyze_series` are conditional on the detected structure and under-cover (about 83–92%); STPD's SNR gate can miss turning points regardless of sample size; detection p-values on censored data condition on one imputation; `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Known limitations:** bands from `stpd`/`analyze_series` are conditional on the detected structure and under-cover (about 83–92%); detection p-values on censored data condition on one imputation; `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
 - **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
 - **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
 

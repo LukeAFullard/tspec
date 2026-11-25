@@ -4,11 +4,11 @@ This document records the changes made in response to `audit/AUDIT_REPORT.md` (a
 
 **Scope:** the four Blockers plus the quick, high-confidence items.
 - CRT-01 is disclosed but not fixed.
-- CRT-05 was fixed in a follow-up (see below); CRT-04 is not fixed (see *Not fixed* below).
+- CRT-05 was fixed in a follow-up (see below). CRT-04 is partly fixed: STPD detection is now calibrated, but trend bands remain conditional on the detected structure (see *Not fixed* below).
 
 **Policy:** defaults are now statistically calibrated. `parity_mode=True` still reproduces the upstream (Ghaderpour) behaviour, so existing parity results are unchanged.
 
-Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jumps.py`, `audit/post_mc5_monitor.py`, `audit/post_mk_variants.py`, plus the original audit scripts re-run unchanged.
+Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jumps.py`, `audit/post_mc5_monitor.py`, `audit/post_mk_variants.py`, `audit/post_mc7_stpd.py`, `audit/post_stpd_robust.py`, plus the original audit scripts re-run unchanged.
 
 ## Summary
 
@@ -28,6 +28,7 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 | MAJ-04 years-only defaults | **Fixed (guarded)** | silent empty grid; cryptic crash | `TIME_UNIT_ASSUMPTION` / `DEGENERATE_DEFAULT_GRID` warnings; explicit error message |
 | MAJ-05 overstated validation claims | **Fixed (docs)** | 26/26 gates, ALLSSA 7.5% | README/validation summary rewritten with audited numbers and limitations |
 | CRT-05 seasonal/forecast bands under ALLSSA selection | **Fixed (follow-up)** | seasonal coverage 91.3% / 89.8%; monitor mean CI 92.9% | **94.6% / 93.5%**; monitor mean CI **94.9%**; jump FP unchanged (5%), power up (2σ: 55.5% → 61%), 4σ magnitude RMSE 0.029 → 0.019 (`audit/post_season_sig.py`, `audit/post_monitor_season.py`, `audit/post_sidak_null.py`) |
+| CRT-04 STPD detection (SNR gate, uncalibrated knot search) | **Partly fixed (follow-up)** | null false-TP rate up to 2.2% at α = 0.01; detection 0% (n = 150, σ = 1), 32% (n = 500, σ = 0.6), 0% (n = 500, σ = 1.5) | `tp_calibration="montecarlo"`, SNR gate off by default: null **0.2–0.6%**; detection **52% / 82% / 6.4%**; curve coverage given detection 85–96%; robust (Bonferroni) null 0–0.2%; MC7b correct structure 93% → **96.5%** (`audit/post_mc7_stpd.py`, R = 1000; `audit/post_stpd_robust.py`, R = 500). Bands still conditional (see below) |
 | MIN-01 Sen CI rank | **Fixed** | upper limit one rank low | matches `scipy.stats.theilslopes` exactly |
 | MIN-02 datetime overflow / numeric strings | **Fixed** | `"1"` → year 1754; silent wrap | numeric strings parsed as numbers; out-of-range dates rejected |
 | MIN-04 conditioning warning | **Fixed** | threshold 1e10 | caution at cond > 1e6 with explanation |
@@ -97,7 +98,7 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 
 ## Verification
 
-- `pytest`: **131 passed** (tests/), including new `tests/test_calibration_fixes.py` plus new tests in `test_just.py` and `test_monitor.py`. `audit/test_hypothesis_audit.py`: 6/6.
+- `pytest`: **138 passed** (tests/), including new `tests/test_calibration_fixes.py` plus new tests in `test_just.py` and `test_monitor.py`. `audit/test_hypothesis_audit.py`: 6/6.
 - `ruff check .`: clean. `mypy src/`: no issues in 16 source files (target now Python 3.12 for numpy ≥ 2.3 stubs; runtime support unchanged).
 - Monte Carlo re-runs, with the same designs and seeds as the audit:
 
@@ -108,14 +109,14 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
   | MC4 (R = 500) | trend coverage 94.9–95.9% for linear, curved and jump truths |
   | Curvature sweep | 94.0–95.8% for every curvature |
   | MC5 (`post_mc5_monitor.py`, R = 500) | FWER 0.2% (no horizon), 0.4–0.6% (horizon = D); PI coverage 94.8–94.9% |
-  | MC7b (R = 200) | correct structure 93% (was 90%), spurious jump 0.5% (was 3.5%) |
+  | MC7b (R = 200) | correct structure 93% (was 90%), spurious jump 0.5% (was 3.5%); 96.5% after the STPD calibration |
   | MC10 (R = 300) | above table |
   | MK variants (`post_mk_variants.py`, R = 1000) | above table |
 
 ## Not fixed (remaining limitations)
 
 - **CRT-01:** `consecutive_k` still does not bound the family-wise rate. It is now documented as such, and the warnings no longer recommend it for error control.
-- **CRT-04:** STPD / `analyze_series` trend bands remain conditional on the detected structure. Coverage is 83.5% even with the correct structure (MC7b). STPD's SNR > 1 gate can still miss turning points regardless of n. The docs now quantify this. A full fix needs a bootstrap of the detect-then-fit procedure.
+- **CRT-04 (bands):** STPD / `analyze_series` trend bands remain conditional on the detected structure: about 83% coverage in MC7b even with the correct structure. The docs quantify this. A full fix needs a bootstrap of the detect-then-fit procedure. The detection half of CRT-04 (SNR gate, uncalibrated knot search) is fixed. STPD power still depends on the information within one window, not on the record length.
 - **Censored data beyond segment slopes:** JUST/STPD detection p-values on censored data condition on a single (now time-conditional) imputation. The windowed and seasonal-stratified scopes still use the marginal model.
 - **MIN-03 (partial):** IRLS non-convergence inside JUST/STPD sliding windows is still not reported per window. Convergence failures were ≤ 0.2% in the audit's simulations.
-- **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers and CRT-02/03/05 fixed and CRT-01/CRT-04 still open, the cap rule would limit the score to 80%.
+- **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers and CRT-02/03/05 fixed, CRT-04 partly fixed and CRT-01 still open, the cap rule would limit the score to 80%.

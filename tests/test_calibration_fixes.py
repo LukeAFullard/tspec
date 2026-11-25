@@ -212,3 +212,63 @@ def test_ats_unavailable_warning_for_interval_censoring() -> None:
         censoring=CensoredConfig(method="parametric", censoring_type="interval"),
     )
     assert "ATS_UNAVAILABLE" in {w.code for w in res.diagnostics.warnings}
+
+
+# ---------------------------------------------------------------------------
+# CRT-04: STPD turning-point p-values calibrated for the knot search
+# ---------------------------------------------------------------------------
+
+
+def _tp_series(seed: int, n: int, sigma: float, bend: bool) -> tuple[np.ndarray, np.ndarray, float]:
+    rng = np.random.default_rng(seed)
+    span = n / 24.0
+    ttp = 2000 + span / 2
+    t = np.sort(rng.uniform(2000, 2000 + span, n))
+    trend = 3 + 0.5 * (t - 2000) - (1.0 * np.maximum(0, t - ttp) if bend else 0.3 * (t - 2000))
+    return t, trend + rng.normal(0, sigma, n), ttp
+
+
+def test_stpd_calibrated_defaults_and_parity() -> None:
+    t, y, _ = _tp_series(0, 150, 0.3, bend=False)
+    res = tspec.stpd(t, y)
+    assert res.tp_calibration == "montecarlo"
+    assert res.snr_th == 0.0
+    par = tspec.stpd(t, y, parity_mode=True)
+    assert par.tp_calibration == "none"
+    assert par.snr_th == 1.0
+    rob = tspec.stpd(t, y, robust="huber")
+    assert rob.tp_calibration == "bonferroni"
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, tp_calibration="bogus")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, n_mc=10)
+
+
+def test_stpd_mc_pvalue_exceeds_raw_screening_pvalue() -> None:
+    from tspec.stpd import _stpd_mc_pvalue, _tpd_window
+
+    t, y, ttp = _tp_series(1, 120, 0.6, bend=True)
+    raw = _tpd_window(t, y, 5).pval
+    cal = _stpd_mc_pvalue(t, y, 5, np.ones_like(t), 499, 0)
+    assert cal >= raw
+    t0, y0, _ = _tp_series(2, 120, 0.6, bend=False)
+    assert _stpd_mc_pvalue(t0, y0, 5, np.ones_like(t0), 499, 0) >= _tpd_window(t0, y0, 5).pval
+
+
+def test_stpd_calibrated_null_rate_and_power() -> None:
+    fp = 0
+    for seed in range(40):
+        t, y, _ = _tp_series(100 + seed, 150, 0.3, bend=False)
+        fp += len(tspec.stpd(t, y).turning_points) > 0
+    assert fp <= 2  # nominal 1% family-wise; Monte Carlo design gave 0.6%
+    # The previous SNR > 1 gate missed this clear turning point; the calibrated test finds it.
+    hits = legacy = 0
+    for seed in range(10):
+        t, y, ttp = _tp_series(200 + seed, 500, 0.6, bend=True)
+        hits += any(abs(float(x) - ttp) < 0.5 for x in tspec.stpd(t, y).tp_times)
+        legacy += any(
+            abs(float(x) - ttp) < 0.5
+            for x in tspec.stpd(t, y, tp_calibration="none", snr_th=1.0).tp_times
+        )
+    assert hits >= 6
+    assert hits > legacy

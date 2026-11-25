@@ -10,7 +10,7 @@ Clean-room implementation grounded in:
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -53,6 +53,8 @@ from .results import (
 )
 
 SnrMode = Literal["raw", "centered"]
+# Default SNR gate outside parity mode (the published STPD gate is 1.0)
+SNR_TH_DEFAULT = 0.0
 NdriMode = Literal["l2", "rmse"]
 RefitMode = Literal["sequential", "joint", "l1", "huber"]
 
@@ -72,8 +74,10 @@ class TurningPointEvent:
         (``analyze_series`` segment slopes from separate per-segment fits can differ
         slightly).
     pvalue : float
-        Window screening p-value for the slope change (computed at the selected
-        knot; optimistic).
+        p-value of the slope change. With ``tp_calibration='montecarlo'`` (default) or
+        ``'bonferroni'`` it accounts for the knot search within the window and is
+        Holm-adjusted across candidate locations; with ``'none'`` (parity mode) it is
+        the raw fixed-knot screening p-value at the selected knot (optimistic).
     snr_raw, snr_centered, ndri_l2, ndri_rmse : float
         Local SNR and NDRI over the adjacent segments.
     fb_diff : int
@@ -246,11 +250,14 @@ class StpdResult(BaseResult):
     window_mode, snr_mode, ndri_mode : str
         Settings used.
     alpha, snr_th, ndri_th, dir_th, tp_th : float
-        Thresholds used.
+        Thresholds used (``snr_th`` is the resolved value).
     censoring : CensoringProvenance or None
         Censored-data provenance.
     diagnostics : DiagnosticReport
         Warnings and red-noise diagnostics.
+    tp_calibration : str
+        How turning-point p-values were calibrated for the knot search:
+        ``'montecarlo'``, ``'bonferroni'`` or ``'none'``.
     """
 
     turning_points: tuple[TurningPointEvent, ...]
@@ -270,6 +277,7 @@ class StpdResult(BaseResult):
     tp_th: float
     censoring: CensoringProvenance | None
     diagnostics: DiagnosticReport
+    tp_calibration: str = "none"
 
     @property
     def tp_indices(self) -> IntArray:
@@ -325,13 +333,18 @@ class StpdResult(BaseResult):
                 f"Detected {len(self.turning_points)} continuous turning point(s) "
                 "where the rate of change shifted smoothly without a sudden vertical jump:"
             )
+            p_lbl = (
+                "family-wise calibrated t-test"
+                if self.tp_calibration in ("montecarlo", "bonferroni")
+                else "uncalibrated screening t-test"
+            )
             for k, tp in enumerate(self.turning_points, start=1):
                 t_str = format_timestamp(tp.time, self.is_datetime)
                 ndri_disp = tp.ndri_rmse if self.ndri_mode == "rmse" else tp.ndri_l2
                 desc = (
                     f"  {k}. Around {t_str} (index {tp.index}): slope changed from "
                     f"{tp.slope_before:+.4g} to {tp.slope_after:+.4g} per unit time "
-                    f"(change {tp.direction:+.4g}, screening t-test p={tp.pvalue:.2e}, "
+                    f"(change {tp.direction:+.4g}, {p_lbl} p={tp.pvalue:.2e}, "
                     f"NDRI={ndri_disp:.2f} — low NDRI is consistent with a smooth bend)."
                 )
                 if tp.stability_rate is not None:
@@ -595,6 +608,167 @@ def _fit_two_piece_sequential_scan(
     best_a2 = float((a2[best_pos] + a_g) / span)
     best_norm = float(np.sqrt(total_rss[best_pos]))
     return best_ind, best_b1, best_a1, best_a2, best_norm
+
+
+
+def _seq_scan_batch(
+    t: FloatArray,
+    Y: FloatArray,
+    margin: int,
+    w: FloatArray | None,
+) -> tuple[IntArray, FloatArray, FloatArray]:
+    """Batched sequential two-step scan over the columns of ``Y`` (n x B).
+
+    Same estimator as :func:`_fit_two_piece_sequential_scan`, vectorized over many
+    response vectors. Returns ``(best_ind, slope_diff, total_rss)`` per column, where
+    ``slope_diff = a1 - a2`` in units of ``y`` per unit of ``t``.
+    """
+    n = int(t.size)
+    lo = max(2, margin)
+    hi = min(n - 2, n - margin)
+    span = float(t[-1] - t[0])
+    u = (t - t[0]) / span
+    W = np.ones(n, dtype=np.float64) if w is None else np.asarray(w, dtype=np.float64)
+    sw = float(np.sum(W))
+    um = float(W @ u) / sw
+    ym = (W @ Y) / sw
+    du = u - um
+    suu = float(np.sum(W * du * du))
+    ag = ((W * du) @ (Y - ym[None, :])) / suu
+    bg = ym - ag * um
+    Yc = Y - (bg[None, :] + ag[None, :] * u[:, None])
+    idx = np.arange(lo, hi)
+    s_w = np.cumsum(W)
+    s_t = np.cumsum(W * u)
+    s_tt = np.cumsum(W * u * u)
+    s_y = np.cumsum(W[:, None] * Yc, axis=0)
+    s_ty = np.cumsum((W * u)[:, None] * Yc, axis=0)
+    s_yy = np.cumsum(W[:, None] * Yc * Yc, axis=0)
+    w1 = s_w[idx]
+    t1m = s_t[idx] / w1
+    stt = s_tt[idx] - w1 * t1m * t1m
+    y1m = s_y[idx] / w1[:, None]
+    sty = s_ty[idx] - (w1 * t1m)[:, None] * y1m
+    syy1 = s_yy[idx] - w1[:, None] * y1m * y1m
+    ok1 = stt > 1e-24 * w1
+    stt_safe = np.where(ok1, stt, 1.0)
+    a1 = sty / stt_safe[:, None]
+    b1c = y1m - a1 * t1m[:, None]
+    rss1 = np.maximum(0.0, syy1 - a1 * sty)
+    tau = u[idx]
+    hc = b1c + a1 * tau[:, None]
+    prev = idx - 1
+    w2 = s_w[-1] - s_w[prev]
+    t2 = s_t[-1] - s_t[prev]
+    tt2 = s_tt[-1] - s_tt[prev]
+    y2 = s_y[-1][None, :] - s_y[prev]
+    ty2 = s_ty[-1][None, :] - s_ty[prev]
+    yy2 = s_yy[-1][None, :] - s_yy[prev]
+    dd2 = tt2 - 2.0 * tau * t2 + w2 * tau * tau
+    ok2 = ok1 & (dd2 > 1e-24 * w2)
+    dd2_safe = np.where(ok2, dd2, 1.0)
+    dy2 = ty2 - tau[:, None] * y2 - hc * t2[:, None] + (w2 * tau)[:, None] * hc
+    yy2c = yy2 - 2.0 * hc * y2 + w2[:, None] * hc * hc
+    a2 = dy2 / dd2_safe[:, None]
+    rss2 = np.maximum(0.0, yy2c - a2 * dy2)
+    r_h = W[idx][:, None] * (Yc[idx] - hc) ** 2
+    tot = np.where(ok2[:, None], np.maximum(0.0, rss1 + rss2 - r_h), np.inf)
+    best = np.argmin(tot, axis=0)
+    cols = np.arange(Y.shape[1])
+    diff = (a1[best, cols] - a2[best, cols]) / span
+    return idx[best], diff, tot[best, cols]
+
+
+def _seq_var_factors(t: FloatArray, margin: int, w: FloatArray | None) -> FloatArray:
+    """``Var(a1 - a2) / sigma^2`` of the sequential estimator for every scanned knot."""
+    n = int(t.size)
+    lo = max(2, margin)
+    hi = min(n - 2, n - margin)
+    W = np.ones(n, dtype=np.float64) if w is None else np.asarray(w, dtype=np.float64)
+    out = np.full(n, np.nan, dtype=np.float64)
+    for ind in range(lo, hi):
+        t1 = t[: ind + 1]
+        w1 = W[: ind + 1]
+        w2 = W[ind:]
+        d2 = t[ind:] - t[ind]
+        w1_sum = float(np.sum(w1))
+        t1_bar = float(np.sum(w1 * t1) / w1_sum)
+        stt1 = float(np.sum(w1 * (t1 - t1_bar) ** 2))
+        sd2 = float(np.sum(w2 * d2 * d2))
+        md2 = float(np.sum(w2 * d2))
+        if stt1 <= 0.0 or sd2 <= 0.0:
+            continue
+        c1 = w1 * (t1 - t1_bar) / stt1
+        h_w = (w1 / w1_sum) + (t[ind] - t1_bar) * c1
+        v_left = c1 + (md2 / sd2) * h_w
+        v_right = -(w2[1:] * d2[1:]) / sd2
+        out[ind] = float(np.sum(v_left * v_left / w1) + np.sum(v_right * v_right / w2[1:]))
+    return out
+
+
+def _stpd_window_tstats(
+    t: FloatArray,
+    Y: FloatArray,
+    margin: int,
+    w: FloatArray | None,
+    vf_f: FloatArray,
+    vf_b: FloatArray,
+) -> FloatArray:
+    """Window slope-change t statistic of STPD (direction chosen by smaller RSS)."""
+    n = int(t.size)
+    t_fwd = t - t[0]
+    t_rev = t_fwd[-1] - t_fwd[::-1]
+    w_rev = w[::-1] if w is not None else None
+    ind_f, diff_f, rss_f = _seq_scan_batch(t_fwd, Y, margin, w)
+    ind_b, diff_b, rss_b = _seq_scan_batch(t_rev, Y[::-1], margin, w_rev)
+    use_f = rss_f <= rss_b
+    diff = np.where(use_f, diff_f, diff_b)
+    rss = np.where(use_f, rss_f, rss_b)
+    vf = np.where(use_f, vf_f[ind_f], vf_b[ind_b])
+    se = np.sqrt(np.maximum(rss, 0.0) / (n - 3) * vf)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tstat = np.where(se > 0, np.abs(diff) / se, 0.0)
+    return np.asarray(np.nan_to_num(tstat, nan=0.0), dtype=np.float64)
+
+
+def _stpd_mc_pvalue(
+    t: FloatArray,
+    y: FloatArray,
+    margin: int,
+    w: FloatArray | None,
+    n_mc: int,
+    seed: tuple[int, ...],
+) -> float:
+    """Exact Monte Carlo p-value of the STPD window test against the max-over-knots null.
+
+    Under a single straight line with Gaussian errors (variances ``sigma^2 / w``), the
+    sequential estimator's slope-change t statistic, including the data-driven choice
+    of knot and fit direction, depends only on the errors, so simulating standard
+    errors gives its exact null distribution. Below Monte Carlo resolution the
+    Bonferroni bound over knots and directions is reported (capped at ``1/(n_mc+1)``).
+    """
+    n = int(t.size)
+    t_fwd = t - t[0]
+    t_rev = t_fwd[-1] - t_fwd[::-1]
+    w_rev = w[::-1] if w is not None else None
+    vf_f = _seq_var_factors(t_fwd, margin, w)
+    vf_b = _seq_var_factors(t_rev, margin, w_rev)
+    t_obs = float(_stpd_window_tstats(t, y[:, None], margin, w, vf_f, vf_b)[0])
+    rng = np.random.default_rng(seed)
+    scale = 1.0 / np.sqrt(w) if w is not None else np.ones(n)
+    exceed = 0
+    done = 0
+    while done < n_mc:
+        m = min(256, n_mc - done)
+        E = rng.standard_normal((n, m)) * scale[:, None]
+        exceed += int(np.sum(_stpd_window_tstats(t, E, margin, w, vf_f, vf_b) >= t_obs))
+        done += m
+    p_mc = (1.0 + exceed) / (n_mc + 1.0)
+    if exceed == 0:
+        n_knots = 2 * max(1, min(n - 2, n - margin) - max(2, margin))
+        p_bonf = float(min(1.0, n_knots * 2.0 * student_t.sf(t_obs, df=n - 3)))
+        return min(p_mc, p_bonf)
+    return float(p_mc)
 
 
 @dataclass(frozen=True)
@@ -1378,13 +1552,21 @@ def _run_stpd_windows(
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
+    tp_calibration: str = "none",
+    n_mc: int = 999,
 ) -> tuple[
     list[tuple[int, float, _WindowTpdStats, int, int]],
     list[tuple[int, _WindowTpdStats]],
     bool,
     int,
 ]:
-    """Run STPD across sliding windows, returning accepted TPs and high-NDRI jump candidates."""
+    """Run STPD across sliding windows, returning accepted TPs and high-NDRI jump candidates.
+
+    With ``tp_calibration`` ``"montecarlo"`` or ``"bonferroni"``, each candidate window's
+    slope-change p-value is corrected for the data-driven choice of knot and direction,
+    candidates are merged within ``tp_th``, and the merged p-values are Holm-adjusted so
+    ``alpha`` bounds the probability of accepting any false turning point.
+    """
     accepted_raw: list[tuple[int, float, _WindowTpdStats, int, int]] = []
     flagged_raw: list[tuple[int, _WindowTpdStats]] = []
     density_imbalanced = False
@@ -1436,10 +1618,33 @@ def _run_stpd_windows(
         )
 
         g_idx = w_start + stats.local_tp
-        if fb_ok and sig_and_strong and ndri_val < ndri_th:
-            dist_center = abs(stats.local_tp - (n_w - 1) / 2.0)
-            accepted_raw.append((g_idx, dist_center, stats, w_start, w_stop))
-        elif sig_and_strong and ndri_val >= ndri_th:
+        if tp_calibration == "none":
+            if fb_ok and sig_and_strong and ndri_val < ndri_th:
+                dist_center = abs(stats.local_tp - (n_w - 1) / 2.0)
+                accepted_raw.append((g_idx, dist_center, stats, w_start, w_stop))
+        else:
+            gates_ok = (
+                fb_ok
+                and (snr_val > snr_th)
+                and (abs(stats.direction) > dir_th)
+                and ndri_val < ndri_th
+                and not np.isnan(stats.pval)
+            )
+            if gates_ok:
+                if stats.pval >= alpha:
+                    p_cal = 1.0  # a calibrated p-value can only be larger
+                elif tp_calibration == "montecarlo" and robust == "none":
+                    p_cal = _stpd_mc_pvalue(
+                        t_w, y_w, m_eff, w_w, n_mc, (20261125, int(w_start), int(w_stop))
+                    )
+                else:
+                    n_knots = 2 * max(1, min(n_w - 2, n_w - m_eff) - max(2, m_eff))
+                    p_cal = float(min(1.0, n_knots * stats.pval))
+                dist_center = abs(stats.local_tp - (n_w - 1) / 2.0)
+                accepted_raw.append(
+                    (g_idx, dist_center, replace(stats, pval=p_cal), w_start, w_stop)
+                )
+        if sig_and_strong and ndri_val >= ndri_th:
             flagged_raw.append((g_idx, stats))
 
     # Merge nearby accepted TPs within tp_th, keeping closest to window center
@@ -1452,6 +1657,22 @@ def _run_stpd_windows(
             del accepted_raw[r]
         else:
             r += 1
+
+    if tp_calibration != "none" and accepted_raw:
+        # Holm step-down across merged candidate locations, then keep p_adj < alpha
+        raw_p = np.array([item[2].pval for item in accepted_raw], dtype=np.float64)
+        m_c = int(raw_p.size)
+        order = np.argsort(raw_p)
+        adj = np.empty(m_c, dtype=np.float64)
+        running = 0.0
+        for rank, i_c in enumerate(order):
+            running = max(running, min(1.0, (m_c - rank) * raw_p[i_c]))
+            adj[i_c] = running
+        accepted_raw = [
+            (it[0], it[1], replace(it[2], pval=float(p_a)), it[3], it[4])
+            for it, p_a in zip(accepted_raw, adj, strict=True)
+            if p_a < alpha
+        ]
 
     # Deduplicate nearby flagged jump candidates within tp_th, keeping highest NDRI
     flagged_raw.sort(key=lambda item: item[0])
@@ -1480,7 +1701,7 @@ def detect_turning_points(
     window_duration: float | None = None,
     step_duration: float | None = None,
     min_window_obs: int | None = None,
-    snr_th: float = 1.0,
+    snr_th: float | None = None,
     snr_mode: SnrMode = "centered",
     ndri_th: float = 0.3,
     ndri_mode: NdriMode = "rmse",
@@ -1497,6 +1718,8 @@ def detect_turning_points(
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
+    tp_calibration: Literal["montecarlo", "bonferroni", "none"] | None = None,
+    n_mc: int = 999,
 ) -> StpdResult:
     """Detect continuous trend turning points via STPD (Ghaderpour et al., 2024).
 
@@ -1523,17 +1746,22 @@ def detect_turning_points(
         ``window_duration/3``) and minimum observations per window (default ``10``)
         for ``window_mode='duration'``.
     snr_th, snr_mode:
-        SNR threshold (default ``1.0``; this hard gate is independent of sample
-        size, so turning points whose within-window trend range is comparable to the
-        noise level are rejected however small their p-value) and mode: ``'centered'`` (default,
-        shift-invariant for non-zero baselines) or ``'raw'`` (Ghaderpour 2024).
-        ``parity_mode=True`` forces ``'raw'``.
+        SNR threshold and mode. ``snr_th=None`` (default) resolves to ``0`` (no SNR
+        gate: the calibrated slope-change test controls false detections) or to the
+        published ``1.0`` with ``parity_mode=True``. A positive threshold is a hard
+        gate independent of sample size, so turning points whose within-window trend
+        range is comparable to the noise level are rejected however small their
+        p-value. Mode: ``'centered'`` (default, shift-invariant for non-zero
+        baselines) or ``'raw'`` (Ghaderpour 2024); ``parity_mode=True`` forces
+        ``'raw'``.
     ndri_th, ndri_mode:
         NDRI threshold (default ``0.3``) and mode: ``'rmse'`` (default,
         unbiased under uneven sampling density) or ``'l2'`` (Ghaderpour 2024).
         ``parity_mode=True`` forces ``'l2'``.
     alpha:
-        Significance level for the slope-change test (default ``0.01``).
+        Significance level for the slope-change test (default ``0.01``). With a
+        calibrated ``tp_calibration`` it bounds the probability of reporting any
+        turning point on a straight-line series (about 0.2–0.6% in simulation).
     dir_th:
         Minimum absolute slope change ``|slope2 - slope1|`` (default ``0.0``).
     tp_th:
@@ -1563,7 +1791,20 @@ def detect_turning_points(
         Optional censoring indicator array and :class:`CensoredConfig`.
     parity_mode:
         If ``True``, uses exact Ghaderpour et al. (2024) conventions
-        (``snr_mode='raw'``, ``ndri_mode='l2'``, ``robust='none'``).
+        (``snr_mode='raw'``, ``ndri_mode='l2'``, ``robust='none'``, ``snr_th=1.0``,
+        ``tp_calibration='none'``).
+    tp_calibration:
+        How the slope-change p-value accounts for searching every knot in a window:
+        ``'montecarlo'`` (default for non-robust fits) refers the maximum t statistic
+        over knots and scan directions to its exact Monte Carlo null under a straight
+        line with Gaussian errors; ``'bonferroni'`` (default for robust fits)
+        multiplies the raw p-value by the number of candidate knots; ``'none'``
+        (forced by ``parity_mode``) uses raw screening p-values. Calibrated p-values
+        are Holm-adjusted across candidate locations.
+    n_mc:
+        Monte Carlo replicates per window for ``tp_calibration='montecarlo'``
+        (default ``999``). Candidates whose raw p-value already exceeds ``alpha`` are
+        not simulated.
     """
     if window_mode not in ("count", "duration"):
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
@@ -1582,8 +1823,15 @@ def detect_turning_points(
             f"Unknown `refit_mode` {eff_refit_mode!r}. "
             "Options: 'sequential', 'joint', 'l1', 'huber'."
         )
-    if snr_th <= 0.0:
-        raise ValueError("`snr_th` must be strictly positive.")
+    eff_snr_th = (1.0 if parity_mode else SNR_TH_DEFAULT) if snr_th is None else float(snr_th)
+    if eff_snr_th < 0.0:
+        raise ValueError("`snr_th` must be non-negative.")
+    if tp_calibration is not None and tp_calibration not in ("montecarlo", "bonferroni", "none"):
+        raise ValueError(
+            f"Unknown `tp_calibration` {tp_calibration!r}. Options: 'montecarlo', 'bonferroni', 'none'."
+        )
+    if int(n_mc) < 99:
+        raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     if not (0.0 <= ndri_th <= 1.0):
         raise ValueError("`ndri_th` must lie in [0, 1].")
     if not (0.0 < alpha < 1.0):
@@ -1598,6 +1846,12 @@ def detect_turning_points(
         raise ValueError("`max_fb_diff` must be non-negative.")
 
     eff_snr_mode: SnrMode = "raw" if parity_mode else snr_mode
+    if parity_mode:
+        eff_tp_cal = "none"
+    elif tp_calibration is not None:
+        eff_tp_cal = tp_calibration
+    else:
+        eff_tp_cal = "bonferroni" if eff_robust != "none" else "montecarlo"
     eff_ndri_mode: NdriMode = "l2" if parity_mode else ndri_mode
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
@@ -1724,7 +1978,7 @@ def detect_turning_points(
         w_valid,
         windows,
         eff_margin,
-        snr_th,
+        eff_snr_th,
         eff_snr_mode,
         ndri_th,
         eff_ndri_mode,
@@ -1739,6 +1993,8 @@ def detect_turning_points(
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
+        tp_calibration=eff_tp_cal,
+        n_mc=int(n_mc),
     )
 
     if eff_ndri_mode == "l2" and density_imbalanced:
@@ -1811,7 +2067,7 @@ def detect_turning_points(
                 w_valid,
                 windows,
                 eff_margin,
-                snr_th,
+                eff_snr_th,
                 eff_snr_mode,
                 ndri_th,
                 eff_ndri_mode,
@@ -1826,6 +2082,8 @@ def detect_turning_points(
                 provenance=prov if cfg.scope == "windowed" else None,
                 censor_cfg=cfg_draw,
                 rng=draw_rng,
+                tp_calibration=eff_tp_cal,
+                n_mc=int(n_mc),
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted_raw:
@@ -1958,12 +2216,13 @@ def detect_turning_points(
         snr_mode=eff_snr_mode,
         ndri_mode=eff_ndri_mode,
         alpha=alpha,
-        snr_th=snr_th,
+        snr_th=eff_snr_th,
         ndri_th=ndri_th,
         dir_th=dir_th,
         tp_th=tp_th,
         censoring=prov,
         diagnostics=diag,
+        tp_calibration=eff_tp_cal,
     )
 
 
