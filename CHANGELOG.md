@@ -28,6 +28,14 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - New warnings: `UNCALIBRATED_JUMP_SELECTION`, `UNCALIBRATED_JUMP_PVALUES`, `CALIBRATION_FALLBACK`, `OPEN_ENDED_SPENDING`, `TIME_UNIT_ASSUMPTION`, `DEGENERATE_DEFAULT_GRID`, `BIAS_CORRECTION_FALLBACK`, `TREND_IMPUTATION_FALLBACK`, and `MI_SEGMENT_FALLBACK`.
 
 ### Fixed
+- Akritas–Theil–Sen p-values and CIs use the censoring-aware permutation variance of the censored Kendall statistic (Daniels, 1944). They were conservative before: 98% CI coverage at 50% censoring, now about 95%.
+- `just_monitor` censoring guardrails (maximum censored fraction, minimum detects) are evaluated on the historical period only, so heavy censoring after the monitoring start no longer blocks the analysis.
+- Silent fallbacks are now reported with new warnings:
+  - `ROBUST_NOT_CONVERGED`: robust IRLS hit its iteration limit in `lssa` or `fit_piecewise_trend(mode="huber")`.
+  - `STABILITY_DRAW_FALLBACK`: censoring stability draws reused fixed parameters.
+  - `STPD_SEGMENT_SKIPPED`: an epoch was too short for turning-point detection.
+  - `SEN_CI_UNAVAILABLE`: a Theil–Sen segment had more than 2000 observations.
+  - `ATS_UNAVAILABLE`: a censored segment could not use Akritas–Theil–Sen.
 - Theil–Sen CI order statistics now follow Gilbert (1987) / `scipy.stats.theilslopes`.
 - Numeric string time axes are parsed as numbers, and datetimes outside 1678–2262 are rejected (they previously wrapped silently).
 - The `HIGH_CONDITION_NUMBER` warning now triggers at cond > 1e6 (it was 1e10).
@@ -40,7 +48,7 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
   - L1 hinge fits do not have 50% breakdown.
   - `consecutive_k` monitoring does not bound the familywise false-alarm rate.
   - Validation numbers replaced with audited ones.
-- Every public function parameter, configuration field, result attribute and warning code is now documented.
+- Every public function parameter, configuration field, result attribute and warning code is now documented, including the difference between separately fitted `analyze_series` segment slopes and the connected-refit turning-point slopes.
 - Figures regenerated; references added.
 
 ### Known limitations

@@ -55,3 +55,4 @@
     - Rubin, D. B. (1987). *Multiple Imputation for Nonresponse in Surveys*. Wiley. https://doi.org/10.1002/9780470316696
     - Barnard, J., & Rubin, D. B. (1999). Small-sample degrees of freedom with multiple imputation. *Biometrika*, 86(4), 948–955. https://doi.org/10.1093/biomet/86.4.948
     - Meng, X.-L. (1994). Multiple-imputation inferences with uncongenial sources of input. *Statistical Science*, 9(4), 538–558. https://doi.org/10.1214/ss/1177010269
+    - Daniels, H. E. (1944). The relation between measures of correlation in the universe of sample permutations. *Biometrika*, 33(2), 129–135. https://doi.org/10.1093/biomet/33.2.129 *(permutation variance of the censored Kendall statistic in Akritas–Theil–Sen)*

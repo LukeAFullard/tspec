@@ -154,3 +154,61 @@ def test_time_unit_warning_for_days() -> None:
     assert "TIME_UNIT_ASSUMPTION" in codes
     with pytest.raises(tspec.InsufficientDataError, match="decimal years"):
         tspec.just_jumps(td, yd, season="ols")
+
+
+def test_censored_kendall_variance_matches_permutation_and_uncensored_formula() -> None:
+    """MIN-09: ATS uses the censoring-aware permutation variance (Daniels, 1944)."""
+    from tspec._robust import _censored_kendall_score, _censored_kendall_var
+
+    rng = np.random.default_rng(1)
+    n = 40
+    t = np.sort(rng.uniform(0, 10, n))
+    y = rng.normal(size=n)
+    no_cen = np.zeros(n, dtype=np.intp)
+    assert np.isclose(_censored_kendall_var(t, y, no_cen, 0.0), n * (n - 1) * (2 * n + 5) / 18.0)
+    dl = np.quantile(y, 0.4)
+    codes = np.where(y < dl, -1, 0).astype(np.intp)
+    vals = np.where(y < dl, dl, y)
+    perm = [
+        _censored_kendall_score(t, vals[p], codes[p], 0.0)
+        for p in (rng.permutation(n) for _ in range(4000))
+    ]
+    v = _censored_kendall_var(t, vals, codes, 0.0)
+    assert abs(np.var(perm) / v - 1.0) < 0.08
+    assert v < n * (n - 1) * (2 * n + 5) / 18.0
+
+
+def test_monitor_guardrails_ignore_future_censoring() -> None:
+    """MIN-10: heavy censoring after the monitoring start must not block the analysis."""
+    rng = np.random.default_rng(4)
+    n = 200
+    t = np.sort(rng.uniform(2000, 2008, n))
+    ys = np.array(["<0.8"] * n, dtype=object)
+    det = rng.choice(110, 30, replace=False)  # 30 detects in the 110-point history (73% censored)
+    ys[det] = list(np.round(rng.uniform(0.9, 2.0, 30), 3))
+    # Overall 170/200 = 85% censored (> max_censor_fraction=0.8) because the future is censored
+    res = tspec.just_monitor(t, ys, start=110, season="none", horizon=90)
+    assert res.censoring is not None and res.censoring.censor_fraction > 0.8
+    import pytest as _pytest
+
+    from tspec import CensoringError
+
+    with _pytest.raises(CensoringError):  # the same data still trip the guardrail outside monitoring
+        tspec.just_jumps(t, ys, season="none")
+
+
+def test_ats_unavailable_warning_for_interval_censoring() -> None:
+    """MIN-03: silent ATS fallback is now reported."""
+    rng = np.random.default_rng(0)
+    t = np.sort(rng.uniform(2000, 2006, 120))
+    y = 2 + 0.2 * (t - 2000) + rng.normal(0, 0.3, t.size)
+    lo = np.where(y < 2.5, 0.0, y)
+    hi = np.where(y < 2.5, 2.5, y)
+    from tspec import CensoredConfig
+
+    res = tspec.analyze_series(
+        t, np.column_stack([lo, hi]), detect_jumps=False, detect_turning_points=False,
+        remove_seasonality=False, slope_estimator="sen",
+        censoring=CensoredConfig(method="parametric", censoring_type="interval"),
+    )
+    assert "ATS_UNAVAILABLE" in {w.code for w in res.diagnostics.warnings}

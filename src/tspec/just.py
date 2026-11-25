@@ -1476,7 +1476,20 @@ def just_jumps(
 
         dt_med = float(np.median(np.diff(series.times_numeric))) if series.n_valid > 1 else 0.1
         match_tol = max(0.35, 2.0 * dt_med)
-        draw_series = generate_stability_draws(prov, cfg, series.times_numeric)
+        stab_fb = [0]
+        draw_series = generate_stability_draws(prov, cfg, series.times_numeric, stab_fb)
+        if stab_fb[0] > 0:
+            warnings_list.append(
+                WarningItem(
+                    code="STABILITY_DRAW_FALLBACK",
+                    severity="caution",
+                    message=(
+                        f"{stab_fb[0]} censoring stability draw(s) could not refit the imputation "
+                        "model and reused fixed parameters, so stability rates understate "
+                        "parameter uncertainty."
+                    ),
+                )
+            )
         win_rngs = _spawn_stability_rngs(cfg.random_state, len(draw_series)) if cfg.scope == "windowed" else None
         for idx_d, y_draw in enumerate(draw_series):
             draw_cfg = (

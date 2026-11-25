@@ -768,6 +768,7 @@ def _bootstrap_refit_draw(
     provenance: CensoringProvenance,
     config: CensoredConfig,
     rng: np.random.Generator,
+    fallback_counter: list[int] | None = None,
 ) -> FloatArray:
     """Generate one proper bootstrap-refit imputation draw propagating parameter uncertainty.
 
@@ -794,6 +795,8 @@ def _bootstrap_refit_draw(
             boot_idx = cand
             break
     if boot_idx is None:
+        if fallback_counter is not None:
+            fallback_counter[0] += 1
         # Fallback to fixed-theta stochastic draw
         cfg_stoch = CensoredConfig(
             method=config.method,
@@ -898,6 +901,8 @@ def _bootstrap_refit_draw(
         _ = lognorm
         return np.asarray(out, dtype=np.float64)
     except Exception:
+        if fallback_counter is not None:
+            fallback_counter[0] += 1
         cfg_stoch = CensoredConfig(
             method=config.method,
             censoring_type=config.censoring_type,
@@ -938,8 +943,13 @@ def generate_stability_draws(
     provenance: CensoringProvenance,
     config: CensoredConfig,
     t_valid: FloatArray,
+    fallback_counter: list[int] | None = None,
 ) -> list[FloatArray]:
-    """Generate ``config.n_stability_draws`` alternative imputed series for stability checks."""
+    """Generate ``config.n_stability_draws`` alternative imputed series for stability checks.
+
+    ``fallback_counter`` (a one-element list), if given, is incremented whenever a draw
+    could not propagate parameter uncertainty and fell back to a fixed-parameter draw.
+    """
     n_draws = int(config.n_stability_draws)
     if n_draws <= 0 or provenance.n_censored == 0:
         return []
@@ -964,12 +974,14 @@ def generate_stability_draws(
                     draw_params=True,
                 )
             except (ValueError, np.linalg.LinAlgError):
+                if fallback_counter is not None:
+                    fallback_counter[0] += 1
                 imp = provenance.imputed_values.copy()
             draws.append(imp)
         return draws
     for rng in child_rngs:
         if config.stability_mode == "bootstrap":
-            imp = _bootstrap_refit_draw(provenance, config, rng)
+            imp = _bootstrap_refit_draw(provenance, config, rng, fallback_counter)
             if config.scope == "seasonal_stratified":
                 quarters = np.floor((t_valid % 1.0) * 4.0).astype(np.intp) % 4
                 for q in range(4):
@@ -1007,7 +1019,7 @@ def generate_stability_draws(
                         n_stability_draws=0,
                         stability_mode=provenance.stability_mode,
                     )
-                    imp[mask] = _bootstrap_refit_draw(sub_prov, config, rng)
+                    imp[mask] = _bootstrap_refit_draw(sub_prov, config, rng, fallback_counter)
             draws.append(imp)
         else:
             cfg_draw = CensoredConfig(
@@ -1236,9 +1248,38 @@ def prepare_series_with_censoring(
 
     warnings_list: list[WarningItem] = []
 
+    rate_ratio = estimate_sampling_rate_ratio(t_valid)
+    pre_series = TimeSeriesInput(
+        times_numeric=t_valid,
+        times_raw=t_raw_valid,
+        is_datetime=is_dt,
+        values=vals_valid,
+        valid_mask=valid_mask,
+        valid_to_orig=valid_to_orig,
+        n_input=n_input,
+        n_valid=n_valid,
+        n_dropped_nan=n_input - n_valid,
+        sampling_rate_ratio=rate_ratio,
+    )
+    hist_idx, start_idx = 0, n_valid
+    if causal_split_fn is not None:
+        hist_idx, start_idx = causal_split_fn(pre_series)
+
+    # Guardrails are evaluated on the data the imputation model is fitted to. For causal
+    # (monitoring) use that is the historical period only, so the decision never depends
+    # on observations after the monitoring start.
+    g_cen = is_cen[hist_idx:start_idx] if causal_split_fn is not None else is_cen
+    g_vals = vals_valid[hist_idx:start_idx] if causal_split_fn is not None else vals_valid
+    n_cen_g = int(np.sum(g_cen))
+    n_obs_g = int(g_cen.size) - n_cen_g
+    cen_frac_g = n_cen_g / max(1, int(g_cen.size))
+    scope_txt = " in the historical period" if causal_split_fn is not None else ""
+
     # Tiered guardrails BEFORE calling ndimpute
     if n_cen > 0:
-        n_distinct_det = int(np.unique(vals_valid[~is_cen]).size) if n_obs > 0 else 0
+        n_obs, cen_frac = n_obs_g, cen_frac_g
+        n_cen_report = n_cen_g
+        n_distinct_det = int(np.unique(g_vals[~g_cen]).size) if n_obs > 0 else 0
         if n_obs < 2 or n_distinct_det < 2:
             raise CensoringError(
                 f"Too few uncensored observations to fit imputation model "
@@ -1246,7 +1287,7 @@ def prepare_series_with_censoring(
             )
         if cen_frac > cfg.max_censor_fraction and not cfg.allow_heavy_censoring:
             raise CensoringError(
-                f"{cen_frac:.1%} of observations are censored (exceeds max_censor_fraction="
+                f"{cen_frac:.1%} of observations{scope_txt} are censored (exceeds max_censor_fraction="
                 f"{cfg.max_censor_fraction:.0%}). Refusing to fit change-point model on mostly "
                 "imputed data; pass `CensoredConfig(allow_heavy_censoring=True)` to override."
             )
@@ -1261,7 +1302,7 @@ def prepare_series_with_censoring(
                     code="HEAVY_CENSORING",
                     severity="warning",
                     message=(
-                        f"{cen_frac:.1%} of observations ({n_cen}/{n_valid}) are censored (>50%). "
+                        f"{cen_frac:.1%} of observations{scope_txt} ({n_cen_report}/{g_cen.size}) are censored (>50%). "
                         "Change-point estimates depend strongly on distributional assumptions."
                     ),
                     suggestion=(
@@ -1276,7 +1317,7 @@ def prepare_series_with_censoring(
                     code="MODERATE_CENSORING",
                     severity="caution",
                     message=(
-                        f"{cen_frac:.1%} of observations ({n_cen}/{n_valid}) are censored "
+                        f"{cen_frac:.1%} of observations{scope_txt} ({n_cen_report}/{g_cen.size}) are censored "
                         f"(>{cfg.warn_censor_fraction:.0%})."
                     ),
                     suggestion=(
@@ -1346,29 +1387,18 @@ def prepare_series_with_censoring(
                     )
                 )
 
+    # Provenance reports the whole series
+    n_obs = n_valid - n_cen
+    cen_frac = n_cen / n_valid
+
     rng = (
         cfg.random_state
         if isinstance(cfg.random_state, np.random.Generator)
         else np.random.default_rng(cfg.random_state)
     )
 
-    rate_ratio = estimate_sampling_rate_ratio(t_valid)
-    pre_series = TimeSeriesInput(
-        times_numeric=t_valid,
-        times_raw=t_raw_valid,
-        is_datetime=is_dt,
-        values=vals_valid,
-        valid_mask=valid_mask,
-        valid_to_orig=valid_to_orig,
-        n_input=n_input,
-        n_valid=n_valid,
-        n_dropped_nan=n_input - n_valid,
-        sampling_rate_ratio=rate_ratio,
-    )
-
     fallback_count = 0
     if causal_split_fn is not None and n_cen > 0:
-        hist_idx, start_idx = causal_split_fn(pre_series)
         imp_values, attrs = _impute_causal_history_and_monitoring(
             vals_valid,
             codes_valid,

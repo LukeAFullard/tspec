@@ -78,7 +78,11 @@ class SegmentSummary:
         Estimator used (``"ols_mi"`` = Rubin-pooled multiple imputation over censored
         values; ``"ats"`` = Akritas-Theil-Sen).
     slope, intercept : float
-        Slope per time unit and intercept.
+        Slope per time unit and intercept. For ``"ols"``/``"ols_mi"``/``"sen"`` each
+        segment is fitted separately (the fits need not meet at turning points), so
+        these slopes can differ slightly from ``TurningPointEvent.slope_before/after``,
+        which come from the connected piecewise refit. ``"huber"`` and ``"l1"`` segment
+        slopes come from a connected fit within each epoch.
     slope_ci_low, slope_ci_high : float or None
         Confidence interval for the slope (conditional on the segment boundaries).
     pvalue : float or None
@@ -561,6 +565,32 @@ def _build_segment_summaries(
                     original_values=seg_orig,
                     autocorr_correction=mk_correction,
                 )
+                if mi_warnings is not None:
+                    n_seg = s1 - s0
+                    seg_has_cen = seg_codes is not None and bool(np.any(seg_codes != 0))
+                    if ts_fit.ci_low is None and n_seg > 2000:
+                        mi_warnings.append(
+                            WarningItem(
+                                code="SEN_CI_UNAVAILABLE",
+                                severity="caution",
+                                message=(
+                                    f"Segment {k} has {n_seg} observations (> 2000): its Theil-Sen slope "
+                                    "uses sampled pairs and no CI or Mann-Kendall p-value is reported."
+                                ),
+                            )
+                        )
+                    if seg_has_cen and ts_fit.estimator == "sen":
+                        mi_warnings.append(
+                            WarningItem(
+                                code="ATS_UNAVAILABLE",
+                                severity="caution",
+                                message=(
+                                    f"Segment {k} contains censored values but Akritas-Theil-Sen was not "
+                                    "applicable (interval censoring or > 2000 observations); Theil-Sen was "
+                                    "computed on imputed values instead."
+                                ),
+                            )
+                        )
                 t_seg = t_valid[s0:s1]
                 override_trend[s0:s1] = ts_fit.intercept + ts_fit.slope * t_seg
                 if ts_fit.ci_low is not None and ts_fit.ci_high is not None:
@@ -1140,8 +1170,19 @@ def analyze_series(
                             )
                         _add_warnings(seg_res.diagnostics.warnings)
                         continue
-                    except InsufficientDataError:
-                        pass
+                    except InsufficientDataError as exc:
+                        _add_warnings(
+                            [
+                                WarningItem(
+                                    code="STPD_SEGMENT_SKIPPED",
+                                    severity="info",
+                                    message=(
+                                        f"Turning-point detection skipped in epoch {seg_i} ({exc}); a "
+                                        "single linear trend was fitted there."
+                                    ),
+                                )
+                            ]
+                        )
                 eff_refit_mode: RefitMode = s_kw.get("refit_mode") or (
                     "huber" if rob_method != "none" else "sequential"
                 )

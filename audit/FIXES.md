@@ -33,6 +33,10 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 | MIN-07 overstated wording | **Fixed** | "confirms", "almost certainly" | softened |
 | MIN-08 tooling | **Fixed** | mypy aborted; 7 ruff errors | `mypy src/`: 0 issues; `ruff check .`: clean |
 | INF-06 divide-by-zero warnings | **Fixed** | 2 RuntimeWarnings in the tests | none |
+| MIN-03 silent fallbacks | **Fixed** | IRLS non-convergence, bootstrap and STPD-segment fallbacks, and Sen/ATS limits were silent | reported as `ROBUST_NOT_CONVERGED`, `STABILITY_DRAW_FALLBACK`, `STPD_SEGMENT_SKIPPED`, `SEN_CI_UNAVAILABLE`, `ATS_UNAVAILABLE` |
+| MIN-06 two slopes per segment | **Documented** | unexplained difference | `SegmentSummary` / `TurningPointEvent` docs explain separate vs. connected fits |
+| MIN-09 ATS variance ignores censoring | **Fixed** | CI coverage 95.2% / 98.0% at 20% / 50% censoring (conservative) | **95.4% / 94.8%**; null Type-I 4.0% / 3.2% (`audit/post_ats_variance.py`, R = 500) |
+| MIN-10 monitor guardrails use future data | **Fixed** | censoring fraction over the whole series | evaluated on the historical period only |
 
 ## What changed (API and behaviour)
 
@@ -113,6 +117,5 @@ Post-fix raw outputs are in `audit/post_fix/`. Scripts: `audit/post_mc2_just_jum
 - **CRT-04:** STPD / `analyze_series` trend bands remain conditional on the detected structure. Coverage is 83.5% even with the correct structure (MC7b). STPD's SNR > 1 gate can still miss turning points regardless of n. The docs now quantify this. A full fix needs a bootstrap of the detect-then-fit procedure.
 - **CRT-05:** internal ALLSSA harmonic selection inside JUST/monitor still uses the per-frequency rule, so seasonal bands cover ≈ 91%.
 - **Censored data beyond segment slopes:** JUST/STPD detection p-values on censored data condition on a single (now time-conditional) imputation. The windowed and seasonal-stratified scopes still use the marginal model.
-- **MIN-03:** most silent fallbacks remain (IRLS convergence flags; bootstrap stability fallback).
-- **MIN-06, MIN-09, MIN-10:** not addressed.
+- **MIN-03 (partial):** IRLS non-convergence inside JUST/STPD sliding windows is still not reported per window. Convergence failures were ≤ 0.2% in the audit's simulations.
 - **Not re-audited:** the readiness score in `AUDIT_REPORT.md` refers to the audited commit and has not been recomputed. Provisionally, with all four Blockers fixed and CRT-04/CRT-05 still open, the cap rule would limit the score to 80%.

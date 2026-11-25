@@ -776,6 +776,42 @@ def _censored_kendall_score(
     return float(np.sum(conc) - np.sum(disc))
 
 
+def _censored_kendall_var(
+    t: FloatArray,
+    vals: FloatArray,
+    codes: IntArray,
+    slope: float,
+) -> float:
+    """Permutation (exchangeability) variance of the censored Kendall S at ``slope``.
+
+    Uses Daniels' (1944) generalized-correlation variance for antisymmetric scores
+    ``a_ij = sign(t_j - t_i)`` and ``b_ij`` = definite concordance of the residual
+    responses ``r = vals - slope * t`` (``+1``/``-1`` when the censoring status allows a
+    definite ordering, ``0`` otherwise):
+    ``Var(Gamma) = 2 A2 B2 / (n(n-1)) + 4 (A3 - A2)(B3 - B2) / (n(n-1)(n-2))`` with
+    ``Gamma = 2 S``, ``A2 = sum a_ij^2`` and ``A3 = sum_i (sum_j a_ij)^2`` (likewise B).
+    Without censoring or ties this equals ``n(n-1)(2n+5)/18``; with censoring it is
+    smaller, so CIs and p-values are no longer conservative.
+    """
+    n = int(t.size)
+    if n < 3:
+        return 0.0
+    r = vals - slope * t
+    a = np.sign(t[None, :] - t[:, None]).astype(np.int8)
+    dr = r[None, :] - r[:, None]
+    ci = codes[:, None]
+    cj = codes[None, :]
+    b = ((dr > 0.0) & (ci <= 0) & (cj >= 0)).astype(np.int8) - (
+        (dr < 0.0) & (ci >= 0) & (cj <= 0)
+    ).astype(np.int8)
+    a2 = float(np.sum(a.astype(np.int64) ** 2))
+    b2 = float(np.sum(b.astype(np.int64) ** 2))
+    a3 = float(np.sum(np.sum(a, axis=1, dtype=np.int64).astype(np.float64) ** 2))
+    b3 = float(np.sum(np.sum(b, axis=1, dtype=np.int64).astype(np.float64) ** 2))
+    var_g = 2.0 * a2 * b2 / (n * (n - 1)) + 4.0 * (a3 - a2) * (b3 - b2) / (n * (n - 1) * (n - 2))
+    return max(0.0, var_g / 4.0)
+
+
 def _invert_censored_score(
     t: FloatArray,
     vals: FloatArray,
@@ -879,9 +915,12 @@ def fit_theil_sen_segment(
         intercept = float(np.median(y - slope * t))
 
         s0 = _censored_kendall_score(t, vals, codes, 0.0)
-        var_s = n * (n - 1) * (2 * n + 5) / 18.0
-        if var_s > 0.0:
-            z_mk = (s0 - np.sign(s0)) / np.sqrt(var_s) if abs(s0) > 0.0 else 0.0
+        # Censoring-aware permutation variances: at slope 0 for the trend test, and at
+        # the ATS estimate for the confidence interval inversion.
+        var_s0 = _censored_kendall_var(t, vals, codes, 0.0)
+        var_s = _censored_kendall_var(t, vals, codes, slope)
+        if var_s0 > 0.0 and var_s > 0.0:
+            z_mk = (s0 - np.sign(s0)) / np.sqrt(var_s0) if abs(s0) > 0.0 else 0.0
             pval: float | None = float(2.0 * norm.sf(abs(z_mk)))
             c_alpha = float(norm.isf(0.5 * alpha) * np.sqrt(var_s))
             ci_lo_v = _invert_censored_score(t, vals, codes, c_alpha, s_lo, s_hi)

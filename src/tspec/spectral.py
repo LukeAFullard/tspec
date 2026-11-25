@@ -242,6 +242,7 @@ class _LssaCoreOutput:
     cov: FloatArray
     condition_number: float
     rank_deficient: bool
+    robust_converged: bool = True
 
 
 def _lssa_core(
@@ -277,7 +278,9 @@ def _lssa_core(
         )
         ols = hr.ols
         pw_spec = hr.pw_effective
+        robust_ok = bool(hr.converged)
     else:
+        robust_ok = True
         ols = solve_weighted_ols(
             D, y, pw, col_scales=col_scales, allow_rank_deficient=True, compute_cov=compute_cov
         )
@@ -305,6 +308,7 @@ def _lssa_core(
         cov=ols.cov,
         condition_number=ols.condition_number,
         rank_deficient=ols.rank_deficient,
+        robust_converged=robust_ok,
     )
 
 
@@ -963,6 +967,15 @@ def lssa(
 
     rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, core.residuals)
     extra_warns = list(rn_warns)
+    if not core.robust_converged:
+        extra_warns.append(
+            WarningItem(
+                code="ROBUST_NOT_CONVERGED",
+                severity="caution",
+                message=f"Robust ({robust_m}) IRLS reached its iteration limit before converging.",
+                suggestion="Treat robust coefficients and spectrum as approximate.",
+            )
+        )
     if core.rank_deficient:
         extra_warns.append(
             WarningItem(

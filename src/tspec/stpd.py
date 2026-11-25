@@ -68,7 +68,9 @@ class TurningPointEvent:
     time, time_year
         Its timestamp (original representation / decimal years).
     slope_before, slope_after, direction : float
-        Adjacent segment slopes from the global refit and their difference.
+        Adjacent segment slopes from the global connected refit and their difference
+        (``analyze_series`` segment slopes from separate per-segment fits can differ
+        slightly).
     pvalue : float
         Window screening p-value for the slope change (computed at the selected
         knot; optimistic).
@@ -1079,6 +1081,7 @@ def _fit_piecewise_core(
 
     t0 = t_num - t_num[0]
     cond_num = 1.0
+    huber_converged = True
     trend_ci_low: FloatArray | None = None
     trend_ci_high: FloatArray | None = None
 
@@ -1099,6 +1102,7 @@ def _fit_piecewise_core(
         if mode == "huber":
             hr = solve_huber_irls(D, y, pw, k=huber_k, compute_cov=True)
             ols = hr.ols
+            huber_converged = bool(hr.converged)
         else:
             ols = solve_weighted_ols(D, y, pw, compute_cov=True)
         cond_num = float(ols.condition_number)
@@ -1226,6 +1230,16 @@ def _fit_piecewise_core(
 
     residuals = y - y_fit
     rn, rn_warns = compute_red_noise_diagnostics(t_num, residuals)
+    if not huber_converged:
+        rn_warns = (
+            *rn_warns,
+            WarningItem(
+                code="ROBUST_NOT_CONVERGED",
+                severity="caution",
+                message="Huber IRLS hinge-spline fit reached its iteration limit before converging.",
+                suggestion="Treat the robust trend and its CI as approximate.",
+            ),
+        )
     diag = DiagnosticReport(
         red_noise=rn,
         condition_number_max=cond_num,
@@ -1757,7 +1771,20 @@ def detect_turning_points(
     if n_stab > 0 and accepted_raw and prov is not None and cfg is not None:
         dt_med = float(np.median(np.diff(series.times_numeric))) if n > 1 else 0.1
         match_tol = max(0.4, 3.0 * dt_med)
-        stab_draws = generate_stability_draws(prov, cfg, series.times_numeric)
+        stab_fb = [0]
+        stab_draws = generate_stability_draws(prov, cfg, series.times_numeric, stab_fb)
+        if stab_fb[0] > 0:
+            warnings_list.append(
+                WarningItem(
+                    code="STABILITY_DRAW_FALLBACK",
+                    severity="caution",
+                    message=(
+                        f"{stab_fb[0]} censoring stability draw(s) could not refit the imputation "
+                        "model and reused fixed parameters, so stability rates understate "
+                        "parameter uncertainty."
+                    ),
+                )
+            )
         win_rngs = (
             _spawn_stability_rngs(cfg.random_state, len(stab_draws))
             if cfg.scope == "windowed"

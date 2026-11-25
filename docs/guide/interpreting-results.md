@@ -58,6 +58,11 @@ How `tspec` handles this:
 | `MARGIN_CLAMPED` | Info | The requested STPD `margin` was raised to the minimum safe value of 2. |
 | `NDRI_L2_DENSITY_IMBALANCE` | Caution | With `ndri_mode="l2"`, uneven sample counts left/right of a turning point bias NDRI upward; use `ndri_mode="rmse"`. |
 | `RAW_SNR_LARGE_BASELINE` | Caution | `snr_mode="raw"` on a series with a large non-zero mean inflates SNR; use `snr_mode="centered"`. |
+| `ROBUST_NOT_CONVERGED` | Caution | A robust (Huber/MM) IRLS fit hit its iteration limit; treat robust estimates and CIs as approximate. |
+| `STABILITY_DRAW_FALLBACK` | Caution | Some censoring stability draws could not refit the imputation model and reused fixed parameters, so stability rates understate uncertainty. |
+| `SEN_CI_UNAVAILABLE` | Caution | A Theil–Sen segment has more than 2000 observations; the slope uses sampled pairs and no CI or p-value is reported. |
+| `ATS_UNAVAILABLE` | Caution | A censored segment could not use Akritas–Theil–Sen (interval censoring or more than 2000 observations); Theil–Sen on imputed values was used. |
+| `STPD_SEGMENT_SKIPPED` | Info | With `jump_adjustment="segment"`, an epoch was too short for turning-point detection and got a single linear trend. |
 | `DECOMPOSE_SKIPPED` / `STPD_SKIPPED` | Caution | `analyze_series()` skipped a stage because the series was too short for its windows; the message gives the reason. |
 
 ---
