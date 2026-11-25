@@ -58,7 +58,32 @@ from .stpd import (
 
 @dataclass(frozen=True)
 class SegmentSummary:
-    """Per-segment linear trend estimate across detected jumps and turning points."""
+    """Per-segment linear trend estimate across detected jumps and turning points.
+
+    Attributes
+    ----------
+    segment_index : int
+        0-based segment number.
+    start_index, end_index : int
+        First/last observation of the segment on the input axis.
+    start_valid_index, end_valid_index : int
+        The same on the valid (NaN-dropped) axis.
+    start_time, end_time : Any
+        Segment bounds in the original time representation.
+    start_time_year, end_time_year : float
+        Segment bounds in decimal years.
+    n_obs, n_censored : int
+        Observations and censored observations in the segment.
+    estimator : {"ols", "ols_mi", "sen", "ats", "l1", "huber"}
+        Estimator used (``"ols_mi"`` = Rubin-pooled multiple imputation over censored
+        values; ``"ats"`` = Akritas-Theil-Sen).
+    slope, intercept : float
+        Slope per time unit and intercept.
+    slope_ci_low, slope_ci_high : float or None
+        Confidence interval for the slope (conditional on the segment boundaries).
+    pvalue : float or None
+        Two-sided p-value for zero slope (Mann-Kendall for ``"sen"``/``"ats"``).
+    """
 
     segment_index: int
     start_index: int
@@ -81,7 +106,41 @@ class SegmentSummary:
 
 @dataclass(frozen=True)
 class PipelineResult(BaseResult):
-    """Unified result object returned by :func:`analyze_series`."""
+    """Unified result object returned by :func:`analyze_series`.
+
+    Attributes
+    ----------
+    jumps, decomposition, turning_points
+        Stage results (:class:`JustJumpResult`, :class:`JustDecomposeResult`,
+        :class:`StpdResult`), or ``None`` when a stage was skipped.
+    times_numeric, times_raw, values, is_datetime
+        Valid timestamps and (imputed) values.
+    adjusted_series : ndarray
+        Deseasonalized and jump-offset-adjusted series passed to STPD.
+    combined_trend : ndarray
+        Final trend on the original scale (STPD trend + step offsets, or the
+        estimator-specific segment fits).
+    step_offsets : ndarray
+        Cumulative vertical step offsets estimated at the JUST jumps.
+    jump_adjustment : str
+        ``"offset"`` or ``"segment"``.
+    censoring : CensoringProvenance or None
+        Censored-data provenance.
+    diagnostics : DiagnosticReport
+        Consolidated warnings and final red-noise diagnostics.
+    segments : tuple of SegmentSummary
+        Per-segment slope, CI and p-value.
+    robust, slope_estimator : str
+        Settings used.
+    ci_level : float
+        Confidence level.
+    trend_ci_low, trend_ci_high : ndarray or None
+        Pointwise trend band, conditional on the detected structure (``None`` for
+        ``"sen"`` and ``"l1"``).
+    slope_fan_low, slope_fan_high : ndarray or None
+        Median-pivoted Sen/ATS slope envelope for ``"sen"``. Not a pointwise trend
+        CI: it has zero width at each segment's median time.
+    """
 
     jumps: JustJumpResult | None
     decomposition: JustDecomposeResult | None
@@ -736,6 +795,55 @@ def analyze_series(
          sparse HiGHS linear programming (robust to isolated outliers; design-dependent
          breakdown well below 50%; CIs are
          ``None``—use ``'sen'`` or ``'huber'`` for segment CIs).
+
+    Parameters
+    ----------
+    t:
+        1D monotonically ascending timestamps (numeric decimal years or datetime).
+    y:
+        1D observations (numeric, censored strings such as ``'<0.05'``, or
+        ``(N, 2)`` intervals). ``NaN`` entries are dropped without interpolation.
+    weights:
+        Optional scalar, 1D, or 2D inverse-covariance weights (STPD and segment
+        fits use scalar/1D weights only).
+    detect_jumps:
+        Run Stage 1 (:func:`just_jumps`). Default ``True``.
+    detect_turning_points:
+        Run Stage 4 (:func:`detect_turning_points`). Default ``True``; also enables
+        the ``step_alpha`` filter in Stage 1.
+    remove_seasonality:
+        Subtract the JUST seasonal component before STPD and segment fits.
+    jump_adjustment:
+        ``'offset'`` (subtract estimated vertical step offsets, then fit one
+        connected trend) or ``'segment'`` (fit each inter-jump epoch separately).
+    ci_level:
+        Confidence level for all bands and segment CIs.
+    robust:
+        ``'none'``, ``'huber'``, or ``'mm'`` for all stages.
+    slope_estimator:
+        ``'ols'``, ``'sen'``, ``'l1'``, or ``'huber'`` (see above).
+    huber_k:
+        Huber tuning constant.
+    mk_correction:
+        Serial-correlation correction for ``slope_estimator='sen'``: ``'ar1'``
+        (default), ``'hamed_rao'``, or ``'none'``.
+    censor_status, censoring:
+        Optional censoring indicators and :class:`CensoredConfig`. When censored
+        input is detected and ``censoring`` is ``None``,
+        ``CensoredConfig(n_stability_draws=20)`` is used. OLS segments containing
+        censored values are estimated by Rubin-pooled multiple imputation
+        (``estimator='ols_mi'``).
+    just_kwargs, decompose_kwargs, stpd_kwargs:
+        Extra keyword arguments forwarded to :func:`just_jumps`,
+        :func:`just_decompose`, and :func:`detect_turning_points`.
+
+    Returns
+    -------
+    PipelineResult
+        Stage results, adjusted series, combined trend and bands, and per-segment
+        slope summaries (:attr:`PipelineResult.segments`). Trend bands and segment
+        CIs are conditional on the detected jumps/turning points and estimated
+        seasonality (empirically ~83-92% coverage at nominal 95%).
 
     Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'``
     (Huber-initialized Tukey biweight MM-type estimation, recommended for extreme

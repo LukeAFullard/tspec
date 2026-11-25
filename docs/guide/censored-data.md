@@ -23,22 +23,32 @@ Substituting half the detection limit (`DL/2`) is still common in spreadsheets, 
 You can pass censored data in any of three idiomatic forms:
 
 ```python
+import numpy as np
+import pandas as pd
 from tspec import CensoredConfig, analyze_series
 
+rng = np.random.default_rng(0)
+dates = pd.date_range("2012-01-01", periods=144, freq="MS")
+conc = np.exp(0.3 * np.cos(2 * np.pi * np.arange(144) / 12) + rng.normal(0.0, 0.3, 144))
+
 # 1. Mixed strings & floats (auto-detected!)
-y_strings = ["<0.05", 0.12, "<0.05", 0.34, None, ">10.0"]
+y_strings = [f"<{0.8}" if v < 0.8 else float(v) for v in conc]
 res = analyze_series(dates, y_strings)
 
 # 2. Numeric array + boolean/integer/LWPTrends status array
 #    status: True/1 = left-censored (default), or -1=left, 0=obs, 1=right, or 'lt'/'gt'/'not'
+is_left_censored = conc < 0.8
+values = np.where(is_left_censored, 0.8, conc)
 res = analyze_series(dates, values, censor_status=is_left_censored)
 
 # 3. Interval bounds: (N, 2) array of [lower, upper]
+bounds_nx2 = np.column_stack([np.where(is_left_censored, 0.0, conc), np.where(is_left_censored, 0.8, conc)])
 res = analyze_series(
     dates,
     bounds_nx2,
     censoring=CensoredConfig(method="parametric", censoring_type="interval"),
 )
+print(res.segments_to_dataframe())
 ```
 
 ---

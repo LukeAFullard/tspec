@@ -81,7 +81,30 @@ class WindowCandidate:
 
 @dataclass(frozen=True)
 class JumpEvent:
-    """Detected abrupt jump and slope change returned by :func:`just_jumps`."""
+    """Detected abrupt jump and slope change returned by :func:`just_jumps`.
+
+    Attributes
+    ----------
+    index, valid_index : int
+        First post-jump observation on the input / valid axis.
+    time, time_year
+        Its timestamp (original representation / decimal years).
+    magnitude : float
+        Vertical step at the jump (post minus pre fitted trend).
+    direction : float
+        Slope change (post minus pre, per time unit).
+    occurrences : int
+        Number of windows whose best split fell on this index.
+    window_center_distance : float
+        Distance (observations) from the representative window's center.
+    jump_pvalue : float
+        p-value of the level-and-slope change (2 df), calibrated per
+        ``JustJumpResult.jump_calibration``.
+    step_pvalue : float
+        p-value of a vertical discontinuity beyond a continuous hinge (1 df).
+    window_censored_fraction, coincides_with_dl_shift, dl_artifact_likely, stability_rate
+        Censored-data diagnostics.
+    """
 
     index: int
     valid_index: int
@@ -101,7 +124,33 @@ class JumpEvent:
 
 @dataclass(frozen=True)
 class JustJumpResult(BaseResult):
-    """Result object returned by :func:`just_jumps`."""
+    """Result object returned by :func:`just_jumps`.
+
+    Attributes
+    ----------
+    jumps : tuple of JumpEvent
+        Accepted jumps (index, time, magnitude, slope change, p-values, flags).
+    all_window_candidates : tuple of WindowCandidate
+        Best split found in every window before aggregation and filtering.
+    times_numeric, times_raw, values, is_datetime
+        Valid timestamps and (imputed) values.
+    season, window_mode : str
+        Seasonal model and windowing mode used.
+    alpha : float
+        Per-frequency ALLSSA level inside windows.
+    mag_th, dir_th, jump_th : float
+        Effect-size thresholds and minimum separation (as resolved).
+    jump_alpha : float or None
+        Family-wise significance level applied to ``jump_pvalue`` (``None`` = no
+        statistical filter).
+    censoring : CensoringProvenance or None
+        Censored-data provenance.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    jump_calibration : str
+        ``"montecarlo"``, ``"bonferroni"``, or ``"none"``: how ``jump_pvalue``
+        accounts for the split search (plus Holm adjustment across candidates).
+    """
 
     jumps: tuple[JumpEvent, ...]
     all_window_candidates: tuple[WindowCandidate, ...]
@@ -249,7 +298,42 @@ class JustJumpResult(BaseResult):
 
 @dataclass(frozen=True)
 class JustDecomposeResult(BaseResult):
-    """Result object returned by :func:`just_decompose`."""
+    """Result object returned by :func:`just_decompose`.
+
+    Attributes
+    ----------
+    times_numeric, times_raw, values, is_datetime
+        Valid timestamps and (imputed) values.
+    trend, seasonal, remainder : ndarray
+        Blended components on the observed times; they sum to ``values`` exactly.
+    eval_times_numeric, eval_times_raw : ndarray or None
+        Evaluation grid when ``eval_times`` was given.
+    trend_reg, seasonal_reg : ndarray or None
+        Components evaluated on ``eval_times`` (``NaN`` over uncovered gaps).
+    jump_indices : ndarray
+        Jump indices used (input axis).
+    window_frequencies : tuple of ndarray
+        Seasonal frequencies fitted in each window.
+    season, window_mode : str
+        Settings used.
+    censoring : CensoringProvenance or None
+        Censored-data provenance.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    ci_level : float
+        Pointwise confidence level.
+    trend_ci_low, trend_ci_high : ndarray or None
+        Trend band. With ``trend_ci_method="bias_corrected"`` it is centered on
+        ``trend_bc``, not on ``trend``.
+    seasonal_ci_low, seasonal_ci_high : ndarray or None
+        Seasonal band (conditional on the selected frequencies).
+    trend_reg_ci_low, trend_reg_ci_high, seasonal_reg_ci_low, seasonal_reg_ci_high
+        The same bands on ``eval_times``.
+    trend_ci_method : str
+        ``"bias_corrected"`` or ``"model"``.
+    trend_bc, trend_reg_bc : ndarray or None
+        Bias-corrected (local-quadratic) trend estimate on observed times / ``eval_times``.
+    """
 
     times_numeric: FloatArray
     times_raw: np.ndarray[Any, Any]
@@ -1870,6 +1954,64 @@ def just_decompose(
     not sample-mean shifted onto the trend, eliminating seasonal-balance bias on
     irregularly sampled timestamps (``parity_mode=True`` retains Ghaderpour's
     sample-mean centering for exact upstream parity).
+
+    Parameters
+    ----------
+    t:
+        1D monotonically ascending timestamps (numeric decimal years or datetime).
+    y:
+        1D observations (numeric, censored string markers like ``'<0.05'``, or
+        ``(N, 2)`` intervals). ``NaN`` entries are dropped without interpolation.
+    weights:
+        Optional scalar, 1D positive weight vector, or 2D SPD inverse-covariance
+        matrix ``P = C_f^{-1}`` (relative precisions; the residual variance factor is
+        estimated).
+    eval_times:
+        Optional evaluation grid inside the observed time span; fills the
+        ``*_reg`` fields (e.g. a regular monthly grid).
+    jump_indices:
+        0-based indices (input axis) of known jumps, typically
+        ``[j.index for j in just_jumps(...).jumps]``; each window fits a separate
+        piece on either side.
+    size, step:
+        Observation-count window size and step for ``window_mode='count'``
+        (defaults ``3*M`` and ``M``, ``M`` = samples per year).
+    window_mode:
+        ``'count'`` (default) or ``'duration'`` (fixed calendar span).
+    window_duration, step_duration, min_window_obs:
+        Window span, step and minimum observations for ``window_mode='duration'``
+        (defaults ``min(3, span)`` years, ``window_duration/3``, and
+        ``max(12, n_params + 5)``).
+    season:
+        ``'allssa'`` (default; anti-leakage frequency selection per window, using
+        the per-frequency rule), ``'ols'`` (fixed frequencies ``omega``), or ``'none'``.
+    omega:
+        Candidate (ALLSSA) or fixed (OLS) cyclic frequencies in cycles/year.
+        Defaults to ``[0.8, 1.0, ..., 3.8]`` for ALLSSA and ``[1, 2, 3, 4]`` for OLS.
+    alpha:
+        Per-frequency significance level for ALLSSA selection inside windows.
+    ci_level:
+        Pointwise confidence level of the trend and seasonal bands.
+    trend_ci_method:
+        ``'bias_corrected'`` (default) or ``'model'``; see above.
+    robust:
+        ``'none'``, ``'huber'``, or ``'mm'`` window fits (forced to ``'none'`` in
+        ``parity_mode``).
+    huber_k:
+        Huber tuning constant (default ``1.345``).
+    censor_status, censoring:
+        Optional censoring indicators and :class:`CensoredConfig`.
+    parity_mode:
+        Reproduce Ghaderpour's upstream JUST decomposition exactly (seasonal
+        sample-mean centering, legacy rounding, model-based trend band).
+
+    Returns
+    -------
+    JustDecomposeResult
+        ``trend``, ``seasonal`` and ``remainder`` on the observed times (they sum to
+        the input exactly), pointwise bands, and optional ``eval_times`` versions.
+        Seasonal bands with ``season='allssa'`` are conditional on the selected
+        frequencies and under-cover somewhat (~91% at nominal 95% in simulation).
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):

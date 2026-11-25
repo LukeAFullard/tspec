@@ -59,7 +59,28 @@ RefitMode = Literal["sequential", "joint", "l1", "huber"]
 
 @dataclass(frozen=True)
 class TurningPointEvent:
-    """Accepted continuous trend turning point detected by STPD."""
+    """Accepted continuous trend turning point detected by STPD.
+
+    Attributes
+    ----------
+    index, valid_index : int
+        Turning-point observation on the input / valid axis.
+    time, time_year
+        Its timestamp (original representation / decimal years).
+    slope_before, slope_after, direction : float
+        Adjacent segment slopes from the global refit and their difference.
+    pvalue : float
+        Window screening p-value for the slope change (computed at the selected
+        knot; optimistic).
+    snr_raw, snr_centered, ndri_l2, ndri_rmse : float
+        Local SNR and NDRI over the adjacent segments.
+    fb_diff : int
+        Index difference between forward and backward estimates.
+    window_center_distance : float
+        Distance from the detecting window's center.
+    window_censored_fraction, coincides_with_dl_shift, stability_rate
+        Censored-data diagnostics.
+    """
 
     index: int
     valid_index: int
@@ -97,7 +118,35 @@ class FlaggedJumpCandidate:
 
 @dataclass(frozen=True)
 class PiecewiseTrendResult(BaseResult):
-    """Global connected piecewise-linear trend fit across turning points."""
+    """Global connected piecewise-linear trend fit across turning points.
+
+    Attributes
+    ----------
+    tp_indices, tp_valid_indices : ndarray
+        Turning-point indices on the input axis / valid (NaN-dropped) axis.
+    slopes, intercepts : ndarray
+        Per-segment slopes (per time unit) and intercepts.
+    fitted_trend, residuals : ndarray
+        Fitted connected trend and residuals on the valid observations.
+    directions : ndarray
+        Slope change at each turning point.
+    local_snr_raw, local_snr_centered, local_ndri_l2, local_ndri_rmse : ndarray
+        SNR and NDRI over the two segments adjacent to each turning point.
+    mode : str
+        ``"sequential"``, ``"joint"``, ``"l1"``, ``"huber"`` (or ``"segmented"``
+        from ``analyze_series``).
+    selected_direction : {"forward", "backward", "joint"}
+        Which sequential fit direction was retained.
+    times_numeric, times_raw, is_datetime
+        Valid timestamps.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    ci_level : float
+        Pointwise confidence level.
+    trend_ci_low, trend_ci_high : ndarray or None
+        Pointwise band, conditional on the turning-point locations (``None`` for
+        ``mode="l1"``).
+    """
 
     tp_indices: IntArray
     tp_valid_indices: IntArray
@@ -180,7 +229,27 @@ class PiecewiseTrendResult(BaseResult):
 
 @dataclass(frozen=True)
 class StpdResult(BaseResult):
-    """Result object returned by :func:`detect_turning_points` (:func:`stpd`)."""
+    """Result object returned by :func:`detect_turning_points` (:func:`stpd`).
+
+    Attributes
+    ----------
+    turning_points : tuple of TurningPointEvent
+        Accepted continuous turning points.
+    flagged_jumps : tuple of FlaggedJumpCandidate
+        Significant candidates rejected because of high NDRI (likely vertical jumps).
+    piecewise_trend : PiecewiseTrendResult
+        Global connected piecewise-linear refit across the accepted turning points.
+    times_numeric, times_raw, values, is_datetime
+        Valid timestamps and (imputed) values.
+    window_mode, snr_mode, ndri_mode : str
+        Settings used.
+    alpha, snr_th, ndri_th, dir_th, tp_th : float
+        Thresholds used.
+    censoring : CensoringProvenance or None
+        Censored-data provenance.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    """
 
     turning_points: tuple[TurningPointEvent, ...]
     flagged_jumps: tuple[FlaggedJumpCandidate, ...]
@@ -1435,8 +1504,14 @@ def detect_turning_points(
         Observation-count window size and step (defaults: ``5*M`` and ``M``).
     window_mode:
         ``'count'`` (default) or ``'duration'`` (fixed calendar span).
+    window_duration, step_duration, min_window_obs:
+        Window span (default ``min(5, span)`` years), step (default
+        ``window_duration/3``) and minimum observations per window (default ``10``)
+        for ``window_mode='duration'``.
     snr_th, snr_mode:
-        SNR threshold (default ``1.0``) and mode: ``'centered'`` (default,
+        SNR threshold (default ``1.0``; this hard gate is independent of sample
+        size, so turning points whose within-window trend range is comparable to the
+        noise level are rejected however small their p-value) and mode: ``'centered'`` (default,
         shift-invariant for non-zero baselines) or ``'raw'`` (Ghaderpour 2024).
         ``parity_mode=True`` forces ``'raw'``.
     ndri_th, ndri_mode:

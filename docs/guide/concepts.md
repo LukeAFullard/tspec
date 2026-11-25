@@ -100,7 +100,7 @@ When monitoring incoming observations one by one (`just_monitor()`), you are **p
 2. **Across-time sequential control (`sequential_control`):**
    - `"pocock"` *(default)*: with a planned `horizon`, distributes your $\alpha$ budget evenly (Šidák) across the planned steps; without `horizon`, uses open-ended spending $\alpha_d \propto 1/((d+1)\ln^2(d+1))$ so the bound holds for any monitoring length without peeking at future data (familywise false-alarm probability $\le \alpha$ under well-specified historical dynamics and Gaussian independent noise).
    - `"obrien_fleming"`: spends very little $\alpha$ early and saves statistical power for later monitoring steps.
-   - `"consecutive_k"` *(e.g. `k=2`)*: ideal for open-ended streams without a fixed end date; requires two consecutive exceedances before sounding the alarm.
+   - `"consecutive_k"` *(e.g. `k=2`)*: requires two consecutive exceedances before sounding the alarm, which suppresses isolated glitches. It does **not** bound the familywise false-alarm rate, which grows with the monitoring length.
 3. **Out-of-sample predictive covariance (`account_for_forecast_uncertainty=True`):** propagates finite-sample historical trend and seasonal parameter uncertainty into the monitoring window weights so extrapolating beyond a short historical baseline does not trigger spurious drift alarms.
 
 ![Near-real-time monitoring sequential boundary](../assets/figures/tutorial_nrt_monitoring.png)

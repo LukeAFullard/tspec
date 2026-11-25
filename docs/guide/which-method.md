@@ -19,7 +19,7 @@ flowchart TD
     QC -- "No" --> Q1
     Cens --> Q1{"What kind of change are you looking for?"}
 
-    Q1 -- "Incoming near-real-time alert vs. a stable historical baseline" --> NRT["Use JUSTmonitor (v1.1): just_monitor() with Sidak + Pocock / consecutive_k control"]
+    Q1 -- "Incoming near-real-time alert vs. a stable historical baseline" --> NRT["Use JUSTmonitor (v1.1): just_monitor() with Sidak + Pocock spending (set a planned horizon)"]
     Q1 -- "Sudden leaps or offsets (fires, sensor swap, spills, policy shock)" --> Q1S["Use JUST: just_jumps() + just_decompose()"]
     Q1 -- "Smooth change in speed/slope without sudden leaps" --> Q2{"Strong seasonal cycles (winter/summer waves)?"}
     Q1 -- "Both, or not sure" --> Pipe["Use Guided Two-Stage Pipeline: analyze_series() (JUST removes seasonality & jumps, then STPD finds turning points)"]

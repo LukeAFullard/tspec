@@ -560,7 +560,39 @@ def _allssa_core(
 
 @dataclass(frozen=True)
 class LssaResult(BaseResult):
-    """Result object returned by :func:`lssa`."""
+    """Result object returned by :func:`lssa`.
+
+    Attributes
+    ----------
+    frequencies : ndarray
+        Evaluated cyclic frequencies (cycles per time unit; cycles/year for datetimes).
+    spectrum : ndarray
+        Normalized least-squares spectrum in ``[0, 1]``: the fraction of residual
+        variance explained by each frequency after removing the known constituents.
+    critical_value : float
+        Per-frequency Beta critical value at ``alpha``.
+    pvalues : ndarray
+        Per-frequency p-values (not corrected for the number of frequencies).
+    cos_sin_coeffs, amplitudes, phases : ndarray
+        Out-of-context cosine/sine coefficients, amplitude and phase (radians,
+        relative to the first timestamp) at each frequency.
+    residuals, norm_res : ndarray, float
+        Residuals of the known-constituent fit and their weighted sum of squares.
+    coeff, cov : ndarray
+        Known-constituent coefficients (relative to the first timestamp) and their
+        covariance.
+    alpha, trend, known_freqs, jump_indices
+        Inputs as resolved.
+    times_numeric, times_raw, is_datetime
+        Valid timestamps as decimal years / original representation.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    peak_fap : float
+        Family-wise false-alarm probability of the highest peak over the searched
+        frequencies (``NaN`` when ``peak_fap="none"``).
+    peak_fap_method : str
+        ``"sidak"``, ``"montecarlo"``, or ``"none"``.
+    """
 
     frequencies: FloatArray
     spectrum: FloatArray
@@ -674,7 +706,31 @@ class LssaResult(BaseResult):
 
 @dataclass(frozen=True)
 class AllssaResult(BaseResult):
-    """Result object returned by :func:`allssa`."""
+    """Result object returned by :func:`allssa`.
+
+    Attributes
+    ----------
+    trend_coeff : ndarray
+        Trend/jump coefficients of the final simultaneous fit.
+    frequencies : ndarray
+        Selected cyclic frequencies.
+    cos_sin_coeffs, amplitudes, phases : ndarray
+        Coefficients, amplitudes and phases (radians, relative to the first
+        timestamp) of the selected sinusoids.
+    residuals, norm_res, cov : ndarray, float, ndarray
+        Final residuals, weighted residual sum of squares, and parameter covariance
+        (conditional on the selected frequencies).
+    alpha, trend : float, str
+        Significance level and trend model.
+    n_iter, converged : int, bool
+        Iterations used and whether the frequency set stabilized.
+    times_numeric, times_raw, is_datetime
+        Valid timestamps.
+    diagnostics : DiagnosticReport
+        Warnings and red-noise diagnostics.
+    significance : str
+        Acceptance rule used: ``"montecarlo"``, ``"sidak"``, or ``"per_frequency"``.
+    """
 
     trend_coeff: FloatArray
     cos_sin_coeffs: FloatArray

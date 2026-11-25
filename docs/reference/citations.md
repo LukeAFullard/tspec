@@ -37,7 +37,21 @@
 10. **Robust M/MM-Estimation & Non-Parametric Trend Slopes (`robust="huber" | "mm"`, `slope_estimator="sen" | "l1" | "huber"`):**  
     - Huber, P. J. (1981). *Robust Statistics*. John Wiley & Sons. https://doi.org/10.1002/0471725250
     - Schrader, R. M., & Hettmansperger, T. P. (1980). Improving analysis of variance by using M-estimators. *Biometrika*, 67(1), 93–101. https://doi.org/10.1093/biomet/67.1.93
-    - Yohai, V. J. (1987). High breakdown-point and high efficiency robust estimates for regression. *The Annals of Statistics*, 15(2), 642–656. https://doi.org/10.1214/aos/1176350366
+    - Yohai, V. J. (1987). High breakdown-point and high efficiency robust estimates for regression (context only: `robust="mm"` is a Huber-started MM-type estimator, not Yohai's S-started MM). *The Annals of Statistics*, 15(2), 642–656. https://doi.org/10.1214/aos/1176350366
     - Sen, P. K. (1968). Estimates of the regression coefficient based on Kendall's tau. *Journal of the American Statistical Association*, 63(324), 1379–1389. https://doi.org/10.1080/01621459.1968.10480934
     - Akritas, M. G., Murphy, S. A., & LaValley, M. P. (1995). The Theil-Sen estimator with doubly censored data and applications to astronomy. *Journal of the American Statistical Association*, 90(429), 170–177. https://doi.org/10.1080/01621459.1995.10476499
     - Gilbert, R. O. (1987). *Statistical Methods for Environmental Pollution Monitoring*. Van Nostrand Reinhold.
+    - He, X., Jurečková, J., Koenker, R., & Portnoy, S. (1990). Tail behavior of regression estimators and their breakdown points. *Econometrica*, 58(5), 1195–1214. https://doi.org/10.2307/2938306
+
+11. **Calibrated Inference (split search, multiplicity, bias correction, autocorrelation):**  
+    - Andrews, D. W. K. (1993). Tests for parameter instability and structural change with unknown change point. *Econometrica*, 61(4), 821–856. https://doi.org/10.2307/2951764 *(sup-F statistic; `just_jumps(jump_calibration=...)`)*
+    - Holm, S. (1979). A simple sequentially rejective multiple test procedure. *Scandinavian Journal of Statistics*, 6(2), 65–70. *(Holm adjustment across candidate jumps)*
+    - Calonico, S., Cattaneo, M. D., & Farrell, M. H. (2018). On the effect of bias estimation on coverage accuracy in nonparametric inference. *Journal of the American Statistical Association*, 113(522), 767–779. https://doi.org/10.1080/01621459.2017.1285776 *(bias-corrected `just_decompose` trend band)*
+    - Hamed, K. H., & Rao, A. R. (1998). A modified Mann–Kendall trend test for autocorrelated data. *Journal of Hydrology*, 204, 182–196. https://doi.org/10.1016/S0022-1694(97)00125-X *(`mk_correction`)*
+    - Marriott, F. H. C., & Pope, J. A. (1954). Bias in the estimation of autocorrelations. *Biometrika*, 41(3/4), 390–402. https://doi.org/10.1093/biomet/41.3-4.390 *(small-sample correction in `mk_correction="ar1"`)*
+
+12. **Censored Regression & Multiple Imputation:**  
+    - Tobin, J. (1958). Estimation of relationships for limited dependent variables. *Econometrica*, 26(1), 24–36. https://doi.org/10.2307/1907382 *(censored-regression imputation model)*
+    - Rubin, D. B. (1987). *Multiple Imputation for Nonresponse in Surveys*. Wiley. https://doi.org/10.1002/9780470316696
+    - Barnard, J., & Rubin, D. B. (1999). Small-sample degrees of freedom with multiple imputation. *Biometrika*, 86(4), 948–955. https://doi.org/10.1093/biomet/86.4.948
+    - Meng, X.-L. (1994). Multiple-imputation inferences with uncongenial sources of input. *Statistical Science*, 9(4), 538–558. https://doi.org/10.1214/ss/1177010269

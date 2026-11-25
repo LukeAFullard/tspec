@@ -38,11 +38,27 @@ How `tspec` handles this:
 | `LONG_MONITORING_HORIZON` | Caution | The monitoring span exceeds the stable historical span, so extrapolated trend uncertainty grows quadratically. Keep `account_for_forecast_uncertainty=True` (default) or re-baseline periodically. |
 | `UNADJUSTED_REPEATED_TESTING` | Warning | Multiplicity controls (`freq_correction`, `sequential_control`) are disabled in `just_monitor()` outside `parity_mode=True`. |
 | `PENDING_CONFIRMATION` | Info | Under `sequential_control="consecutive_k"`, the latest observation exceeded the threshold but has not yet reached `consecutive_k` consecutive hits. |
-| `THRESHOLD_SCALE_MISMATCH` | Caution | Default `mag_th=0.05` (NDVI scale) looks too small or too large for your data's IQR. Set a domain-meaningful `mag_th` or enable `jump_alpha=0.05`. |
+| `THRESHOLD_SCALE_MISMATCH` | Caution | Threshold-only selection (`jump_alpha=None`) with `mag_th=0.05` (NDVI scale) looks badly scaled for your data's IQR. Set a domain-meaningful `mag_th` or use the calibrated default `jump_alpha=0.05`. |
 | `VARIABLE_SAMPLING_RATE` | Caution | Sampling density shifts $> 2\times$ across the series under `window_mode="count"`. Try `window_mode="duration"`. |
 | `NONSTATIONARY_CENSORING_PATTERN` | Caution | Censoring fraction shifts by $> 30\%$ between halves under `scope="global"`. Consider `CensoredConfig(scope="windowed")`. |
 | `HEAVY_CENSORING` / `WINDOW_HEAVY_CENSORING` | Warning | Over 50% of the series (or supporting window) is censored. Enable `n_stability_draws=20` (or `stability_mode="bootstrap"`) and treat estimates cautiously. |
 | `SPARSE_WINDOW_SKIPPED` | Info | One or more duration windows (or evaluation gaps) held too few observations and were safely skipped. |
+| `MODERATE_CENSORING` | Caution | 20–50% of observations are censored. Consider `n_stability_draws=20` to check breakpoint stability. |
+| `CENSORED_IMPUTATION_APPLIED` | Info | Some (≤20%) observations were censored and imputed; records the method used. |
+| `CONDITIONAL_MEAN_VARIANCE_SHRINKAGE` | Info | `impute_type="mean"` assigns identical values to tied limits, shrinking residual variance; prefer `"stochastic"`. |
+| `EXTREME_IMPUTED_DOWNWEIGHTING` | Caution | `imputed_weight_factor < 0.5` heavily down-weights censored values, which can mimic dropping non-detects. |
+| `WINDOW_IMPUTATION_FALLBACK` | Info | Windowed censoring imputation fell back to the global imputation in windows with too few detects. |
+| `MI_SEGMENT_FALLBACK` | Warning | Multiple imputation failed for a censored segment, so its OLS CI ignores imputation uncertainty. |
+| `ALLSSA_MAX_ITER` | Caution | ALLSSA hit `max_iter` before the frequency set stabilized; increase `max_iter` or use a stricter `alpha`. |
+| `DEGENERATE_DEFAULT_GRID` | Warning | The default ALLSSA frequency grid has ≤ 1 frequency, usually because time is not in decimal years; pass `omega`. |
+| `CALIBRATION_FALLBACK` | Info | Monte Carlo jump calibration is not available for robust fits, so Bonferroni was used. |
+| `BIAS_CORRECTION_FALLBACK` | Info | Some decomposition windows were too small for the bias-corrected trend band and used the model-based band. |
+| `RANK_DEFICIENT_DESIGN` | Warning | The design matrix was numerically singular (duplicate times, very narrow jump segments, or collinear frequencies); an SVD pseudoinverse was used and individual coefficients are not identifiable. |
+| `HIGH_CONDITION_NUMBER` | Caution | The design is ill-conditioned (cond > 1e6); fitted values are accurate, but individual coefficients and amplitudes are unstable. |
+| `MARGIN_CLAMPED` | Info | The requested STPD `margin` was raised to the minimum safe value of 2. |
+| `NDRI_L2_DENSITY_IMBALANCE` | Caution | With `ndri_mode="l2"`, uneven sample counts left/right of a turning point bias NDRI upward; use `ndri_mode="rmse"`. |
+| `RAW_SNR_LARGE_BASELINE` | Caution | `snr_mode="raw"` on a series with a large non-zero mean inflates SNR; use `snr_mode="centered"`. |
+| `DECOMPOSE_SKIPPED` / `STPD_SKIPPED` | Caution | `analyze_series()` skipped a stage because the series was too short for its windows; the message gives the reason. |
 
 ---
 
@@ -82,7 +98,7 @@ assert {"trend_ci_low", "trend_ci_high", "seasonal_ci_low", "seasonal_ci_high"} 
 fig, axes = dec.plot(show_ci=True)  # shaded 95% ribbons on trend & seasonal panels
 ```
 
-### Example 2: Robust Pipeline with Theil–Sen Slope-CI Fans (`robust="mm"`, `slope_estimator="sen"`)
+### Example 2: Robust Pipeline with Theil–Sen Slopes and Slope Fan (`robust="mm"`, `slope_estimator="sen"`)
 
 ```python
 t_b = np.sort(rng.uniform(2015.0, 2024.0, size=190))

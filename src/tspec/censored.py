@@ -70,15 +70,65 @@ def _require_ndimpute() -> Any:
 class CensoredConfig:
     """Configuration for censored time-series analysis.
 
-    ``imputation_model="trend"`` (default, with ``scope="global"``) imputes censored
-    values from a censored-regression (Tobit-type) MLE conditional on time (linear
-    trend plus ``trend_harmonics``; default ``(1, 2)`` cycles/year for datetime input,
-    none otherwise), so imputations keep the series' temporal structure.
-    ``imputation_model="marginal"`` uses ``ndimpute``'s time-invariant marginal model
-    (ROS / parametric), which flattens trends among censored values and biases slopes
-    toward zero. ``n_imputations`` multiple imputations are pooled with Rubin's rules
-    for ``analyze_series`` OLS segment slopes. ``dist="weibull"`` and
-    ``method="substitution"`` always use the marginal path.
+    Attributes
+    ----------
+    method : {"ros", "parametric", "substitution"}
+        ``ndimpute`` method for the marginal imputation path (default ``"ros"``).
+    censoring_type : {"left", "right", "mixed", "interval"} or None
+        Censoring type; inferred from the data when ``None``.
+    dist : {"lognormal", "normal", "weibull", "auto"}
+        Error distribution. ``"auto"`` chooses lognormal for strictly positive data.
+        ``"weibull"`` always uses the marginal ``ndimpute`` path.
+    impute_type : {"stochastic", "mean", "quantile"}
+        Single-imputation rule: random conditional draw (default), conditional mean,
+        or conditional median/quantile.
+    scope : {"global", "windowed", "seasonal_stratified"}
+        Where the imputation model is fitted. The time-conditional model applies to
+        ``"global"``; the other scopes use ``ndimpute`` marginal fits per window or
+        calendar quarter.
+    random_state : int, Generator, or None
+        Seed for all imputation draws (default ``0``, deterministic).
+    clamp : bool
+        Keep imputed values within their censoring bounds (marginal path).
+    imputed_weight_factor : float
+        Multiplicative weight in ``(0, 1]`` applied to imputed observations in
+        downstream fits (values below 0.5 trigger a warning).
+    n_stability_draws : int
+        Number of alternative imputations used to report how often each detected
+        jump/turning point recurs (``stability_rate``). ``0`` disables.
+    stability_mode : {"stochastic", "bootstrap"}
+        How marginal-path stability draws are generated (parameter-fixed draws or
+        bootstrap refits). Time-conditional draws always sample parameters from
+        their asymptotic distribution.
+    detect_dl_shifts : bool
+        Scan for changes in the active detection limits (default ``True``).
+    dl_shift_rel_threshold : float
+        Minimum relative change in the active limit treated as a DL shift (0.20).
+    recensor_check : bool
+        Re-test jumps after recensoring the window to its highest detection limit.
+    warn_censor_fraction : float
+        Censored fraction above which a ``MODERATE_CENSORING`` caution is emitted.
+    max_censor_fraction : float
+        Censored fraction above which analysis is refused unless
+        ``allow_heavy_censoring=True`` (default 0.80).
+    allow_heavy_censoring : bool
+        Override the ``max_censor_fraction`` and minimum-detects guardrails.
+    left_marker, right_marker : str
+        String prefixes marking left- and right-censored entries (``"<"``, ``">"``).
+    ndimpute_kwargs : dict
+        Extra keyword arguments passed to ``ndimpute.impute``.
+    imputation_model : {"trend", "marginal"}
+        ``"trend"`` (default with ``scope="global"``) imputes from a censored
+        regression (Tobit-type) MLE conditional on time (linear trend plus
+        ``trend_harmonics``), keeping the series' temporal structure. ``"marginal"``
+        uses ``ndimpute``'s time-invariant model, which flattens trends among censored
+        values and biases slopes toward zero.
+    trend_harmonics : tuple of float or None
+        Harmonic frequencies (cycles per time unit) in the imputation design.
+        Default: ``(1, 2)`` for datetime input, none for numeric time.
+    n_imputations : int
+        Multiple imputations pooled with Rubin's rules for ``analyze_series`` OLS
+        segment slopes in censored segments (default 20; ``1`` disables).
     """
 
     method: Literal["ros", "parametric", "substitution"] = "ros"
