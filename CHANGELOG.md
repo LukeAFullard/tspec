@@ -36,6 +36,7 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - New warning `SHORT_SEASONAL_WINDOW` when windows cover fewer than two cycles of the lowest searched frequency.
 - `allssa(significance="sidak")` now counts about three times the Rayleigh number (T × bandwidth) of independent frequencies, calibrated by simulation for short windows.
 - `lssa(peak_fap=...)` and `LssaResult.peak_fap`: the family-wise false-alarm probability of the highest peak.
+- `CensoredConfig.detection_imputations` (default `1`): with `> 1`, `just_jumps` and `stpd` re-impute each candidate window from its null model and pool the calibrated p-values over the imputations (Licht–Rubin) before the Holm adjustment. Decisions then no longer depend on the imputation seed (1–9% of decisions flip vs. 2–27% with a single imputation at 20–50% censoring). It is conservative and can cost jump power under heavy censoring. Reported as `JustJumpResult.n_imputations` / `StpdResult.n_imputations`, with warning `MI_DETECTION_FALLBACK`.
 - `MonitorResult.consecutive_k` / `consecutive_k_calibrated`, `StpdResult.tp_calibration`, `JustJumpResult.jump_calibration`, `AllssaResult.significance`, `JustDecomposeResult.trend_bc`/`trend_reg_bc`/`trend_ci_method`, and `PipelineResult.slope_fan_low/high`.
 - `CensoredConfig.imputation_model`, `trend_harmonics`, and `n_imputations`.
 - New warnings: `UNCALIBRATED_JUMP_SELECTION`, `UNCALIBRATED_JUMP_PVALUES`, `CALIBRATION_FALLBACK`, `OPEN_ENDED_SPENDING`, `TIME_UNIT_ASSUMPTION`, `DEGENERATE_DEFAULT_GRID`, `BIAS_CORRECTION_FALLBACK`, `TREND_IMPUTATION_FALLBACK`, `MI_SEGMENT_FALLBACK`, and `UNCALIBRATED_CONSECUTIVE_K`.
@@ -67,4 +68,4 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 ### Known limitations
 - STPD / `analyze_series` trend bands remain conditional on the detected structure (coverage roughly 83–92%).
 - STPD power depends on the information within one window (default 5 seasonal cycles), not on the record length.
-- JUST/STPD detection p-values on censored data condition on a single imputation.
+- By default, JUST/STPD detection p-values on censored data use a single time-conditional imputation. This kept valid size in simulation (2–3% false jumps at `jump_alpha=0.05`, borderline 6.7% for seasonal series at 50% censoring), but borderline decisions depend on the imputation seed. `detection_imputations` removes the seed dependence at a cost in power.
