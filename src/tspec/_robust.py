@@ -751,6 +751,10 @@ def ar1_rank_factor(t: FloatArray, y: FloatArray, slope: float) -> float:
 
 _AR1_BOOT_MAX_N = 300
 _AR1_BOOT_B = 999
+# Spread of the autocorrelation draws in the bootstrap reference, in units of the
+# asymptotic standard error sqrt((1 - rho^2)/n). Widening it beyond 1 compensates the
+# plug-in error of the reference (tail probabilities are convex in rho).
+_AR1_BOOT_JITTER = 1.0
 
 
 def _ols_lag1(y_cols: FloatArray, u: FloatArray) -> FloatArray:
@@ -817,7 +821,7 @@ def ar1_bootstrap_reference(
     for _ in range(4):
         m = float(np.mean(_ols_lag1(_ar1_series(rng, n, np.full(400, r_t)), u)))
         r_t = float(np.clip(r_t + (rho_obs - m), 0.0, 0.95))
-    se = float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
+    se = _AR1_BOOT_JITTER * float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
     rhos = np.clip(r_t + se * rng.standard_normal(int(n_boot)), 0.0, 0.95)
     yb = _ar1_series(rng, n, rhos)
     sb = _mk_s_columns(yb)

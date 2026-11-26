@@ -13,6 +13,10 @@ import numpy as np
 import tspec
 
 warnings.simplefilter("ignore")
+if len(sys.argv) > 3:  # study switch: spread multiplier of the AR(1) bootstrap reference
+    import tspec._robust as _rb
+
+    _rb._AR1_BOOT_JITTER = float(sys.argv[3])
 n, R = int(sys.argv[1]), int(sys.argv[2])
 out = {}
 for phi in (0.0, 0.3, 0.5, 0.7):
@@ -33,4 +37,5 @@ for phi in (0.0, 0.3, 0.5, 0.7):
         cov += s1.slope_ci_low <= 0.1 <= s1.slope_ci_high
     out[f"phi={phi}"] = {"R": R, "typeI_at_0.05": rej / R, "sen_CI95_coverage": cov / R}
     print(n, phi, out[f"phi={phi}"], flush=True)
-json.dump(out, open(f"audit/post_fix/reaudit_mk_n{n}.json", "w"), indent=1)
+tag = f"_jitter{sys.argv[3]}" if len(sys.argv) > 3 else ""
+json.dump(out, open(f"audit/post_fix/reaudit_mk_n{n}{tag}.json", "w"), indent=1)
