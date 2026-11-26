@@ -42,7 +42,7 @@ from .results import (
     format_explain_warnings,
     require_pandas,
 )
-from .spectral import _lssa_core
+from .spectral import _lssa_core, build_design_matrix
 from .stpd import (
     FlaggedJumpCandidate,
     PiecewiseTrendResult,
@@ -791,6 +791,68 @@ def _build_segment_summaries(
     return tuple(segments), override_trend, override_ci_low, override_ci_high
 
 
+def _replicate_windowed_seasonal(
+    t_valid: FloatArray,
+    ystar: FloatArray,
+    decomp: JustDecomposeResult,
+    jump_valid_indices: list[int],
+    w: FloatArray | None,
+) -> FloatArray:
+    """Re-run ``just_decompose``'s seasonal estimator on bootstrap replicates (columns).
+
+    Same windows, local design (piecewise-linear trend with the window's jumps plus the
+    window's selected harmonics) and Gaussian blending as the original decomposition,
+    by weighted least squares vectorised over replicates. Frequency selection is held
+    fixed at the original windows' choices.
+    """
+    n, nb = ystar.shape
+    num = np.zeros((n, nb))
+    den = np.zeros(n)
+    jv = np.asarray(sorted(jump_valid_indices), dtype=np.intp)
+    for (lb, ub), freqs in zip(decomp.window_bounds, decomp.window_frequencies, strict=True):
+        size0 = ub - lb
+        if size0 < 4:
+            continue
+        ty = t_valid[lb:ub]
+        ty_loc = ty - ty[0]
+        local_j = np.array([int(j - lb) for j in jv if lb + 2 <= j < ub - 1], dtype=np.intp)
+        fr = np.asarray(freqs, dtype=np.float64)
+        d_w, _cs = build_design_matrix(ty_loc, "linear", local_j, False, fr)
+        sw = np.sqrt(w[lb:ub]) if w is not None else np.ones(size0)
+        coef, *_ = np.linalg.lstsq(d_w * sw[:, None], ystar[lb:ub] * sw[:, None], rcond=None)
+        n_h = 2 * int(fr.size)
+        season_w = d_w[:, d_w.shape[1] - n_h :] @ coef[d_w.shape[1] - n_h :] if n_h else 0.0 * ystar[lb:ub]
+        tau0 = float(ty[size0 // 2]) if (size0 % 2 == 1) else 0.5 * float(ty[size0 // 2] + ty[size0 // 2 - 1])
+        g = np.exp(decomp.window_dilation * (ty - tau0) ** 2)
+        num[lb:ub] += season_w * g[:, None]
+        den[lb:ub] += g
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(den[:, None] > 0, num / np.where(den > 0, den, 1.0)[:, None], 0.0)
+    return np.asarray(out, dtype=np.float64)
+
+
+def _replicate_step_offsets(
+    t_valid: FloatArray, y_deseas: FloatArray, jump_valid_indices: list[int], w: FloatArray | None
+) -> FloatArray:
+    """Vectorised :func:`_estimate_vertical_step_offsets` (non-robust) over columns."""
+    n, nb = y_deseas.shape
+    out = np.zeros((n, nb))
+    if not jump_valid_indices:
+        return out
+    j_arr = np.sort(np.unique(np.asarray(jump_valid_indices, dtype=np.intp)))
+    t0 = t_valid - t_valid[0]
+    d_m, cs = build_design_matrix(t0, "linear", j_arr, False, np.empty(0, dtype=np.float64))
+    d_raw = d_m / cs[None, :]
+    sw = np.sqrt(w) if w is not None else np.ones(n)
+    coef, *_ = np.linalg.lstsq(d_raw * sw[:, None], y_deseas * sw[:, None], rcond=None)
+    m = int(j_arr.size)
+    for k, j in enumerate(j_arr):
+        left = coef[k] + coef[m + 1 + k] * t0[j]
+        right = coef[k + 1] + coef[m + 2 + k] * t0[j]
+        out[j:] += (right - left)[None, :]
+    return out
+
+
 def _pipeline_bootstrap(
     t_valid: FloatArray,
     t_raw_valid: np.ndarray[Any, Any],
@@ -800,7 +862,7 @@ def _pipeline_bootstrap(
     step_offsets: FloatArray,
     seasonal_part: FloatArray,
     jump_valid_indices: list[int],
-    harmonic_freqs: FloatArray,
+    decomp: JustDecomposeResult | None,
     w_stpd: FloatArray | None,
     refit_mode: RefitMode,
     *,
@@ -827,17 +889,17 @@ def _pipeline_bootstrap(
         (int(tp.valid_index), *tp.detection_window)  # type: ignore[misc]
         for tp in tps
     ]
-    cols: list[FloatArray] = []
-    trend_mask: list[bool] = []
-    for j in sorted(jump_valid_indices):
-        cols.append((np.arange(n) >= j).astype(np.float64))
-        trend_mask.append(True)
-    for f_h in harmonic_freqs:
-        cols.append(np.cos(2.0 * np.pi * f_h * t_valid))
-        cols.append(np.sin(2.0 * np.pi * f_h * t_valid))
-        trend_mask += [False, False]
-    ncols = np.column_stack(cols) if cols else None
     f_trend = stpd_res.piecewise_trend.fitted_trend
+    use_seas = decomp is not None and bool(decomp.window_bounds) and bool(np.any(seasonal_part != 0.0))
+
+    def _adjust(ystar: FloatArray) -> tuple[FloatArray, FloatArray]:
+        seas_b = (
+            _replicate_windowed_seasonal(t_valid, ystar, decomp, jump_valid_indices, w_stpd)
+            if use_seas and decomp is not None
+            else np.zeros_like(ystar)
+        )
+        steps_b = _replicate_step_offsets(t_valid, ystar - seas_b, jump_valid_indices, w_stpd)
+        return seas_b + steps_b, steps_b
 
     def _refit(yb: FloatArray, kb: IntArray) -> FloatArray:
         return _fit_piecewise_core(
@@ -849,8 +911,7 @@ def _pipeline_bootstrap(
     boot = _bootstrap_tp_curves(
         t_valid, y_work, f_trend, tp_win, _refit, w=w_stpd, robust=robust, huber_k=huber_k,
         n_boot=int(n_boot), seed=(20261127, n, *[x[0] for x in tp_win]),
-        other_fit=step_offsets + seasonal_part, nuisance_cols=ncols,
-        nuisance_trend=np.array(trend_mask, dtype=bool) if cols else None,
+        other_fit=step_offsets + seasonal_part, adjust_fn=_adjust,
     )
     if boot is None:
         return None
@@ -1554,18 +1615,13 @@ def analyze_series(
         and trend_ci_low is not None
         and not (jump_adjustment == "segment" and jump_valid_indices)
     ):
-        harm = np.empty(0, dtype=np.float64)
-        if remove_seasonality and decomp_res is not None and decomp_res.window_frequencies:
-            allf = np.round(np.concatenate([np.asarray(f, dtype=np.float64) for f in decomp_res.window_frequencies]), 6)
-            if allf.size:
-                uf, cnt = np.unique(allf, return_counts=True)
-                harm = uf[np.argsort(-cnt)][:8]
         refit_mode_b: RefitMode = s_kw.get("refit_mode") or (
             "huber" if rob_method != "none" else "sequential"
         )
         boot_out = _pipeline_bootstrap(
             t_valid, t_raw_valid, series, y_work_valid, stpd_res, step_offsets, seasonal_part,
-            jump_valid_indices if jump_adjustment == "offset" else [], harm,
+            jump_valid_indices if jump_adjustment == "offset" else [],
+            decomp_res if remove_seasonality else None,
             w_stpd if (w_stpd is None or np.ndim(w_stpd) == 1) else None,
             refit_mode_b, robust=rob_method, huber_k=huber_k,
             ci_level=float(s_kw.get("ci_level", ci_level)), n_boot=int(n_boot),

@@ -797,6 +797,7 @@ def _bootstrap_tp_curves(
     other_fit: FloatArray | None = None,
     nuisance_cols: FloatArray | None = None,
     nuisance_trend: np.ndarray | None = None,
+    adjust_fn: Any = None,
 ) -> _TpBootstrap | None:
     """Wild residual bootstrap of the detect-then-fit STPD trend (audit CRT-04).
 
@@ -813,6 +814,11 @@ def _bootstrap_tp_curves(
     - the trend is refitted with ``refit(y_adjusted, knots)``. ``nuisance_trend`` flags
       nuisance columns whose fitted contribution belongs to the reported trend (jump
       steps).
+
+    ``adjust_fn(ystar) -> (nuisance_fit, nuisance_trend_fit)`` replaces the
+    least-squares nuisance step with a caller-supplied replica of the estimator that
+    removed the nuisance structure in the original analysis (used by
+    ``analyze_series`` to re-run its windowed seasonal and jump-step estimators).
 
     Returns the replicate curves ``(n, B)`` (reported-trend scale), the re-estimated
     knots ``(B, K)``, the replicate series ``y*`` and their fitted nuisance part
@@ -833,7 +839,10 @@ def _bootstrap_tp_curves(
 
     nuis_trend = np.zeros((n, int(n_boot)))
     nuis_fit = np.zeros((n, int(n_boot)))
-    if ncols.shape[1] > 0:
+    if adjust_fn is not None:
+        nuis_fit, nuis_trend = adjust_fn(ystar)
+        y_adj = ystar - nuis_fit
+    elif ncols.shape[1] > 0:
         span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
         u = (t - t[0]) / span
         hinges = [np.maximum(0.0, u - u[gi]) for gi, _, _, _ in tp_windows]

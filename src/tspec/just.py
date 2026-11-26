@@ -358,6 +358,10 @@ class JustDecomposeResult(BaseResult):
         Jump indices used (input axis).
     window_frequencies : tuple of ndarray
         Seasonal frequencies fitted in each window.
+    window_bounds : tuple of (int, int)
+        Valid-axis ``[start, stop)`` of each window, aligned with ``window_frequencies``.
+    window_dilation : float
+        Exponent factor of the Gaussian window weights ``exp(dilation * (t - tau)^2)``.
     season, window_mode : str
         Settings used.
     censoring : CensoringProvenance or None
@@ -408,6 +412,8 @@ class JustDecomposeResult(BaseResult):
     trend_ci_method: str = "model"
     trend_bc: FloatArray | None = None
     trend_reg_bc: FloatArray | None = None
+    window_bounds: tuple[tuple[int, int], ...] = ()
+    window_dilation: float = float("nan")
 
     def summary(self) -> str:
         t_range = float(np.ptp(self.trend)) if self.trend.size else 0.0
@@ -2464,6 +2470,7 @@ def just_decompose(
     bc_fallbacks = 0
 
     win_freqs_list: list[FloatArray] = []
+    win_bounds_list: list[tuple[int, int]] = []
     cond_max = 1.0
 
     for lb, ub in windows_tt:
@@ -2572,6 +2579,7 @@ def just_decompose(
             cond_max = max(cond_max, res_l.condition_number)
 
         win_freqs_list.append(freqs_w)
+        win_bounds_list.append((int(lb0), int(ub0)))
         season_t = _eval_seasonal(ty_loc, freqs_w, cs_coeff)
         trend_t = yy - season_t - rem_w
         if parity_mode:
@@ -2780,6 +2788,8 @@ def just_decompose(
         seasonal_reg=seasonal_reg,
         jump_indices=series.valid_to_orig[j_valid] if j_valid.size else j_valid,
         window_frequencies=tuple(win_freqs_list),
+        window_bounds=tuple(win_bounds_list),
+        window_dilation=float(dil_fac),
         is_datetime=series.is_datetime,
         season=season_l,
         window_mode=window_mode,
