@@ -20,7 +20,16 @@ method = sys.argv[1]
 seasonal = bool(int(sys.argv[2]))
 R = int(sys.argv[3])
 extra = {}
-for kv in sys.argv[4:]:
+nullimp = "nullimp" in sys.argv[4:]
+if nullimp:
+    # Study variant: impute each candidate window from its null model (drop the tested
+    # jump / hinge columns from the congenial design).
+    import tspec.just as _J
+    import tspec.stpd as _S
+    _wci = _J.window_congenial_imputations
+    _J.window_congenial_imputations = lambda v, c, lft, rgt, X, *a, **k: _wci(v, c, lft, rgt, X[:, :-2], *a, **k)
+    _S.window_congenial_imputations = lambda v, c, lft, rgt, X, *a, **k: _wci(v, c, lft, rgt, X[:, :-1], *a, **k)
+for kv in [x for x in sys.argv[4:] if x != "nullimp"]:
     k, v = kv.split("=")
     extra[k] = int(v) if v.isdigit() else (tuple(float(x) for x in v.split(",")) if "," in v else v)
 n = 150
@@ -83,4 +92,5 @@ for cfrac in (0.0, 0.2, 0.5):
                 "decision_flip_null": acc["flip_null"] / R, "decision_flip_alt": acc["flip_alt"] / R}
     print(key, json.dumps(out[key]), flush=True)
 tag = "_".join(f"{k}{'-'.join(map(str, v)) if isinstance(v, tuple) else v}" for k, v in extra.items())
+tag = tag + ("_nullimp" if nullimp else "")
 json.dump(out, open(f"audit/post_fix/censored_detection_{method}_{int(seasonal)}{'_' + tag if tag else ''}.json", "w"), indent=1)

@@ -10,17 +10,17 @@
  "just,seasonal=0,cfrac=0.2": {
   "R": 300,
   "realized_cfrac": 0.20026666666666665,
-  "null_FP": 0.03,
+  "null_FP": 0.04,
   "detect": 0.95,
-  "decision_flip_null": 0.013333333333333334,
-  "decision_flip_alt": 0.01
+  "decision_flip_null": 0.023333333333333334,
+  "decision_flip_alt": 0.013333333333333334
  },
  "just,seasonal=0,cfrac=0.5": {
   "R": 300,
   "realized_cfrac": 0.4985111111111111,
-  "null_FP": 0.01,
-  "detect": 0.6933333333333334,
-  "decision_flip_null": 0.006666666666666667,
-  "decision_flip_alt": 0.08333333333333333
+  "null_FP": 0.10333333333333333,
+  "detect": 0.7933333333333333,
+  "decision_flip_null": 0.05,
+  "decision_flip_alt": 0.06333333333333334
  }
 }
