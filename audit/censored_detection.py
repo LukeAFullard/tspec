@@ -24,8 +24,8 @@ nullimp = "nullimp" in sys.argv[4:]
 if nullimp:
     # Study variant: impute each candidate window from its null model (drop the tested
     # jump / hinge columns from the congenial design).
-    import tspec.just as _J
-    import tspec.stpd as _S
+    _J = sys.modules["tspec.just"]
+    _S = sys.modules["tspec.stpd"]  # `tspec.stpd` the attribute is the function alias
     _wci = _J.window_congenial_imputations
     _J.window_congenial_imputations = lambda v, c, lft, rgt, X, *a, **k: _wci(v, c, lft, rgt, X[:, :-2], *a, **k)
     _S.window_congenial_imputations = lambda v, c, lft, rgt, X, *a, **k: _wci(v, c, lft, rgt, X[:, :-1], *a, **k)
