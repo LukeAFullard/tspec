@@ -2443,10 +2443,12 @@ def detect_turning_points(
         if boot is not None:
             dev = (boot.curves - pw_trend.fitted_trend[:, None]) * boot.dev_scale[:, None]
             a_lvl = 1.0 - ci_level
+            # Percentile intervals of the (variance-calibrated) replicate curves; they were
+            # slightly closer to nominal than basic intervals near the turning points.
             pw_trend = replace(
                 pw_trend,
-                trend_ci_low=pw_trend.fitted_trend - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1),
-                trend_ci_high=pw_trend.fitted_trend - np.quantile(dev, 0.5 * a_lvl, axis=1),
+                trend_ci_low=pw_trend.fitted_trend + np.quantile(dev, 0.5 * a_lvl, axis=1),
+                trend_ci_high=pw_trend.fitted_trend + np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1),
             )
             band_used = "bootstrap"
 

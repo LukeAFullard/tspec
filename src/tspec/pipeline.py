@@ -791,7 +791,9 @@ def _build_segment_summaries(
     return tuple(segments), override_trend, override_ci_low, override_ci_high
 
 
-_BAND_INTERVAL = "basic"  # study switch: "basic" (default) or "percentile" bootstrap interval
+# Pointwise interval construction for the trend band: "percentile" (default; about 1 point
+# closer to nominal than "basic" in the MC7b design) or "basic".
+_BAND_INTERVAL = "percentile"
 
 
 def _replicate_windowed_seasonal(
