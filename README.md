@@ -163,7 +163,7 @@ pip install --no-deps tspec
   - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
   - Mann–Kendall Type-I error under AR(1) errors (ρ ≤ 0.7) with the default `mk_correction="ar1"`: 3.8–6.2% for n = 60–250 (parametric AR(1) bootstrap reference) and 4.9–5.2% at n = 400. Uncorrected, it is about 25% at ρ = 0.5.
   - `just_monitor()` prediction-interval coverage: ~95%.
-- **Known limitations:** post-detection bands are conditional on the number of breakpoints found (`analyze_series` trend band about 93% at nominal 95%); detection p-values on censored data use one imputation by default (valid size in simulation; `detection_imputations` pools several, at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Known limitations** (full list: [docs/guide/limitations.md](docs/guide/limitations.md)): post-detection confidence bands can be slightly too narrow and are conditional on the number of breakpoints found are conditional on the number of breakpoints found (`analyze_series` trend band and segment-slope CIs about 93% at nominal 95%); detection p-values on censored data use one imputation by default (valid size in simulation; `detection_imputations` pools several, at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
 - **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
 - **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
 
