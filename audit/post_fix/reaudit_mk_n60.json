@@ -1,22 +1,22 @@
 {
  "phi=0.0": {
   "R": 1000,
-  "typeI_at_0.05": 0.043,
+  "typeI_at_0.05": 0.039,
   "sen_CI95_coverage": 0.957
  },
  "phi=0.3": {
   "R": 1000,
-  "typeI_at_0.05": 0.074,
-  "sen_CI95_coverage": 0.926
+  "typeI_at_0.05": 0.061,
+  "sen_CI95_coverage": 0.934
  },
  "phi=0.5": {
   "R": 1000,
-  "typeI_at_0.05": 0.05,
-  "sen_CI95_coverage": 0.95
+  "typeI_at_0.05": 0.039,
+  "sen_CI95_coverage": 0.958
  },
  "phi=0.7": {
   "R": 1000,
-  "typeI_at_0.05": 0.086,
-  "sen_CI95_coverage": 0.914
+  "typeI_at_0.05": 0.062,
+  "sen_CI95_coverage": 0.936
  }
 }

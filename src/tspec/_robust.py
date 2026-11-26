@@ -749,6 +749,79 @@ def ar1_rank_factor(t: FloatArray, y: FloatArray, slope: float) -> float:
     return float(1.0 + 2.0 * np.sum((n - k) * (n - k - 1) * (n - k - 2) * rs) / (n * (n - 1) * (n - 2)))
 
 
+_AR1_BOOT_MAX_N = 300
+_AR1_BOOT_B = 999
+
+
+def _ols_lag1(y_cols: FloatArray, u: FloatArray) -> FloatArray:
+    """Lag-1 autocorrelation of each column after OLS removal of ``[1, u]``."""
+    q, _ = np.linalg.qr(np.column_stack([np.ones_like(u), u]))
+    r = y_cols - q @ (q.T @ y_cols)
+    den = np.sum(r * r, axis=0)
+    return np.where(den > 0.0, np.sum(r[:-1] * r[1:], axis=0) / np.where(den > 0.0, den, 1.0), 0.0)
+
+
+def _ar1_factor_from_rho(rho_hat: FloatArray, n: int) -> FloatArray:
+    """Variance inflation of S for lag-1 estimates ``rho_hat`` (same mapping as
+    :func:`ar1_rank_factor`: Marriott-Pope correction, truncation, Spearman map)."""
+    rho = np.clip((n * np.asarray(rho_hat, dtype=np.float64) + 1.0) / (n - 4.0), 0.0, 0.95)
+    k = np.arange(1, n, dtype=np.float64)
+    w = (n - k) * (n - k - 1) * (n - k - 2) / (n * (n - 1) * (n - 2))
+    rs = (6.0 / np.pi) * np.arcsin(np.power.outer(rho, k) / 2.0)
+    return np.asarray(1.0 + 2.0 * (rs @ w), dtype=np.float64)
+
+
+def _ar1_series(rng: np.random.Generator, n: int, rhos: FloatArray) -> FloatArray:
+    """Stationary Gaussian AR(1) columns with per-column coefficients ``rhos``."""
+    e = rng.standard_normal((n, rhos.size))
+    x = np.empty((n, rhos.size), dtype=np.float64)
+    x[0] = e[0] / np.sqrt(1.0 - rhos**2)
+    for i in range(1, n):
+        x[i] = rhos * x[i - 1] + e[i]
+    return x
+
+
+def _mk_s_columns(y_cols: FloatArray) -> FloatArray:
+    """Mann-Kendall S for each column (observations already in time order)."""
+    s = np.zeros(y_cols.shape[1], dtype=np.float64)
+    for i in range(y_cols.shape[0] - 1):
+        s += np.sum(np.sign(y_cols[i + 1 :] - y_cols[i]), axis=0)
+    return s
+
+
+def ar1_bootstrap_reference(
+    t: FloatArray, y: FloatArray, *, n_boot: int = _AR1_BOOT_B, seed: int = 20261126
+) -> tuple[float, FloatArray]:
+    """Parametric AR(1) bootstrap reference for the autocorrelation-corrected MK z.
+
+    The lag-1 autocorrelation is estimated from OLS-detrended residuals and debiased
+    by simulation (the AR(1) coefficient whose simulated estimator mean matches the
+    observed estimate). Bootstrap series are simulated with coefficients drawn around
+    that value (normal, standard error ``sqrt((1 - rho^2)/n)``), so the uncertainty in
+    the estimated autocorrelation is propagated; each is studentized with its own
+    re-estimated variance factor exactly as the observed statistic is. Returns the
+    observed lag-1 estimate and the sorted bootstrap ``|z|`` values. Short, strongly
+    autocorrelated series are anti-conservative under the normal reference with a
+    plug-in factor (audit CRT-06); this reference restores nominal levels.
+    """
+    n = int(y.size)
+    span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+    u = (t - t[0]) / span
+    rho_obs = float(_ols_lag1(y[:, None], u)[0])
+    rng = np.random.default_rng((int(seed), n))
+    r_t = float(np.clip(rho_obs, 0.0, 0.95))
+    for _ in range(4):
+        m = float(np.mean(_ols_lag1(_ar1_series(rng, n, np.full(400, r_t)), u)))
+        r_t = float(np.clip(r_t + (rho_obs - m), 0.0, 0.95))
+    se = float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
+    rhos = np.clip(r_t + se * rng.standard_normal(int(n_boot)), 0.0, 0.95)
+    yb = _ar1_series(rng, n, rhos)
+    sb = _mk_s_columns(yb)
+    vb = n * (n - 1) * (2 * n + 5) / 18.0 * _ar1_factor_from_rho(_ols_lag1(yb, u), n)
+    zb = np.abs(sb - np.sign(sb)) / np.sqrt(vb)
+    return rho_obs, np.sort(zb)
+
+
 def _censored_kendall_score(
     t: FloatArray,
     vals: FloatArray,
@@ -973,15 +1046,28 @@ def fit_theil_sen_segment(
     n_p = int(slopes_sorted.size)
     slope = float(np.median(slopes_sorted))
     intercept = float(np.median(y - slope * t))
+    boot_z: FloatArray | None = None
     if autocorr_correction == "hamed_rao" and var_s > 0.0:
         var_s *= hamed_rao_factor(t, y, slope)
     elif autocorr_correction == "ar1" and var_s > 0.0:
-        var_s *= ar1_rank_factor(t, y, slope)
+        if 6 <= n <= _AR1_BOOT_MAX_N:
+            rho_obs, boot_z = ar1_bootstrap_reference(t, y)
+            var_s *= float(_ar1_factor_from_rho(np.array([rho_obs]), n)[0])
+        else:
+            var_s *= ar1_rank_factor(t, y, slope)
 
     if n <= max_exact_n and var_s > 0.0:
         z_mk = (s_stat - np.sign(s_stat)) / np.sqrt(var_s) if abs(s_stat) > 0.0 else 0.0
         pval = float(2.0 * norm.sf(abs(z_mk)))
-        c_alpha = float(norm.isf(0.5 * alpha) * np.sqrt(var_s))
+        z_crit = float(norm.isf(0.5 * alpha))
+        if boot_z is not None:
+            # Short series: refer the studentized statistic to its AR(1) bootstrap
+            # distribution (Monte Carlo p-value; below resolution keep the normal value).
+            exceed = int(np.sum(boot_z >= abs(z_mk)))
+            p_mc = (1.0 + exceed) / (boot_z.size + 1.0)
+            pval = float(min(p_mc, pval)) if exceed == 0 else float(p_mc)
+            z_crit = float(np.quantile(boot_z, 1.0 - alpha))
+        c_alpha = float(z_crit * np.sqrt(var_s))
         # Gilbert (1987, Sec. 16.4): lower = M1-th, upper = (M2 + 1)-th ordered slope
         # with M1 = (N' - C)/2 and M2 = (N' + C)/2 (rounded, as in R trend::sens.slope).
         idx_lo = max(0, min(n_p - 1, int(np.round((n_p - c_alpha) / 2.0)) - 1))
