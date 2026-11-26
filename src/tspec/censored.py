@@ -129,6 +129,13 @@ class CensoredConfig:
     n_imputations : int
         Multiple imputations pooled with Rubin's rules for ``analyze_series`` OLS
         segment slopes in censored segments (default 20; ``1`` disables).
+    detection_imputations : int
+        Imputations over which ``just_jumps`` / ``stpd`` pool each candidate's
+        calibrated p-value (Licht–Rubin) on censored data (default ``1``: the single
+        primary imputation). With ``> 1`` each candidate window is re-imputed from a
+        censored regression of its null model (trend plus harmonics), so decisions no
+        longer depend on the imputation seed; this is conservative and can cost jump
+        power under heavy censoring (see the censored-data guide).
     """
 
     method: Literal["ros", "parametric", "substitution"] = "ros"
@@ -153,12 +160,15 @@ class CensoredConfig:
     imputation_model: Literal["trend", "marginal"] = "trend"
     trend_harmonics: tuple[float, ...] | None = None
     n_imputations: int = 20
+    detection_imputations: int = 1
 
     def __post_init__(self) -> None:
         if self.imputation_model not in ("trend", "marginal"):
             raise ValueError("`imputation_model` must be 'trend' or 'marginal'.")
         if self.n_imputations < 1:
             raise ValueError("`n_imputations` must be >= 1.")
+        if self.detection_imputations < 1:
+            raise ValueError("`detection_imputations` must be >= 1.")
         if not (0.0 < self.imputed_weight_factor <= 1.0):
             raise ValueError(
                 f"`imputed_weight_factor` must lie in (0, 1]; got {self.imputed_weight_factor}."

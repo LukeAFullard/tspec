@@ -1185,8 +1185,10 @@ def _run_just_jumps_array(
 
     ``mi_spec = (n_imputations, dist)`` pools each candidate's jump and step p-values
     (Licht–Rubin) over ``n_imputations`` proper imputations of the candidate's window
-    drawn from a censored regression that includes the candidate jump (congenial with
-    the test), before the Holm adjustment. Candidate locations come from the primary
+    drawn from a censored regression of the window's null model (trend plus
+    harmonics), before the Holm adjustment. (Imputing with the candidate jump in the
+    model builds the data-selected location into every imputation and was
+    anti-conservative in simulation.) Candidate locations come from the primary
     imputation ``y_valid``. ``mi_counter`` (``[n_pooled, n_fallback]``) records how
     many candidates were pooled and how many fell back to the primary imputation.
     """
@@ -1316,15 +1318,13 @@ def _run_just_jumps_array(
             j_cand = j_idx - ws_c
             u_w = (t_w - t_w[0]) / (float(t_w[-1] - t_w[0]) if t_w[-1] > t_w[0] else 1.0)
             fr = best_c.selected_freqs
-            step_c = (np.arange(n_w_c) >= j_cand).astype(np.float64)
             imps = None
-            # Imputation model: trend + candidate jump + harmonics; drop harmonics when the
-            # window has too few detected values for the full model.
+            # Imputation model: the window's null model (trend + harmonics); harmonics are
+            # dropped when the window has too few detected values.
             for fr_imp in (fr, fr[:1], fr[:0]) if fr.size > 1 else (fr, fr[:0]):
                 cols = [np.ones(n_w_c), u_w]
                 for f_h in fr_imp:
                     cols += [np.cos(2.0 * np.pi * f_h * t_w), np.sin(2.0 * np.pi * f_h * t_w)]
-                cols += [step_c, step_c * u_w]
                 imps = window_congenial_imputations(
                     provenance.original_values[ws_c:we_c],
                     provenance.status_codes[ws_c:we_c],
@@ -1687,13 +1687,13 @@ def just_jumps(
         and cfg is not None
         and prov is not None
         and prov.n_censored > 0
-        and cfg.n_imputations > 1
+        and cfg.detection_imputations > 1
         and cfg.scope != "windowed"
         and eff_calib != "none"
     ):
         mi_dist = resolve_imputation_dist(prov, cfg)
         if mi_dist is not None:
-            mi_spec = (int(cfg.n_imputations), mi_dist)
+            mi_spec = (int(cfg.detection_imputations), mi_dist)
     mi_counter = [0, 0]
 
     accepted, all_cands_valid, win_fb = _run_just_jumps_array(

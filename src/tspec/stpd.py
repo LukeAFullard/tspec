@@ -1598,8 +1598,8 @@ def _run_stpd_windows(
     ``alpha`` bounds the probability of accepting any false turning point.
     ``mi_spec = (n_imputations, dist)`` pools each candidate window's calibrated
     p-value (Licht–Rubin) over ``n_imputations`` proper imputations of the window drawn
-    from a censored regression with a hinge at the candidate knot (congenial with the
-    test); the other gates use the primary imputation. ``mi_counter`` records
+    from a censored straight-line regression (the window's null model); the other
+    gates use the primary imputation. ``mi_counter`` records
     ``[n_pooled, n_fallback]``.
     """
     accepted_raw: list[tuple[int, float, _WindowTpdStats, int, int]] = []
@@ -1674,13 +1674,7 @@ def _run_stpd_windows(
                     and bool(np.any(provenance.status_codes[w_start:w_stop] != 0))
                 ):
                     span_w = float(t_w[-1] - t_w[0]) if t_w[-1] > t_w[0] else 1.0
-                    X_imp = np.column_stack(
-                        [
-                            np.ones(n_w),
-                            (t_w - t_w[0]) / span_w,
-                            np.maximum(0.0, t_w - t_w[stats.local_tp]) / span_w,
-                        ]
-                    )
+                    X_imp = np.column_stack([np.ones(n_w), (t_w - t_w[0]) / span_w])
                     imps = window_congenial_imputations(
                         provenance.original_values[w_start:w_stop],
                         provenance.status_codes[w_start:w_stop],
@@ -2063,13 +2057,13 @@ def detect_turning_points(
         and cfg is not None
         and prov is not None
         and prov.n_censored > 0
-        and cfg.n_imputations > 1
+        and cfg.detection_imputations > 1
         and cfg.scope != "windowed"
         and eff_tp_cal != "none"
     ):
         mi_dist = resolve_imputation_dist(prov, cfg)
         if mi_dist is not None:
-            mi_spec = (int(cfg.n_imputations), mi_dist)
+            mi_spec = (int(cfg.detection_imputations), mi_dist)
     mi_counter = [0, 0]
 
     accepted_raw, flagged_raw, density_imbalanced, win_fb = _run_stpd_windows(

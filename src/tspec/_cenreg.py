@@ -301,10 +301,10 @@ def window_congenial_imputations(
 ) -> list[FloatArray] | None:
     """Proper multiple imputations of one window from a censored regression on ``X``.
 
-    ``X`` should contain the structure being tested (e.g. the candidate jump or
-    turning point) so the imputations are congenial with the test: imputing from a
-    model without it pulls every imputation toward the null. Returns ``None`` when the
-    window has no censored values or the model cannot be fitted.
+    Detection uses the window's null model as ``X``: including a structure whose
+    location was selected from the data (a candidate jump or knot) builds that
+    selection into every imputation and inflates false detections. Returns ``None``
+    when the window has no censored values or the model cannot be fitted.
     """
     if not np.any(codes != 0):
         return None
