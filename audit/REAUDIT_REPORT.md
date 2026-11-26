@@ -3,6 +3,8 @@
 **Commit audited:** `65d0f87b8598e65295be1343652f5e6cb4d9f628` plus the re-audit commits on branch `claude/ecstatic-cori-d57odm` (documentation and `explain()` text only; no change to numerical results) | **Date:** 2026-11-26 | **Auditor:** Claude Code (Anthropic), automated audit agent
 **Environment:** Python 3.13.18, numpy 2.5.3, scipy 1.18.1, pandas 3.0.5, ndimpute 0.1.1 (reference libs: statsmodels 0.15.0, astropy 8.0.3, pymannkendall 1.4.3, hypothesis 6.170.17), Ubuntu 24.04.5 LTS (Linux 6.18 x86_64), 4 CPU cores
 
+> **Update (addendum at the end):** both Critical issues found by this re-audit were then fixed and re-verified. CRT-06 is fixed. CRT-04 is fixed for STPD, with a residual on the `analyze_series` trend band (about 93% coverage) re-graded Major. The updated readiness score is **82%** (no caps apply).
+
 This is a re-audit of the fixed package against the original audit (`audit/AUDIT_REPORT.md`, commit `22e2d44`, score 40%). It uses the same rubric, severity table and caps. Fix-by-fix before/after evidence is in `audit/FIXES.md`. Raw outputs are in `audit/post_fix/`. Unlike the original audit, the re-audit also made small documentation and `explain()` corrections where it found inaccuracies; these are listed in §6 as fixed during the re-audit.
 
 ---
@@ -416,3 +418,92 @@ The Licht–Rubin pooling of p-values was checked against Rubin's Wald test on a
 - van Buuren, S. (2018). *Flexible Imputation of Missing Data* (2nd ed.), §5.3. CRC Press.
 - Yue, S., & Wang, C. Y. (2004). The Mann–Kendall test modified by effective sample size to detect trend in serially correlated hydrological series. *Water Resources Management* 18, 201–218.
 - Further references as in `AUDIT_REPORT.md` Appendix B.
+
+
+---
+
+## Addendum: Follow-up Fixes of CRT-04 and CRT-06 (2026-11-26)
+
+Both Critical findings above were addressed after this re-audit. The rubric, severity table and caps are unchanged. Evidence is from new Monte Carlo runs on the fixed code.
+
+### CRT-06: fixed
+For segments with n ≤ 300, `mk_correction="ar1"` now refers the Mann–Kendall statistic to a parametric AR(1) bootstrap, used for both the p-value and the Sen CI critical value:
+- The lag-1 autocorrelation is debiased by simulation.
+- Its sampling uncertainty is propagated, and each replicate is studentized exactly like the observed statistic.
+- Bootstrap seeds are per data set, so Monte Carlo error averages out across data sets.
+
+Evidence (`audit/reaudit_mk.py`, R = 1000 per cell; nominal 5% / 95%):
+
+| n | Type-I, ρ = 0 / 0.3 / 0.5 / 0.7 | Sen CI coverage, same ρ |
+|---|---|---|
+| 60 | 4.7% / 6.1% / 3.8% / 6.2% | 95.4% / 93.3% / 95.9% / 93.5% |
+| 150 | 3.9% / 5.1% / 6.2% / 5.3% | 96.2% / 94.8% / 93.7% / 94.3% |
+| 250 | 4.6% / 6.2% / 5.0% / 6.2% | 94.7% / 93.4% / 94.6% / 93.7% |
+
+Across cells the mean is about 5.3%. Before the fix the same cells reached 8.6% and 91.4%.
+- **Cross-checks:** the library's decisions agree with an oracle reference at the true ρ for 99.6% of 1500 data sets. Independent replications of the highest cell pool to 5.3% (4800 data sets).
+
+### CRT-04: fixed for STPD; residual on the pipeline band (re-graded Major)
+`stpd()` and `analyze_series()` default to `band_method="bootstrap"`, a detect-then-fit wild bootstrap (documented in `docs/reference/math.md` §7):
+- Residuals are leverage-adjusted.
+- Every turning point is re-located with STPD's own knot estimator over its detecting window, and the trend is refitted.
+- The fixed-structure dispersion is calibrated to the analytical standard error.
+- In `analyze_series`, the windowed seasonal and jump-step estimators are re-run with exact vectorised replicas, verified to 1e-14, and the OLS segment slopes are re-estimated.
+
+`band_method="conditional"` and `parity_mode=True` keep the analytical bands.
+
+Evidence (`audit/post_crt04_bands.py`; coverage after correct detection, nominal 95%):
+
+| Design | Bootstrap (default) | Conditional (previous) |
+|---|---|---|
+| STPD n = 150, σ = 0.3 (R = 300) | 95.5% | 92.1% |
+| STPD n = 150, σ = 1.0 | 97.1% | 94.8% |
+| STPD n = 500, σ = 0.6 | 97.2% | 85.2% |
+| `analyze_series` trend band (MC7b, R = 200) | 93.3% (93.1% on 230 further data sets) | 83.2% |
+| `analyze_series` OLS segment slopes (MC7b) | 93.3% (≈ 94% further) | 90.2% |
+
+Development notes:
+- **Rejected variants:**
+  - Profile-least-squares knot re-estimation made coverage worse (80–85%), because it is more precise than STPD's estimator.
+  - A global harmonic seasonal re-fit reached only 86%.
+- **Diagnostics behind the final design:**
+  - A knot-fixed wild bootstrap under-dispersed the sequential trend estimator (92.3% against 94.5% analytical), which led to the variance calibration.
+  - Percentile intervals were about 1 point closer to nominal than basic intervals for the trend bands.
+  - The confirmatory runs above used fresh seeds where possible. The canonical seeds match the original MC7/MC7b designs.
+
+**MAJ-06 (residual):** the `analyze_series` trend band covers about 93.2% (pooled; MC-SE ≈ 0.7%) at nominal 95% after correct detection.
+- *Location:* `src/tspec/pipeline.py`, `_pipeline_bootstrap`.
+- *Confidence:* Confirmed.
+- *Grading:* this lies at the boundary of the severity table's Critical example (88–93%). It is graded Major because the band now includes location, seasonal and step uncertainty, and the shortfall is small.
+- *Cause:* the remaining shortfall is not reproduced by re-running the full decomposition in each replicate (88.7% with B = 99). It is consistent with selection effects of the windowed ALLSSA frequency choice, which is held fixed.
+- *Recommended next step:* a double bootstrap or a calibrated level adjustment.
+- All post-detection bands remain conditional on the number of breakpoints found. A missed turning point still leaves the band wrong near it.
+
+### Updated findings and score
+
+| Severity | Open after the addendum |
+|---|---|
+| 🟥 Blocker | 0 |
+| 🟧 Critical | 0 |
+| 🟨 Major | 1 (MAJ-06) |
+| 🟦 Minor | 5 (MIN-03r, MIN-11, MIN-12, MIN-13, MIN-14) |
+| ⬜ Info | 10 (INF-01–05, 07–10, plus INF-11: the bootstrap bands add about 0.2–0.6 s per call, and about 6 s with `refit_mode="l1"`) |
+
+| Category | Score | Weight | Weighted | Change and reason |
+|---|---:|---:|---:|---|
+| Statistical validity (A–H) | 8.5 | 30% | 2.55 | +0.5: post-detection inference now propagates knot-location uncertainty; short-series MK corrected |
+| Calibration of uncertainty (K) | 8.5 | 20% | 1.70 | +1.5: STPD bands 95–97%, MK 3.8–6.2%; residual pipeline band ≈ 93% |
+| Code correctness & robustness (J) | 8 | 15% | 1.20 | unchanged (148 tests pass) |
+| Numerical stability | 9 | 10% | 0.90 | unchanged |
+| Test-suite adequacy & validation | 6.5 | 10% | 0.65 | +0.5: calibration regression tests for both fixes; the high-replicate studies are still not in CI (MIN-11) |
+| Documentation accuracy & disclosure | 8 | 10% | 0.80 | unchanged (guides, math, CHANGELOG, README, FIXES updated) |
+| Reproducibility | 8 | 5% | 0.40 | unchanged (all bootstraps deterministic) |
+| **Total** | | | **8.20 / 10 = 82%** | |
+
+- **Caps:** no Blockers and no Critical issues, so no cap applies. The tests pass (148/148).
+- **Updated readiness: 82%**, verdict *usable with stated caveats; fix Major issues before publication-critical use*.
+- **Path to ≥ 90%:**
+  - MAJ-06: calibrate the pipeline band, or bootstrap the frequency selection.
+  - MIN-11: a scheduled CI job running the high-replicate studies.
+  - MIN-03r: per-window IRLS convergence reporting.
+  - MIN-12: report censored-detection stability by default.

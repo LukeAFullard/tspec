@@ -3,8 +3,8 @@
   "bootstrap": {
    "R": 300,
    "n_detected": 300,
-   "curve_cov_given_detect": 0.9471555555555555,
-   "curve_cov_all": 0.9471555555555555,
+   "curve_cov_given_detect": 0.9548222222222223,
+   "curve_cov_all": 0.9548222222222223,
    "mean_width": 0.21533859854758536
   },
   "conditional": {

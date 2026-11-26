@@ -2,7 +2,7 @@
  "bootstrap": {
   "R": 200,
   "correct_structure": 0.965,
-  "trend_band_cov|correct": 0.9274791306850892,
+  "trend_band_cov|correct": 0.9332361830742659,
   "segment_slope_cov|correct": 0.9326424870466321
  },
  "conditional": {

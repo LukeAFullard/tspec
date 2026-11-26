@@ -23,6 +23,10 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - **`just_monitor(sequential_control="consecutive_k")`** with a `horizon`: the per-step level is now calibrated by Monte Carlo so that `k` consecutive exceedances within the horizon occur with probability ≤ `alpha` under the fitted history model (new `n_mc`, default 999). Future sampling gaps are resampled from the history, so the level uses no monitoring data.
   - Effect at `alpha=0.05`: the familywise false-alarm rate is 3.3–5.3% over 24–96 steps (Monte Carlo SE 0.6–1.1%) (uncalibrated: up to 15% over 96 steps), and 2σ steps are detected more often than with Pocock spending (82–87% vs. 48–49% within 24 steps).
   - Without `horizon` the per-step `alpha` is unchanged and the new warning `UNCALIBRATED_CONSECUTIVE_K` is reported.
+- **`stpd` / `detect_turning_points` and `analyze_series`**: post-detection bands come from a detect-then-fit bootstrap by default (new `band_method="bootstrap"`, `n_boot=499`; `"conditional"` and `parity_mode=True` keep the analytical bands). The bootstrap is a wild residual bootstrap with leverage-adjusted residuals that re-locates every turning point with STPD's own knot estimator, refits, and calibrates the fixed-structure dispersion to the analytical standard error. In `analyze_series` it also re-runs the windowed seasonal and jump-step estimators and bootstraps the OLS segment-slope CIs.
+  - Effect, after correct detection at nominal 95%: STPD bands 95.5–97.2% (analytical: 85–95%). The `analyze_series` trend band covers 93% (was 83%) and segment slopes 93% (was 90%).
+  - `refit_mode="l1"` fits now get a band (about 6 s per call).
+- **Mann–Kendall / Sen with `mk_correction="ar1"`**: segments with n ≤ 300 refer the statistic to a parametric AR(1) bootstrap (debiased autocorrelation, with its sampling uncertainty propagated) for the p-value and the Sen CI. Type-I error at α = 0.05 is now 3.8–6.2% for n = 60–250 and ρ = 0–0.7 (analytical factor: up to 8.6%).
 - **`analyze_series`**:
   - New `mk_correction="ar1"` (default) corrects Mann–Kendall/Sen inference for serial correlation; `"hamed_rao"` and `"none"` are also available.
   - With `slope_estimator="sen"`, the median-pivoted fan moves from `trend_ci_low/high` to the new `slope_fan_low/high` (it is not a trend CI).
@@ -36,6 +40,7 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - New warning `SHORT_SEASONAL_WINDOW` when windows cover fewer than two cycles of the lowest searched frequency.
 - `allssa(significance="sidak")` now counts about three times the Rayleigh number (T × bandwidth) of independent frequencies, calibrated by simulation for short windows.
 - `lssa(peak_fap=...)` and `LssaResult.peak_fap`: the family-wise false-alarm probability of the highest peak.
+- `band_method` / `n_boot` on `stpd`, `detect_turning_points` and `analyze_series`. New fields: `StpdResult.band_method`, `PipelineResult.band_method`, `TurningPointEvent.detection_window`, `JustDecomposeResult.window_bounds` / `window_dilation`.
 - `CensoredConfig.detection_imputations` (default `1`): with `> 1`, `just_jumps` and `stpd` re-impute each candidate window from its null model and pool the calibrated p-values over the imputations (Licht–Rubin) before the Holm adjustment. Decisions then no longer depend on the imputation seed (1–9% of decisions flip vs. 2–27% with a single imputation at 20–50% censoring). It is conservative and can cost jump power under heavy censoring. Reported as `JustJumpResult.n_imputations` / `StpdResult.n_imputations`, with warning `MI_DETECTION_FALLBACK`.
 - `MonitorResult.consecutive_k` / `consecutive_k_calibrated`, `StpdResult.tp_calibration`, `JustJumpResult.jump_calibration`, `AllssaResult.significance`, `JustDecomposeResult.trend_bc`/`trend_reg_bc`/`trend_ci_method`, and `PipelineResult.slope_fan_low/high`.
 - `CensoredConfig.imputation_model`, `trend_harmonics`, and `n_imputations`.
@@ -66,6 +71,6 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
 - Figures regenerated; references added.
 
 ### Known limitations
-- STPD / `analyze_series` trend bands remain conditional on the detected structure (coverage roughly 83–92%).
+- Post-detection bands are conditional on the number of breakpoints found. The `analyze_series` trend band covers about 93% at nominal 95% after correct detection.
 - STPD power depends on the information within one window (default 5 seasonal cycles), not on the record length.
 - By default, JUST/STPD detection p-values on censored data use a single time-conditional imputation. This kept valid size in simulation (2–3% false jumps at `jump_alpha=0.05`, borderline 6.7% for seasonal series at 50% censoring), but borderline decisions depend on the imputation seed. `detection_imputations` removes the seed dependence at a cost in power.
