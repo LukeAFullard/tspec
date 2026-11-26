@@ -19,6 +19,7 @@ import numpy as np
 from scipy.stats import f as f_dist
 from scipy.stats import t as t_dist
 
+from ._cenreg import pool_pvalues, window_congenial_imputations
 from ._diagnostics import (
     DiagnosticReport,
     WarningItem,
@@ -44,6 +45,7 @@ from .censored import (
     impute_window_local,
     prepare_series_with_censoring,
     recensor_to_common_limit,
+    resolve_imputation_dist,
 )
 from .exceptions import InsufficientDataError
 from .results import (
@@ -62,6 +64,42 @@ from .spectral import (
 SeasonMode = Literal["allssa", "ols", "none"]
 WindowMode = Literal["count", "duration"]
 JumpCalibration = Literal["montecarlo", "bonferroni", "none"]
+SeasonSignificance = Literal["sidak", "montecarlo", "per_frequency"]
+
+
+def _short_seasonal_window_warning(
+    t: FloatArray, windows: list[tuple[int, int]], omega: FloatArray, season: str, sig: str
+) -> WarningItem | None:
+    """Warn when windows cover fewer than two cycles of the lowest searched frequency."""
+    if season != "allssa" or sig == "per_frequency" or omega.size == 0 or not windows:
+        return None
+    spans = [float(t[b - 1] - t[a]) for a, b in windows if b - a > 1]
+    if not spans:
+        return None
+    cycles = float(np.median(spans)) * float(np.min(omega))
+    if cycles >= 2.0:
+        return None
+    return WarningItem(
+        code="SHORT_SEASONAL_WINDOW",
+        severity="caution",
+        message=(
+            f"Windows span about {cycles:.1f} cycle(s) of the lowest searched frequency, so real "
+            "harmonics may not be family-wise identifiable and seasonality can leak into the "
+            "trend/jump estimates."
+        ),
+        suggestion=(
+            "Use longer windows (`size`/`window_duration`), `season='ols'` with known frequencies, "
+            "or `season_significance='per_frequency'` if seasonality is known to be present."
+        ),
+    )
+
+
+def _resolve_season_significance(value: str, parity_mode: bool) -> str:
+    if value not in ("sidak", "montecarlo", "per_frequency"):
+        raise ValueError(
+            f"Unknown `season_significance` {value!r}. Options: 'sidak', 'montecarlo', 'per_frequency'."
+        )
+    return "per_frequency" if parity_mode else value
 
 
 @dataclass(frozen=True)
@@ -150,6 +188,9 @@ class JustJumpResult(BaseResult):
     jump_calibration : str
         ``"montecarlo"``, ``"bonferroni"``, or ``"none"``: how ``jump_pvalue``
         accounts for the split search (plus Holm adjustment across candidates).
+    n_imputations : int
+        Number of imputations whose per-candidate p-values were pooled (Licht–Rubin)
+        for censored data; ``1`` means a single imputation.
     """
 
     jumps: tuple[JumpEvent, ...]
@@ -168,6 +209,7 @@ class JustJumpResult(BaseResult):
     censoring: CensoringProvenance | None
     diagnostics: DiagnosticReport
     jump_calibration: str = "none"
+    n_imputations: int = 1
 
     @property
     def jump_indices(self) -> IntArray:
@@ -228,6 +270,8 @@ class JustJumpResult(BaseResult):
                 if self.jump_calibration in ("montecarlo", "bonferroni")
                 else "uncalibrated screening F-test"
             )
+            if self.n_imputations > 1:
+                p_label += f" pooled over {self.n_imputations} imputations"
             for k, j in enumerate(self.jumps, start=1):
                 t_str = format_timestamp(j.time, self.is_datetime)
                 step_word = "upward" if j.magnitude >= 0 else "downward"
@@ -314,6 +358,10 @@ class JustDecomposeResult(BaseResult):
         Jump indices used (input axis).
     window_frequencies : tuple of ndarray
         Seasonal frequencies fitted in each window.
+    window_bounds : tuple of (int, int)
+        Valid-axis ``[start, stop)`` of each window, aligned with ``window_frequencies``.
+    window_dilation : float
+        Exponent factor of the Gaussian window weights ``exp(dilation * (t - tau)^2)``.
     season, window_mode : str
         Settings used.
     censoring : CensoringProvenance or None
@@ -364,6 +412,8 @@ class JustDecomposeResult(BaseResult):
     trend_ci_method: str = "model"
     trend_bc: FloatArray | None = None
     trend_reg_bc: FloatArray | None = None
+    window_bounds: tuple[tuple[int, int], ...] = ()
+    window_dilation: float = float("nan")
 
     def summary(self) -> str:
         t_range = float(np.ptp(self.trend)) if self.trend.size else 0.0
@@ -569,6 +619,7 @@ def _detect_jump_in_window(
     parity_mode: bool,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    season_significance: str = "per_frequency",
 ) -> tuple[int, float, float, float, FloatArray]:
     """Scan all interior split indices ``3 .. n_win - 3`` in a single window."""
     eff_robust: RobustMethod = "none" if parity_mode else robust
@@ -607,6 +658,7 @@ def _detect_jump_in_window(
                 compute_cov=False,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=season_significance,
             )
             rss = res_a.norm_res
             tr_c = res_a.trend_coeff
@@ -694,29 +746,24 @@ def _detect_jump_in_window(
     return best_ind, best_mag, best_dir, best_rss, best_freqs
 
 
-def _mc_maxf_pvalue(
+def _mc_maxf_null(
     t0: FloatArray,
     pw_win: PreparedWeights,
     test_freqs: FloatArray,
-    f_obs: float,
     j_lo: int,
     j_hi: int,
     n_mc: int,
     seed: int | Sequence[int],
-) -> float:
-    """Exact Monte Carlo p-value of an observed jump F statistic against the null
-    distribution of the **maximum** F over all candidate splits ``j_lo <= j < j_hi``.
+) -> tuple[FloatArray, int, int] | None:
+    """Monte Carlo draws of the null maximum jump F over splits ``j_lo <= j < j_hi``.
 
-    Under Gaussian errors with the supplied weights, the split-wise jump F statistics
-    (null: linear trend + fixed harmonics; alternative: adds a level and slope change at
-    ``j``) are pivotal, so simulating standard-normal whitened errors yields the exact
-    finite-sample null distribution of ``max_j F_j`` for this window design. This corrects
-    the anti-conservative fixed-split F reference used for a data-chosen split
-    (Andrews, 1993).
+    Returns ``(max_f_draws, n_splits, dof2)`` or ``None`` when the design is degenerate.
+    The draws depend only on the window design, weights, harmonics and seed, so they
+    can be reused for several response vectors (e.g. multiple imputations).
     """
     n = int(t0.size)
-    if j_hi <= j_lo or not np.isfinite(f_obs):
-        return float("nan")
+    if j_hi <= j_lo:
+        return None
     span = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
     u = (t0 - t0[0]) / span
     n_f = int(test_freqs.size)
@@ -729,7 +776,7 @@ def _mc_maxf_pvalue(
         X0[:, 3::2] = np.sin(ph)
     dof2 = n - X0.shape[1] - 2
     if dof2 <= 0:
-        return float("nan")
+        return None
     q0, _ = np.linalg.qr(whiten_matrix(X0, pw_win), mode="reduced")
     splits = np.arange(j_lo, j_hi)
     n_j = int(splits.size)
@@ -744,10 +791,10 @@ def _mc_maxf_pvalue(
     det = s11 * s22 - s12 * s12
     ok = (s11 > 0.0) & (s22 > 0.0) & (det > 1e-10 * s11 * s22)
     if not np.any(ok):
-        return float("nan")
+        return None
     a, b, s11, s22, s12, det = a[:, ok], b[:, ok], s11[ok], s22[ok], s12[ok], det[ok]
     rng = np.random.default_rng(seed)
-    exceed = 0
+    draws = np.empty(int(n_mc), dtype=np.float64)
     done = 0
     chunk = 256
     while done < n_mc:
@@ -760,8 +807,94 @@ def _mc_maxf_pvalue(
         red = (s22[:, None] * g1 * g1 - 2.0 * s12[:, None] * g1 * g2 + s11[:, None] * g2 * g2) / det[:, None]
         red = np.minimum(red, rss0[None, :] * (1.0 - 1e-12))
         f_null = (0.5 * red) / ((rss0[None, :] - red) / dof2)
-        exceed += int(np.sum(np.max(f_null, axis=0) >= f_obs))
+        draws[done : done + m] = np.max(f_null, axis=0)
         done += m
+    return draws, n_j, int(dof2)
+
+
+def _best_jump_split(
+    t0: FloatArray,
+    y: FloatArray,
+    pw_win: PreparedWeights,
+    test_freqs: FloatArray,
+    j_lo: int,
+    j_hi: int,
+) -> int | None:
+    """Split ``j_lo <= j < j_hi`` maximising the jump F statistic (level + slope change)
+    against a linear trend plus fixed harmonics, via 2-column Schur complements."""
+    n = int(t0.size)
+    if j_hi <= j_lo:
+        return None
+    span = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
+    u = (t0 - t0[0]) / span
+    n_f = int(test_freqs.size)
+    X0 = np.empty((n, 2 + 2 * n_f), dtype=np.float64)
+    X0[:, 0] = 1.0
+    X0[:, 1] = u
+    if n_f > 0:
+        ph = np.outer((2.0 * np.pi) * t0, test_freqs)
+        X0[:, 2::2] = np.cos(ph)
+        X0[:, 3::2] = np.sin(ph)
+    q0, _ = np.linalg.qr(whiten_matrix(X0, pw_win), mode="reduced")
+    splits = np.arange(j_lo, j_hi)
+    n_j = int(splits.size)
+    step = (np.arange(n)[:, None] >= splits[None, :]).astype(np.float64)
+    zw = whiten_matrix(np.hstack([step, step * u[:, None]]), pw_win)
+    zp = zw - q0 @ (q0.T @ zw)
+    a_m = zp[:, :n_j]
+    b_m = zp[:, n_j:]
+    s11 = np.sum(a_m * a_m, axis=0)
+    s22 = np.sum(b_m * b_m, axis=0)
+    s12 = np.sum(a_m * b_m, axis=0)
+    det = s11 * s22 - s12 * s12
+    ok = (s11 > 0.0) & (s22 > 0.0) & (det > 1e-10 * s11 * s22)
+    if not np.any(ok):
+        return None
+    yw = whiten_vector(y, pw_win)
+    r = yw - q0 @ (q0.T @ yw)
+    g1 = a_m.T @ r
+    g2 = b_m.T @ r
+    red = np.where(ok, (s22 * g1 * g1 - 2.0 * s12 * g1 * g2 + s11 * g2 * g2) / np.where(ok, det, 1.0), -np.inf)
+    return int(splits[int(np.argmax(red))])
+
+
+def _mc_maxf_pvalue(
+    t0: FloatArray,
+    pw_win: PreparedWeights,
+    test_freqs: FloatArray,
+    f_obs: float,
+    j_lo: int,
+    j_hi: int,
+    n_mc: int,
+    seed: int | Sequence[int],
+    cache: dict[Any, Any] | None = None,
+) -> float:
+    """Exact Monte Carlo p-value of an observed jump F statistic against the null
+    distribution of the **maximum** F over all candidate splits ``j_lo <= j < j_hi``.
+
+    Under Gaussian errors with the supplied weights, the split-wise jump F statistics
+    (null: linear trend + fixed harmonics; alternative: adds a level and slope change at
+    ``j``) are pivotal, so simulating standard-normal whitened errors yields the exact
+    finite-sample null distribution of ``max_j F_j`` for this window design. This corrects
+    the anti-conservative fixed-split F reference used for a data-chosen split
+    (Andrews, 1993). ``cache`` (keyed by seed, design size and harmonics) reuses the
+    null draws across response vectors on the same window.
+    """
+    if not np.isfinite(f_obs):
+        return float("nan")
+    key = (
+        tuple(seed) if isinstance(seed, Sequence) else seed,
+        int(t0.size), j_lo, j_hi, int(n_mc), test_freqs.tobytes(),
+    )
+    null = cache.get(key) if cache is not None else None
+    if null is None:
+        null = _mc_maxf_null(t0, pw_win, test_freqs, j_lo, j_hi, n_mc, seed)
+        if cache is not None:
+            cache[key] = null
+    if null is None:
+        return float("nan")
+    draws, n_j, dof2 = null
+    exceed = int(np.sum(draws >= f_obs))
     p_mc = float((1 + exceed) / (n_mc + 1))
     if exceed == 0:
         # Below Monte Carlo resolution: report the (valid) Bonferroni bound over the
@@ -770,6 +903,14 @@ def _mc_maxf_pvalue(
         p_bonf = float(min(1.0, n_j * f_dist.sf(f_obs, 2, dof2)))
         return min(p_mc, p_bonf)
     return p_mc
+
+
+def _jump_split_count(n_win: int, robust: str) -> int:
+    """Number of candidate splits used by the Bonferroni corrections in the jump tests."""
+    if robust != "none":
+        min_seg = min(max(6, min(n_win // 5, 8)), max(3, (n_win - 1) // 2))
+        return max(1, n_win - 2 * min_seg + 1)
+    return max(1, n_win - 5)
 
 
 def _nested_jump_ftests(
@@ -789,6 +930,9 @@ def _nested_jump_ftests(
     calibration: JumpCalibration | None = None,
     n_mc: int = 999,
     mc_seed: int | Sequence[int] = 0,
+    season_significance: str = "per_frequency",
+    mc_cache: dict[Any, Any] | None = None,
+    raw_step: bool = False,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -837,6 +981,7 @@ def _nested_jump_ftests(
             compute_cov=False,
             robust=eff_robust,
             huber_k=huber_k,
+            significance=season_significance,
         )
         test_freqs = null_allssa.frequencies
     else:
@@ -968,11 +1113,14 @@ def _nested_jump_ftests(
     f_jump = max(0.0, (rss0 - rss1) / 2.0) / den
     f_step = max(0.0, rss_hinge - rss1) / den
     if calib == "montecarlo":
-        p_jump = _mc_maxf_pvalue(t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed)
+        p_jump = _mc_maxf_pvalue(
+            t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed, cache=mc_cache
+        )
         # The step test (jump vs best continuous hinge) is also evaluated at the
         # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
         # analytical Bonferroni correction over the scanned splits.
-        p_step = float(min(1.0, float(n_cands) * float(f_dist.sf(f_step, 1, dof2))))
+        step_mult = 1.0 if raw_step else float(n_cands)
+        p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step, 1, dof2))))
         return float(p_jump), p_step
     p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
     p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2))))
@@ -1025,18 +1173,31 @@ def _run_just_jumps_array(
     bonferroni_window: bool = False,
     jump_calibration: JumpCalibration | None = None,
     n_mc: int = 999,
+    season_significance: str = "per_frequency",
     parity_mode: bool,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
+    mi_spec: tuple[int, str] | None = None,
+    mi_counter: list[int] | None = None,
 ) -> tuple[
     list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
     list[WindowCandidate],
     int,
 ]:
-    """Core sliding-window JUST jump search + aggregation + merging."""
+    """Core sliding-window JUST jump search + aggregation + merging.
+
+    ``mi_spec = (n_imputations, dist)`` pools each candidate's jump and step p-values
+    (Licht–Rubin) over ``n_imputations`` proper imputations of the candidate's window
+    drawn from a censored regression of the window's null model (trend plus
+    harmonics), before the Holm adjustment. (Imputing with the candidate jump in the
+    model builds the data-selected location into every imputation and was
+    anti-conservative in simulation.) Candidate locations come from the primary
+    imputation ``y_valid``. ``mi_counter`` (``[n_pooled, n_fallback]``) records how
+    many candidates were pooled and how many fell back to the primary imputation.
+    """
     candidates: list[WindowCandidate] = []
     window_fallbacks = 0
     window_y_cache: dict[tuple[int, int], FloatArray] = {}
@@ -1070,6 +1231,7 @@ def _run_just_jumps_array(
             parity_mode=parity_mode,
             robust=robust,
             huber_k=huber_k,
+            season_significance=season_significance,
         )
         n_w = w_stop - w_start
         dist_center = abs(loc_ind - (n_w - 1) / 2.0)
@@ -1121,6 +1283,7 @@ def _run_just_jumps_array(
         "bonferroni" if bonferroni_window else "none"
     )
     tested: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+    mc_cache: dict[Any, Any] = {}
     for item in grouped:
         j_idx, occ, mag_val, dir_val, _bucket, dis_raw, best_c = item
         if abs(mag_val) < mag_th and abs(dir_val) < dir_th:
@@ -1146,7 +1309,85 @@ def _run_just_jumps_array(
             calibration=calib,
             n_mc=n_mc,
             mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
+            season_significance=season_significance,
+            mc_cache=mc_cache,
         )
+        ws_c, we_c = int(best_c.window_start), int(best_c.window_stop)
+        if (
+            mi_spec is not None
+            and provenance is not None
+            and pw_w.kind != "matrix"
+            and bool(np.any(provenance.status_codes[ws_c:we_c] != 0))
+        ):
+            n_imp, mi_dist = mi_spec
+            n_w_c = int(t_w.size)
+            j_cand = j_idx - ws_c
+            u_w = (t_w - t_w[0]) / (float(t_w[-1] - t_w[0]) if t_w[-1] > t_w[0] else 1.0)
+            fr = best_c.selected_freqs
+            imps = None
+            # Imputation model: the window's null model (trend + harmonics); harmonics are
+            # dropped when the window has too few detected values.
+            for fr_imp in (fr, fr[:1], fr[:0]) if fr.size > 1 else (fr, fr[:0]):
+                cols = [np.ones(n_w_c), u_w]
+                for f_h in fr_imp:
+                    cols += [np.cos(2.0 * np.pi * f_h * t_w), np.sin(2.0 * np.pi * f_h * t_w)]
+                imps = window_congenial_imputations(
+                    provenance.original_values[ws_c:we_c],
+                    provenance.status_codes[ws_c:we_c],
+                    provenance.original_left[ws_c:we_c] if provenance.original_left is not None else None,
+                    provenance.original_right[ws_c:we_c] if provenance.original_right is not None else None,
+                    np.column_stack(cols),
+                    mi_dist,
+                    n_imp,
+                    (20261126, ws_c, we_c),
+                    weights=pw_w.vector if pw_w.kind == "vector" else None,
+                )
+                if imps is not None:
+                    break
+            if imps is None:
+                if mi_counter is not None:
+                    mi_counter[1] += 1
+            else:
+                if mi_counter is not None:
+                    mi_counter[0] += 1
+                # Jump test: pool calibrated Monte Carlo p-values (each imputation at its
+                # own best split, the statistic the max-over-splits null describes), or
+                # pool fixed-split p-values and apply the Bonferroni split count. Step
+                # test: always the latter (Bonferroni-corrected in both calibrations).
+                n_sp = _jump_split_count(n_w_c, "none" if parity_mode else robust)
+                mc_jump = calib == "montecarlo" and robust == "none"
+                pj: list[float] = []
+                ps: list[float] = []
+                for y_m_w in imps:
+                    j_loc = j_cand
+                    if robust == "none":
+                        j_best = _best_jump_split(t_w - t_w[0], y_m_w, pw_w, fr, 3, n_w_c - 2)
+                        if j_best is not None:
+                            j_loc = j_best
+                    pj_m, ps_m = _nested_jump_ftests(
+                        t_w,
+                        y_m_w,
+                        pw_w,
+                        j_loc,
+                        fr,
+                        season=season,
+                        omega=omega,
+                        alpha=alpha,
+                        parity_mode=parity_mode,
+                        robust=robust,
+                        huber_k=huber_k,
+                        calibration=calib if mc_jump else "none",
+                        n_mc=n_mc,
+                        mc_seed=(20261125, ws_c, we_c),
+                        season_significance=season_significance,
+                        mc_cache=mc_cache,
+                        raw_step=True,
+                    )
+                    pj.append(pj_m)
+                    ps.append(ps_m)
+                pj_pool = pool_pvalues(np.asarray(pj, dtype=np.float64))
+                p_jump = pj_pool if mc_jump else float(min(1.0, n_sp * pj_pool))
+                p_step = float(min(1.0, n_sp * pool_pvalues(np.asarray(ps, dtype=np.float64))))
         tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
 
     # Family-wise control across the distinct candidate locations (Holm step-down) when
@@ -1188,6 +1429,7 @@ def just_jumps(
     bonferroni_window: bool = False,
     jump_calibration: JumpCalibration | None = None,
     n_mc: int = 999,
+    season_significance: SeasonSignificance = "sidak",
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1258,6 +1500,12 @@ def just_jumps(
         Legacy alias for ``jump_calibration="bonferroni"``.
     n_mc:
         Monte Carlo draws for ``jump_calibration="montecarlo"`` (default ``999``).
+    season_significance:
+        Acceptance rule for harmonics selected by ALLSSA inside each window when
+        ``season='allssa'``: ``"sidak"`` (default; family-wise over the searched
+        frequencies, analytical), ``"montecarlo"`` (exact but slow inside the split
+        scan), or ``"per_frequency"`` (published rule, forced by ``parity_mode``; it
+        admits spurious harmonics in about 20% of noise windows).
     robust:
         ``'none'`` (default WLS/OLS), ``'huber'`` (convex Huber IRLS window
         fits + Schrader–Hettmansperger robust nested F-tests), or ``'mm'``
@@ -1302,6 +1550,7 @@ def just_jumps(
     if int(n_mc) < 99:
         raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
+    eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
     calib_warn: WarningItem | None = None
     if parity_mode:
         eff_calib: JumpCalibration = "none"
@@ -1427,10 +1676,31 @@ def just_jumps(
                 )
             )
 
+    sw_warn = _short_seasonal_window_warning(series.times_numeric, windows, om_arr, season_l, eff_season_sig)
+    if sw_warn is not None:
+        warnings_list.append(sw_warn)
+
     if cfg is not None and isinstance(cfg.random_state, np.random.Generator):
         rng: np.random.Generator = cfg.random_state
     else:
         rng = np.random.default_rng(cfg.random_state if cfg is not None else 0)
+
+    # Multiple imputation of censored values: each candidate's p-values are pooled over
+    # `n_imputations` congenial imputations of its window (see _run_just_jumps_array).
+    mi_spec: tuple[int, str] | None = None
+    if (
+        not parity_mode
+        and cfg is not None
+        and prov is not None
+        and prov.n_censored > 0
+        and cfg.detection_imputations > 1
+        and cfg.scope != "windowed"
+        and eff_calib != "none"
+    ):
+        mi_dist = resolve_imputation_dist(prov, cfg)
+        if mi_dist is not None:
+            mi_spec = (int(cfg.detection_imputations), mi_dist)
+    mi_counter = [0, 0]
 
     accepted, all_cands_valid, win_fb = _run_just_jumps_array(
         series.times_numeric,
@@ -1448,13 +1718,28 @@ def just_jumps(
         step_alpha=step_alpha,
         jump_calibration=eff_calib,
         n_mc=int(n_mc),
+        season_significance=eff_season_sig,
         parity_mode=parity_mode,
         robust=eff_robust,
         huber_k=huber_k,
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
+        mi_spec=mi_spec,
+        mi_counter=mi_counter,
     )
+    if mi_counter[1] > 0:
+        warnings_list.append(
+            WarningItem(
+                code="MI_DETECTION_FALLBACK",
+                severity="caution",
+                message=(
+                    f"{mi_counter[1]} candidate window(s) could not be multiply imputed (censored "
+                    "regression did not converge); their p-values condition on the single "
+                    "primary imputation."
+                ),
+            )
+        )
 
     if win_fb > 0:
         warnings_list.append(
@@ -1521,6 +1806,7 @@ def just_jumps(
                 step_alpha=step_alpha,
                 jump_calibration=eff_calib,
                 n_mc=int(n_mc),
+                season_significance=eff_season_sig,
                 parity_mode=parity_mode,
                 robust=eff_robust,
                 huber_k=huber_k,
@@ -1593,6 +1879,7 @@ def just_jumps(
                     parity_mode=parity_mode,
                     robust=eff_robust,
                     huber_k=huber_k,
+                    season_significance=eff_season_sig,
                 )
                 p_r, _ = _nested_jump_ftests(
                     t_w,
@@ -1606,6 +1893,7 @@ def just_jumps(
                     parity_mode=parity_mode,
                     robust=eff_robust,
                     huber_k=huber_k,
+                    season_significance=eff_season_sig,
                 )
                 vanished = (abs(mag_r) < mag_th and abs(dir_r) < dir_th) or (p_r >= 0.05)
                 dl_artifact = bool(vanished)
@@ -1677,6 +1965,7 @@ def just_jumps(
                 parity_mode=parity_mode,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=eff_season_sig,
             )
             global_res = fit_global.residuals
             cond_max = fit_global.condition_number_max
@@ -1745,6 +2034,7 @@ def just_jumps(
         censoring=prov,
         diagnostics=diag,
         jump_calibration=eff_calib,
+        n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
     )
 
 
@@ -1935,6 +2225,7 @@ def just_decompose(
     alpha: float = 0.01,
     ci_level: float = 0.95,
     trend_ci_method: Literal["bias_corrected", "model"] | None = None,
+    season_significance: SeasonSignificance = "sidak",
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
     censor_status: ArrayLike | None = None,
@@ -1996,8 +2287,8 @@ def just_decompose(
         (defaults ``min(3, span)`` years, ``window_duration/3``, and
         ``max(12, n_params + 5)``).
     season:
-        ``'allssa'`` (default; anti-leakage frequency selection per window, using
-        the per-frequency rule), ``'ols'`` (fixed frequencies ``omega``), or ``'none'``.
+        ``'allssa'`` (default; anti-leakage frequency selection per window, see
+        ``season_significance``), ``'ols'`` (fixed frequencies ``omega``), or ``'none'``.
     omega:
         Candidate (ALLSSA) or fixed (OLS) cyclic frequencies in cycles/year.
         Defaults to ``[0.8, 1.0, ..., 3.8]`` for ALLSSA and ``[1, 2, 3, 4]`` for OLS.
@@ -2007,6 +2298,11 @@ def just_decompose(
         Pointwise confidence level of the trend and seasonal bands.
     trend_ci_method:
         ``'bias_corrected'`` (default) or ``'model'``; see above.
+    season_significance:
+        Acceptance rule for ALLSSA-selected harmonics in each window
+        (``season='allssa'``): ``'sidak'`` (default, family-wise over the searched
+        frequencies), ``'montecarlo'``, or ``'per_frequency'`` (published rule,
+        forced by ``parity_mode``).
     robust:
         ``'none'``, ``'huber'``, or ``'mm'`` window fits (forced to ``'none'`` in
         ``parity_mode``).
@@ -2023,8 +2319,7 @@ def just_decompose(
     JustDecomposeResult
         ``trend``, ``seasonal`` and ``remainder`` on the observed times (they sum to
         the input exactly), pointwise bands, and optional ``eval_times`` versions.
-        Seasonal bands with ``season='allssa'`` are conditional on the selected
-        frequencies and under-cover somewhat (~91% at nominal 95% in simulation).
+        Seasonal bands are conditional on the selected frequencies.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -2040,6 +2335,7 @@ def just_decompose(
             f"Unknown `trend_ci_method` {trend_ci_method!r}. Options: 'bias_corrected', 'model'."
         )
     eff_ci_method = "model" if parity_mode else (trend_ci_method or "bias_corrected")
+    eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
@@ -2129,6 +2425,10 @@ def just_decompose(
                 )
             )
 
+    sw_warn = _short_seasonal_window_warning(tt_num, windows_tt, om_arr, season_l, eff_season_sig)
+    if sw_warn is not None:
+        warnings_list.append(sw_warn)
+
     cfg = prep.config
     use_local_censor = (
         prov is not None
@@ -2170,6 +2470,7 @@ def just_decompose(
     bc_fallbacks = 0
 
     win_freqs_list: list[FloatArray] = []
+    win_bounds_list: list[tuple[int, int]] = []
     cond_max = 1.0
 
     for lb, ub in windows_tt:
@@ -2225,6 +2526,7 @@ def just_decompose(
                 compute_cov=True,
                 robust=eff_robust,
                 huber_k=huber_k,
+                significance=eff_season_sig,
             )
             tr_coeff = res_a.trend_coeff
             cs_coeff = res_a.cos_sin_coeffs
@@ -2277,6 +2579,7 @@ def just_decompose(
             cond_max = max(cond_max, res_l.condition_number)
 
         win_freqs_list.append(freqs_w)
+        win_bounds_list.append((int(lb0), int(ub0)))
         season_t = _eval_seasonal(ty_loc, freqs_w, cs_coeff)
         trend_t = yy - season_t - rem_w
         if parity_mode:
@@ -2485,6 +2788,8 @@ def just_decompose(
         seasonal_reg=seasonal_reg,
         jump_indices=series.valid_to_orig[j_valid] if j_valid.size else j_valid,
         window_frequencies=tuple(win_freqs_list),
+        window_bounds=tuple(win_bounds_list),
+        window_dilation=float(dil_fac),
         is_datetime=series.is_datetime,
         season=season_l,
         window_mode=window_mode,

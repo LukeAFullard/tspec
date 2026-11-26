@@ -67,6 +67,7 @@ nav:
       - Parameter Cheat Sheet: guide/parameters.md
       - Censored Lab Data (<DL / >UL): guide/censored-data.md
       - Interpreting Results & Warnings: guide/interpreting-results.md
+      - Known Limitations: guide/limitations.md
   - Domain Tutorials:
       - Water Quality with <DL & Lab Upgrades: tutorials/water-quality-censored.md
       - Satellite Vegetation (NDVI) & Wildfire: tutorials/vegetation-ndvi-wildfire.md

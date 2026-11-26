@@ -10,7 +10,7 @@ Implements the recommended retrospective workflow (Ghaderpour et al., 2024):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -42,13 +42,15 @@ from .results import (
     format_explain_warnings,
     require_pandas,
 )
-from .spectral import _lssa_core
+from .spectral import _lssa_core, build_design_matrix
 from .stpd import (
     FlaggedJumpCandidate,
     PiecewiseTrendResult,
     RefitMode,
     StpdResult,
     TurningPointEvent,
+    _bootstrap_tp_curves,
+    _fit_piecewise_core,
     fit_piecewise_trend,
 )
 from .stpd import (
@@ -144,6 +146,11 @@ class PipelineResult(BaseResult):
     slope_fan_low, slope_fan_high : ndarray or None
         Median-pivoted Sen/ATS slope envelope for ``"sen"``. Not a pointwise trend
         CI: it has zero width at each segment's median time.
+    band_method : str
+        How ``trend_ci_*`` and the OLS segment-slope CIs were computed: ``"bootstrap"``
+        (detect-then-fit bootstrap including turning-point location, jump-step and
+        seasonal-estimation uncertainty) or ``"conditional"`` (treats the detected
+        structure as known).
     """
 
     jumps: JustJumpResult | None
@@ -167,6 +174,7 @@ class PipelineResult(BaseResult):
     trend_ci_high: FloatArray | None = None
     slope_fan_low: FloatArray | None = None
     slope_fan_high: FloatArray | None = None
+    band_method: str = "conditional"
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
@@ -283,6 +291,19 @@ class PipelineResult(BaseResult):
                 if seg.pvalue is not None:
                     msg += f", p={seg.pvalue:.2e}"
                 lines.append(msg + ".")
+            if len(self.segments) > 1 and self.band_method == "bootstrap":
+                lines.append(
+                    "Segment CIs and the trend band are detect-then-fit bootstrap intervals: "
+                    "they include turning-point location, jump-step and seasonal-estimation "
+                    "uncertainty, but are conditional on the number of breakpoints found."
+                )
+            elif len(self.segments) > 1:
+                lines.append(
+                    "Note: segment CIs and the trend band are conditional on the detected "
+                    "breakpoints and omit their location uncertainty (in simulation the trend "
+                    "band covered about 83-92% at nominal 95% even when the structure was found "
+                    "correctly); band_method='bootstrap' includes it."
+                )
 
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
@@ -770,6 +791,259 @@ def _build_segment_summaries(
     return tuple(segments), override_trend, override_ci_low, override_ci_high
 
 
+# Pointwise interval construction for the trend band: "percentile" (default; about 1 point
+# closer to nominal than "basic" in the MC7b design) or "basic".
+_BAND_INTERVAL = "percentile"
+
+
+def _replicate_windowed_seasonal(
+    t_valid: FloatArray,
+    ystar: FloatArray,
+    decomp: JustDecomposeResult,
+    jump_valid_indices: list[int],
+    w: FloatArray | None,
+) -> FloatArray:
+    """Re-run ``just_decompose``'s seasonal estimator on bootstrap replicates (columns).
+
+    Same windows, local design (piecewise-linear trend with the window's jumps plus the
+    window's selected harmonics) and Gaussian blending as the original decomposition,
+    by weighted least squares vectorised over replicates. Frequency selection is held
+    fixed at the original windows' choices.
+    """
+    n, nb = ystar.shape
+    num = np.zeros((n, nb))
+    den = np.zeros(n)
+    jv = np.asarray(sorted(jump_valid_indices), dtype=np.intp)
+    for (lb, ub), freqs in zip(decomp.window_bounds, decomp.window_frequencies, strict=True):
+        size0 = ub - lb
+        if size0 < 4:
+            continue
+        ty = t_valid[lb:ub]
+        ty_loc = ty - ty[0]
+        local_j = np.array([int(j - lb) for j in jv if lb + 2 <= j < ub - 1], dtype=np.intp)
+        fr = np.asarray(freqs, dtype=np.float64)
+        d_w, _cs = build_design_matrix(ty_loc, "linear", local_j, False, fr)
+        sw = np.sqrt(w[lb:ub]) if w is not None else np.ones(size0)
+        coef, *_ = np.linalg.lstsq(d_w * sw[:, None], ystar[lb:ub] * sw[:, None], rcond=None)
+        n_h = 2 * int(fr.size)
+        season_w = d_w[:, d_w.shape[1] - n_h :] @ coef[d_w.shape[1] - n_h :] if n_h else 0.0 * ystar[lb:ub]
+        tau0 = float(ty[size0 // 2]) if (size0 % 2 == 1) else 0.5 * float(ty[size0 // 2] + ty[size0 // 2 - 1])
+        g = np.exp(decomp.window_dilation * (ty - tau0) ** 2)
+        num[lb:ub] += season_w * g[:, None]
+        den[lb:ub] += g
+    with np.errstate(invalid="ignore", divide="ignore"):
+        out = np.where(den[:, None] > 0, num / np.where(den > 0, den, 1.0)[:, None], 0.0)
+    return np.asarray(out, dtype=np.float64)
+
+
+def _windowed_seasonal_leverage(
+    t_valid: FloatArray,
+    decomp: JustDecomposeResult,
+    jump_valid_indices: list[int],
+    w: FloatArray | None,
+) -> FloatArray:
+    """Diagonal of the (linear) windowed seasonal estimator's hat matrix."""
+    n = int(t_valid.size)
+    num = np.zeros(n)
+    den = np.zeros(n)
+    jv = np.asarray(sorted(jump_valid_indices), dtype=np.intp)
+    for (lb, ub), freqs in zip(decomp.window_bounds, decomp.window_frequencies, strict=True):
+        size0 = ub - lb
+        fr = np.asarray(freqs, dtype=np.float64)
+        n_h = 2 * int(fr.size)
+        if size0 < 4 or n_h == 0:
+            continue
+        ty = t_valid[lb:ub]
+        ty_loc = ty - ty[0]
+        local_j = np.array([int(j - lb) for j in jv if lb + 2 <= j < ub - 1], dtype=np.intp)
+        d_w, _cs = build_design_matrix(ty_loc, "linear", local_j, False, fr)
+        sw = np.sqrt(w[lb:ub]) if w is not None else np.ones(size0)
+        pinv = np.linalg.pinv(d_w * sw[:, None]) * sw[None, :]  # coef = pinv @ y
+        h_cols = slice(d_w.shape[1] - n_h, d_w.shape[1])
+        diag_w = np.sum(d_w[:, h_cols] * pinv[h_cols, :].T, axis=1)
+        tau0 = float(ty[size0 // 2]) if (size0 % 2 == 1) else 0.5 * float(ty[size0 // 2] + ty[size0 // 2 - 1])
+        g = np.exp(decomp.window_dilation * (ty - tau0) ** 2)
+        num[lb:ub] += diag_w * g
+        den[lb:ub] += g
+    return np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)
+
+
+def _replicate_step_offsets(
+    t_valid: FloatArray, y_deseas: FloatArray, jump_valid_indices: list[int], w: FloatArray | None
+) -> FloatArray:
+    """Vectorised :func:`_estimate_vertical_step_offsets` (non-robust) over columns."""
+    n, nb = y_deseas.shape
+    out = np.zeros((n, nb))
+    if not jump_valid_indices:
+        return out
+    j_arr = np.sort(np.unique(np.asarray(jump_valid_indices, dtype=np.intp)))
+    t0 = t_valid - t_valid[0]
+    d_m, cs = build_design_matrix(t0, "linear", j_arr, False, np.empty(0, dtype=np.float64))
+    d_raw = d_m / cs[None, :]
+    sw = np.sqrt(w) if w is not None else np.ones(n)
+    coef, *_ = np.linalg.lstsq(d_raw * sw[:, None], y_deseas * sw[:, None], rcond=None)
+    m = int(j_arr.size)
+    for k, j in enumerate(j_arr):
+        left = coef[k] + coef[m + 1 + k] * t0[j]
+        right = coef[k + 1] + coef[m + 2 + k] * t0[j]
+        out[j:] += (right - left)[None, :]
+    return out
+
+
+def _pipeline_bootstrap(
+    t_valid: FloatArray,
+    t_raw_valid: np.ndarray[Any, Any],
+    series: Any,
+    y_work: FloatArray,
+    stpd_res: StpdResult,
+    step_offsets: FloatArray,
+    seasonal_part: FloatArray,
+    jump_valid_indices: list[int],
+    decomp: JustDecomposeResult | None,
+    w_stpd: FloatArray | None,
+    refit_mode: RefitMode,
+    *,
+    robust: RobustMethod,
+    huber_k: float,
+    ci_level: float,
+    n_boot: int,
+    segments: tuple[SegmentSummary, ...],
+) -> tuple[FloatArray, FloatArray, tuple[SegmentSummary, ...]] | None:
+    """Detect-then-fit bootstrap band and OLS segment-slope CIs for ``analyze_series``.
+
+    Wild residual bootstrap of the fitted structure (connected trend + jump steps +
+    seasonal harmonics). In every replicate the jump steps and harmonics are
+    re-estimated jointly by weighted least squares, each turning point is re-located
+    with STPD's own knot estimator over its detecting window, and the connected trend
+    is refitted (audit CRT-04). Segment slopes are re-estimated by OLS between the
+    replicate's breakpoints. Returns ``(band_low, band_high, segments)`` or ``None``.
+    """
+    tps = stpd_res.turning_points
+    if not tps or any(tp.detection_window is None for tp in tps):
+        return None
+    n = int(t_valid.size)
+    tp_win = [
+        (int(tp.valid_index), *tp.detection_window)  # type: ignore[misc]
+        for tp in tps
+    ]
+    f_trend = stpd_res.piecewise_trend.fitted_trend
+    use_seas = decomp is not None and bool(decomp.window_bounds) and bool(np.any(seasonal_part != 0.0))
+
+    # Effective degrees of freedom of the nuisance estimators (trace of their hat matrix,
+    # Hutchinson estimate), so the bootstrap residuals are inflated for all fitted terms.
+    extra_df = 2.0 * len(jump_valid_indices)
+    if use_seas and decomp is not None:
+        probes = np.random.default_rng((20261128, n)).choice(np.array([-1.0, 1.0]), size=(n, 32))
+        extra_df += float(np.mean(np.sum(probes * _replicate_windowed_seasonal(
+            t_valid, probes, decomp, jump_valid_indices, w_stpd), axis=0)))
+
+    def _adjust(ystar: FloatArray) -> tuple[FloatArray, FloatArray]:
+        seas_b = (
+            _replicate_windowed_seasonal(t_valid, ystar, decomp, jump_valid_indices, w_stpd)
+            if use_seas and decomp is not None
+            else np.zeros_like(ystar)
+        )
+        steps_b = _replicate_step_offsets(t_valid, ystar - seas_b, jump_valid_indices, w_stpd)
+        return seas_b + steps_b, steps_b
+
+    def _refit(yb: FloatArray, kb: IntArray) -> FloatArray:
+        return _fit_piecewise_core(
+            t_valid, t_raw_valid, series.is_datetime, yb, kb, series.valid_to_orig,
+            series.n_input, series.n_dropped_nan, series.sampling_rate_ratio,
+            w=w_stpd, mode=refit_mode, huber_k=huber_k, ci_level=ci_level,
+        ).fitted_trend
+
+    boot = _bootstrap_tp_curves(
+        t_valid, y_work, f_trend, tp_win, _refit, w=w_stpd, robust=robust, huber_k=huber_k,
+        n_boot=int(n_boot), seed=(20261127, n, *[x[0] for x in tp_win]),
+        other_fit=step_offsets + seasonal_part, adjust_fn=_adjust, extra_df=extra_df,
+        extra_leverage=(
+            _windowed_seasonal_leverage(t_valid, decomp, jump_valid_indices, w_stpd)
+            if use_seas and decomp is not None
+            else None
+        ),
+        analytic_sd=(
+            0.5 * (stpd_res.piecewise_trend.trend_ci_high - stpd_res.piecewise_trend.trend_ci_low)
+            / float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n - 2 - len(tp_win))))
+            if stpd_res.piecewise_trend.trend_ci_low is not None
+            and stpd_res.piecewise_trend.trend_ci_high is not None
+            else None
+        ),
+    )
+    if boot is None:
+        return None
+    a_lvl = 1.0 - ci_level
+    combined = f_trend + step_offsets
+    dev = (boot.curves - combined[:, None]) * boot.dev_scale[:, None]
+    if _BAND_INTERVAL == "percentile":
+        band_lo = combined + np.quantile(dev, 0.5 * a_lvl, axis=1)
+        band_hi = combined + np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+    else:
+        band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+        band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
+
+    # OLS segment slopes between the replicate's breakpoints
+    sw = np.sqrt(w_stpd) if w_stpd is not None else np.ones(n)
+    y_deseas_b = boot.ystar - (boot.nuisance_fit - boot.nuisance_trend)
+
+    def _ols_slope(y_seg: FloatArray, a: int, b: int) -> float:
+        if b - a < 3 or t_valid[b - 1] <= t_valid[a]:
+            return float("nan")
+        x = np.column_stack([np.ones(b - a), t_valid[a:b] - t_valid[a]]) * sw[a:b, None]
+        coef, *_ = np.linalg.lstsq(x, y_seg * sw[a:b], rcond=None)
+        return float(coef[1])
+
+    jumps_sorted = sorted(j for j in jump_valid_indices if 0 < j < n)
+    new_segments = list(segments)
+    truth_curve = combined
+    seg_bounds = sorted(
+        {0, n, *jumps_sorted, *[int(tp.valid_index) for tp in tps if 0 < tp.valid_index < n]}
+    )
+    if len(seg_bounds) - 1 != len(segments):
+        return band_lo, band_hi, segments
+    d = np.full((int(n_boot), len(segments)), np.nan)
+    d_fixed = np.full((int(n_boot), len(segments)), np.nan)
+    y_fixed_deseas = boot.ystar - seasonal_part[:, None]
+    for b in range(int(n_boot)):
+        for k in range(len(segments)):
+            d_fixed[b, k] = _ols_slope(
+                y_fixed_deseas[seg_bounds[k] : seg_bounds[k + 1], b], seg_bounds[k], seg_bounds[k + 1]
+            )
+        kb = sorted(int(k) for k in np.unique(boot.knots[b]) if 0 < k < n)
+        bb = sorted({0, n, *jumps_sorted, *kb})
+        if len(bb) != len(seg_bounds):
+            continue
+        for k in range(len(segments)):
+            d[b, k] = _ols_slope(y_deseas_b[bb[k] : bb[k + 1], b], bb[k], bb[k + 1])
+    for k, seg in enumerate(segments):
+        if seg.estimator != "ols" or seg.slope_ci_low is None:
+            continue
+        a, b = seg_bounds[k], seg_bounds[k + 1]
+        s_true = _ols_slope(truth_curve[a:b], a, b)
+        dk = d[:, k][np.isfinite(d[:, k])] - s_true
+        if dk.size < 0.8 * int(n_boot) or not np.isfinite(s_true):
+            continue
+        # Variance calibration (as for the band): scale up to the analytical OLS slope SE
+        # where the fixed-structure bootstrap under-disperses.
+        sd_fix = float(np.nanstd(d_fixed[:, k], ddof=1))
+        dof_k = max(1, (b - a) - 2)
+        se_an = (
+            (float(seg.slope_ci_high) - float(seg.slope_ci_low))
+            / (2.0 * float(t_dist.ppf(0.5 + 0.5 * ci_level, df=dof_k)))
+            if seg.slope_ci_high is not None
+            else float("nan")
+        )
+        if sd_fix > 0 and np.isfinite(se_an):
+            dk = dk * float(np.clip(se_an / sd_fix, 1.0, 2.0))
+        lo = seg.slope - float(np.quantile(dk, 1.0 - 0.5 * a_lvl))
+        hi = seg.slope - float(np.quantile(dk, 0.5 * a_lvl))
+        shifted = seg.slope - dk
+        frac = min(float(np.mean(shifted <= 0.0)), float(np.mean(shifted >= 0.0)))
+        pval = seg.pvalue if frac == 0.0 else float(min(1.0, 2.0 * frac))
+        new_segments[k] = replace(seg, slope_ci_low=lo, slope_ci_high=hi, pvalue=pval)
+    return band_lo, band_hi, tuple(new_segments)
+
+
 def analyze_series(
     t: TimeLike,
     y: ValueLike,
@@ -789,6 +1063,8 @@ def analyze_series(
     just_kwargs: dict[str, Any] | None = None,
     decompose_kwargs: dict[str, Any] | None = None,
     stpd_kwargs: dict[str, Any] | None = None,
+    band_method: Literal["bootstrap", "conditional"] = "bootstrap",
+    n_boot: int = 499,
 ) -> PipelineResult:
     """Run the guided two-stage JUST -> STPD change-detection and decomposition pipeline.
 
@@ -866,14 +1142,26 @@ def analyze_series(
     just_kwargs, decompose_kwargs, stpd_kwargs:
         Extra keyword arguments forwarded to :func:`just_jumps`,
         :func:`just_decompose`, and :func:`detect_turning_points`.
+    band_method : {"bootstrap", "conditional"}, default "bootstrap"
+        ``"bootstrap"``: when turning points are detected, the trend band and the OLS
+        segment-slope CIs come from a detect-then-fit wild bootstrap. Each replicate
+        re-estimates the jump steps and seasonal harmonics, re-locates every turning
+        point with STPD's knot estimator over its detecting window, and refits the
+        trend and segment slopes. ``"conditional"``: analytical intervals that treat the
+        detected structure as known. Bootstrap intervals apply with
+        ``slope_estimator="ols"`` and ``jump_adjustment="offset"``; otherwise, and when
+        no turning point is found, the analytical intervals are used.
+    n_boot : int, default 499
+        Bootstrap replicates for ``band_method="bootstrap"``.
 
     Returns
     -------
     PipelineResult
         Stage results, adjusted series, combined trend and bands, and per-segment
-        slope summaries (:attr:`PipelineResult.segments`). Trend bands and segment
-        CIs are conditional on the detected jumps/turning points and estimated
-        seasonality (empirically ~83-92% coverage at nominal 95%).
+        slope summaries (:attr:`PipelineResult.segments`). With the default
+        ``band_method="bootstrap"`` the trend band and OLS segment-slope CIs include
+        turning-point location, jump-step and seasonal-estimation uncertainty. They
+        remain conditional on the number of breakpoints found.
 
     Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'``
     (Huber-initialized Tukey biweight MM-type estimation, recommended for extreme
@@ -882,7 +1170,6 @@ def analyze_series(
     outlier-resistant M/MM-estimation with Schrader–Hettmansperger (1980) robust
     nested F-tests.
     """
-    from dataclasses import replace
 
     if jump_adjustment not in ("offset", "segment"):
         raise ValueError("`jump_adjustment` must be 'offset' or 'segment'.")
@@ -936,6 +1223,13 @@ def analyze_series(
     s_kw.setdefault("ci_level", ci_level)
     if slope_estimator in ("l1", "huber"):
         s_kw.setdefault("refit_mode", slope_estimator)
+    if band_method not in ("bootstrap", "conditional"):
+        raise ValueError(f"Unknown `band_method` {band_method!r}. Options: 'bootstrap', 'conditional'.")
+    if int(n_boot) < 99:
+        raise ValueError(f"`n_boot` must be >= 99; got {n_boot}.")
+    # The pipeline computes its own detect-then-fit bootstrap (it also re-estimates jump
+    # steps and seasonal harmonics), so the internal STPD call uses analytical bands.
+    s_kw.setdefault("band_method", "conditional")
 
     # Scale-free defaults in analyze_series unless overridden:
     # - just_jumps' family-wise calibrated selection (jump_alpha=0.05, Monte Carlo
@@ -1391,6 +1685,31 @@ def analyze_series(
             trend_ci_low = override_ci_low
             trend_ci_high = override_ci_high
 
+    band_used = "conditional"
+    if (
+        band_method == "bootstrap"
+        and stpd_res is not None
+        and stpd_res.turning_points
+        and override_trend is None
+        and trend_ci_low is not None
+        and not (jump_adjustment == "segment" and jump_valid_indices)
+    ):
+        refit_mode_b: RefitMode = s_kw.get("refit_mode") or (
+            "huber" if rob_method != "none" else "sequential"
+        )
+        boot_out = _pipeline_bootstrap(
+            t_valid, t_raw_valid, series, y_work_valid, stpd_res, step_offsets, seasonal_part,
+            jump_valid_indices if jump_adjustment == "offset" else [],
+            decomp_res if remove_seasonality else None,
+            w_stpd if (w_stpd is None or np.ndim(w_stpd) == 1) else None,
+            refit_mode_b, robust=rob_method, huber_k=huber_k,
+            ci_level=float(s_kw.get("ci_level", ci_level)), n_boot=int(n_boot),
+            segments=segments,
+        )
+        if boot_out is not None:
+            trend_ci_low, trend_ci_high, segments = boot_out
+            band_used = "bootstrap"
+
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
     final_residuals = y_work_valid - combined_trend - seasonal_part
@@ -1435,4 +1754,5 @@ def analyze_series(
         trend_ci_high=trend_ci_high,
         slope_fan_low=slope_fan_low,
         slope_fan_high=slope_fan_high,
+        band_method=band_used,
     )

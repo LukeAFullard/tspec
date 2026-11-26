@@ -31,4 +31,4 @@ res = {"R": R, "correct_structure_rate": ok / R, "spurious_jump_rate": spurious_
        "trend_band_cov|correct": float(np.mean(cov_band)) if cov_band else None,
        "trend_band_cov_all": float(np.mean(cov_band_all)) if cov_band_all else None}
 print(json.dumps(res))
-json.dump(res, open("audit/mc7b_results.json", "w"), indent=1)
+json.dump(res, open(sys.argv[2] if len(sys.argv) > 2 else "audit/mc7b_results.json", "w"), indent=1)

@@ -212,3 +212,250 @@ def test_ats_unavailable_warning_for_interval_censoring() -> None:
         censoring=CensoredConfig(method="parametric", censoring_type="interval"),
     )
     assert "ATS_UNAVAILABLE" in {w.code for w in res.diagnostics.warnings}
+
+
+# ---------------------------------------------------------------------------
+# CRT-04: STPD turning-point p-values calibrated for the knot search
+# ---------------------------------------------------------------------------
+
+
+def _tp_series(seed: int, n: int, sigma: float, bend: bool) -> tuple[np.ndarray, np.ndarray, float]:
+    rng = np.random.default_rng(seed)
+    span = n / 24.0
+    ttp = 2000 + span / 2
+    t = np.sort(rng.uniform(2000, 2000 + span, n))
+    trend = 3 + 0.5 * (t - 2000) - (1.0 * np.maximum(0, t - ttp) if bend else 0.3 * (t - 2000))
+    return t, trend + rng.normal(0, sigma, n), ttp
+
+
+def test_stpd_calibrated_defaults_and_parity() -> None:
+    t, y, _ = _tp_series(0, 150, 0.3, bend=False)
+    res = tspec.stpd(t, y)
+    assert res.tp_calibration == "montecarlo"
+    assert res.snr_th == 0.0
+    par = tspec.stpd(t, y, parity_mode=True)
+    assert par.tp_calibration == "none"
+    assert par.snr_th == 1.0
+    rob = tspec.stpd(t, y, robust="huber")
+    assert rob.tp_calibration == "bonferroni"
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, tp_calibration="bogus")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, n_mc=10)
+
+
+def test_stpd_mc_pvalue_exceeds_raw_screening_pvalue() -> None:
+    from tspec.stpd import _stpd_mc_pvalue, _tpd_window
+
+    t, y, ttp = _tp_series(1, 120, 0.6, bend=True)
+    raw = _tpd_window(t, y, 5).pval
+    cal = _stpd_mc_pvalue(t, y, 5, np.ones_like(t), 499, 0)
+    assert cal >= raw
+    t0, y0, _ = _tp_series(2, 120, 0.6, bend=False)
+    assert _stpd_mc_pvalue(t0, y0, 5, np.ones_like(t0), 499, 0) >= _tpd_window(t0, y0, 5).pval
+
+
+def test_stpd_calibrated_null_rate_and_power() -> None:
+    fp = 0
+    for seed in range(40):
+        t, y, _ = _tp_series(100 + seed, 150, 0.3, bend=False)
+        fp += len(tspec.stpd(t, y).turning_points) > 0
+    assert fp <= 2  # nominal 1% family-wise; Monte Carlo design gave 0.6%
+    # The previous SNR > 1 gate missed this clear turning point; the calibrated test finds it.
+    hits = legacy = 0
+    for seed in range(10):
+        t, y, ttp = _tp_series(200 + seed, 500, 0.6, bend=True)
+        hits += any(abs(float(x) - ttp) < 0.5 for x in tspec.stpd(t, y).tp_times)
+        legacy += any(
+            abs(float(x) - ttp) < 0.5
+            for x in tspec.stpd(t, y, tp_calibration="none", snr_th=1.0).tp_times
+        )
+    assert hits >= 6
+    assert hits > legacy
+
+
+# ---------------------------------------------------------------------------
+# CRT-01: consecutive_k calibrated over a planned horizon
+# ---------------------------------------------------------------------------
+
+
+def _stable_monitor_series(seed: int, n: int) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    t = np.sort(rng.uniform(2000, 2000 + n / 24.0, n))
+    mu = 2 + 0.1 * (t - 2000) + 0.5 * np.cos(2 * np.pi * t)
+    return t, mu + rng.normal(0, 0.15, n)
+
+
+def test_consecutive_k_calibrated_with_horizon() -> None:
+    t, y = _stable_monitor_series(0, 96 + 24)
+    res = tspec.just_monitor(
+        t, y, start=96, season="ols", alpha=0.05, sequential_control="consecutive_k", horizon=24
+    )
+    assert res.consecutive_k_calibrated
+    levels = {s.alpha_step for s in res.steps}
+    assert len(levels) == 1
+    pocock = tspec.just_monitor(t, y, start=96, season="ols", alpha=0.05, horizon=24)
+    assert pocock.steps[0].alpha_step < levels.pop() < 1.0
+    assert "calibrated" in res.explain()
+    # Same history and horizon -> same level regardless of how much monitoring data exists
+    short = tspec.just_monitor(
+        t[:110], y[:110], start=96, season="ols", alpha=0.05,
+        sequential_control="consecutive_k", horizon=24,
+    )
+    assert short.steps[0].alpha_step == res.steps[0].alpha_step
+
+
+def test_consecutive_k_without_horizon_warns() -> None:
+    t, y = _stable_monitor_series(1, 120)
+    res = tspec.just_monitor(t, y, start=96, season="ols", sequential_control="consecutive_k")
+    assert not res.consecutive_k_calibrated
+    assert "UNCALIBRATED_CONSECUTIVE_K" in {w.code for w in res.diagnostics.warnings}
+
+
+def test_consecutive_k_calibrated_null_rate() -> None:
+    alarms = 0
+    for seed in range(20):
+        t, y = _stable_monitor_series(500 + seed, 96 + 48)
+        alarms += tspec.just_monitor(
+            t, y, start=96, season="ols", alpha=0.05,
+            sequential_control="consecutive_k", horizon=48, n_mc=199,
+        ).detected
+    assert alarms <= 4  # nominal 5% familywise (about 1 alarm expected)
+
+
+# ---------------------------------------------------------------------------
+# Censored detection: candidate p-values pooled over multiple imputations
+# ---------------------------------------------------------------------------
+
+
+def test_pool_pvalues_properties() -> None:
+    from tspec._cenreg import pool_pvalues
+
+    assert pool_pvalues(np.array([0.03])) == pytest.approx(0.03)
+    # Identical p-values (no between-imputation variance) reproduce the common value
+    assert pool_pvalues(np.full(10, 0.02)) == pytest.approx(0.02, rel=1e-6)
+    # Disagreement between imputations makes the pooled evidence weaker
+    assert pool_pvalues(np.array([0.001, 0.2, 0.01, 0.5])) > 0.01
+    assert np.isnan(pool_pvalues(np.array([np.nan])))
+
+
+def _censored_jump_series(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    n = 150
+    t = np.sort(rng.uniform(2000, 2000 + n / 24, n))
+    y = 2 + 0.1 * (t - 2000) + 1.0 * (t >= 2000 + n / 48) + rng.normal(0, 0.4, n)
+    dl = float(np.quantile(y, 0.4))
+    return t, np.array([f"<{dl:.6g}" if v < dl else float(v) for v in y], dtype=object)
+
+
+def test_detection_pvalues_pooled_over_imputations() -> None:
+    t, ys = _censored_jump_series(11)
+    assert tspec.just_jumps(t, ys, season="none").n_imputations == 1  # default: single
+    mi = tspec.CensoredConfig(detection_imputations=20)
+    res = tspec.just_jumps(t, ys, season="none", censoring=mi)
+    assert res.n_imputations == 20
+    assert any(abs(j.time_year - (2000 + 150 / 48)) < 0.5 for j in res.jumps)
+    assert "pooled over 20 imputations" in res.explain()
+    unc = tspec.just_jumps(
+        t, np.array([float(v) if not isinstance(v, str) else 0.0 for v in ys]), season="none", censoring=mi
+    )
+    assert unc.n_imputations == 1
+    assert tspec.stpd(t, ys, censoring=mi).n_imputations == 20
+    with pytest.raises(ValueError):
+        tspec.CensoredConfig(detection_imputations=0)
+
+
+def test_pooled_decisions_do_not_depend_on_imputation_seed() -> None:
+    flips = 0
+    for seed in range(8):
+        t, ys = _censored_jump_series(40 + seed)
+        a = tspec.just_jumps(
+            t, ys, season="none", censoring=tspec.CensoredConfig(random_state=0, detection_imputations=20)
+        )
+        b = tspec.just_jumps(
+            t, ys, season="none", censoring=tspec.CensoredConfig(random_state=1, detection_imputations=20)
+        )
+        flips += (len(a.jumps) > 0) != (len(b.jumps) > 0)
+    assert flips <= 1
+
+
+# ---------------------------------------------------------------------------
+# CRT-06: short-series Mann-Kendall/Sen under AR(1) uses a parametric bootstrap reference
+# ---------------------------------------------------------------------------
+
+
+def _ar1_path(rng: np.random.Generator, n: int, phi: float) -> np.ndarray:
+    e = rng.normal(size=n)
+    x = np.empty(n)
+    x[0] = e[0] / np.sqrt(1 - phi**2)
+    for i in range(1, n):
+        x[i] = phi * x[i - 1] + e[i]
+    return x
+
+
+def test_short_series_mk_ar1_calibrated() -> None:
+    rng = np.random.default_rng(606)
+    n, phi, R = 60, 0.7, 300
+    t = 2000 + np.arange(n) / 12.0
+    rej = 0
+    for _ in range(R):
+        rej += fit_theil_sen_segment(t, _ar1_path(rng, n, phi), autocorr_correction="ar1").pvalue < 0.05
+    # analytic plug-in factor: ~8.6% (audit CRT-06); bootstrap reference ~5-6%
+    assert rej / R <= 0.075
+
+
+def test_mk_bootstrap_reference_is_deterministic() -> None:
+    rng = np.random.default_rng(1)
+    t = 2000 + np.arange(80) / 12.0
+    y = _ar1_path(rng, 80, 0.5)
+    a = fit_theil_sen_segment(t, y, autocorr_correction="ar1")
+    b = fit_theil_sen_segment(t, y, autocorr_correction="ar1")
+    assert a.pvalue == b.pvalue and a.ci_low == b.ci_low and a.ci_high == b.ci_high
+
+
+# ---------------------------------------------------------------------------
+# CRT-04: detect-then-fit bootstrap bands
+# ---------------------------------------------------------------------------
+
+
+def test_stpd_bootstrap_band_covers_after_detection() -> None:
+    hits_b = hits_c = n_ok = 0.0
+    for seed in range(12):
+        rng = np.random.default_rng(4040 + seed)
+        n = 500
+        span = n / 24
+        ttp = 2000 + span / 2
+        t = np.sort(rng.uniform(2000, 2000 + span, n))
+        truth = 3 + 0.5 * (t - 2000) - np.maximum(0, t - ttp)
+        y = truth + rng.normal(0, 0.6, n)
+        sb = tspec.stpd(t, y)
+        if len(sb.tp_times) != 1 or abs(float(sb.tp_times[0]) - ttp) > 0.5:
+            continue
+        assert sb.band_method == "bootstrap"
+        sc = tspec.stpd(t, y, band_method="conditional")
+        pb, pc = sb.piecewise_trend, sc.piecewise_trend
+        hits_b += float(np.mean((truth >= pb.trend_ci_low) & (truth <= pb.trend_ci_high)))
+        hits_c += float(np.mean((truth >= pc.trend_ci_low) & (truth <= pc.trend_ci_high)))
+        n_ok += 1
+    assert n_ok >= 6
+    assert hits_b / n_ok >= 0.90  # conditional band ~85% in this design
+    assert hits_b > hits_c
+
+
+def test_band_method_options_and_parity() -> None:
+    t, y, _ = _tp_series(5, 150, 0.3, bend=True)
+    assert tspec.stpd(t, y, parity_mode=True).band_method == "conditional"
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, band_method="bogus")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, n_boot=10)
+    rng = np.random.default_rng(9)
+    tt = np.sort(rng.uniform(2000, 2012, 288))
+    yy = 3 + 0.4 * (tt - 2000) - 0.7 * np.maximum(0, tt - 2006) + 0.6 * np.cos(2 * np.pi * tt)
+    yy = yy + rng.normal(0, 0.2, tt.size)
+    a = tspec.analyze_series(tt, yy)
+    assert a.band_method == "bootstrap"
+    c = tspec.analyze_series(tt, yy, band_method="conditional")
+    assert c.band_method == "conditional"
+    assert np.mean(a.trend_ci_high - a.trend_ci_low) > np.mean(c.trend_ci_high - c.trend_ci_low)
+    assert "bootstrap intervals" in a.explain()

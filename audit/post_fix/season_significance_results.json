@@ -1,0 +1,28 @@
+{
+ "per_frequency": {
+  "trend_cov_A": 0.9332666666666667,
+  "trend_cov_B": 0.9456,
+  "seasonal_cov_A": 0.9125,
+  "seasonal_cov_B": 0.8978,
+  "jump_FP": 0.05,
+  "jump2sig_power": 0.555,
+  "jump2sig_mag_bias": 0.0033436827040495476,
+  "jump2sig_mag_rmse": 0.021082585039820797,
+  "jump4sig_power": 0.945,
+  "jump4sig_mag_bias": -0.0007457822008773235,
+  "jump4sig_mag_rmse": 0.028681098358683734
+ },
+ "sidak": {
+  "trend_cov_A": 0.9367666666666667,
+  "trend_cov_B": 0.9496666666666667,
+  "seasonal_cov_A": 0.9463000000000001,
+  "seasonal_cov_B": 0.9351333333333334,
+  "jump_FP": 0.05,
+  "jump2sig_power": 0.61,
+  "jump2sig_mag_bias": 0.004131187482079417,
+  "jump2sig_mag_rmse": 0.018252288303262747,
+  "jump4sig_power": 0.975,
+  "jump4sig_mag_bias": -0.0013839813161883288,
+  "jump4sig_mag_rmse": 0.01902120354932946
+ }
+}

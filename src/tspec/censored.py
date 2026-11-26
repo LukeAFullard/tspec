@@ -129,6 +129,13 @@ class CensoredConfig:
     n_imputations : int
         Multiple imputations pooled with Rubin's rules for ``analyze_series`` OLS
         segment slopes in censored segments (default 20; ``1`` disables).
+    detection_imputations : int
+        Imputations over which ``just_jumps`` / ``stpd`` pool each candidate's
+        calibrated p-value (Licht–Rubin) on censored data (default ``1``: the single
+        primary imputation). With ``> 1`` each candidate window is re-imputed from a
+        censored regression of its null model (trend plus harmonics), so decisions no
+        longer depend on the imputation seed; this is conservative and can cost jump
+        power under heavy censoring (see the censored-data guide).
     """
 
     method: Literal["ros", "parametric", "substitution"] = "ros"
@@ -153,12 +160,15 @@ class CensoredConfig:
     imputation_model: Literal["trend", "marginal"] = "trend"
     trend_harmonics: tuple[float, ...] | None = None
     n_imputations: int = 20
+    detection_imputations: int = 1
 
     def __post_init__(self) -> None:
         if self.imputation_model not in ("trend", "marginal"):
             raise ValueError("`imputation_model` must be 'trend' or 'marginal'.")
         if self.n_imputations < 1:
             raise ValueError("`n_imputations` must be >= 1.")
+        if self.detection_imputations < 1:
+            raise ValueError("`detection_imputations` must be >= 1.")
         if not (0.0 < self.imputed_weight_factor <= 1.0):
             raise ValueError(
                 f"`imputed_weight_factor` must lie in (0, 1]; got {self.imputed_weight_factor}."
@@ -927,10 +937,11 @@ def _bootstrap_refit_draw(
 def _spawn_stability_rngs(
     random_state: int | np.random.Generator | None,
     n_draws: int,
+    seed_offset: int = 10_007,
 ) -> list[np.random.Generator]:
     """Create deterministic or fresh child RNGs honoring int, Generator, or None seeds."""
     if isinstance(random_state, (int, np.integer)):
-        ss = np.random.SeedSequence(int(random_state) + 10_007)
+        ss = np.random.SeedSequence(int(random_state) + int(seed_offset))
         return [np.random.default_rng(s) for s in ss.spawn(n_draws)]
     if isinstance(random_state, np.random.Generator):
         child_seeds = random_state.integers(0, 2**32 - 1, size=n_draws)
@@ -944,17 +955,22 @@ def generate_stability_draws(
     config: CensoredConfig,
     t_valid: FloatArray,
     fallback_counter: list[int] | None = None,
+    *,
+    n_draws: int | None = None,
+    seed_offset: int = 10_007,
 ) -> list[FloatArray]:
-    """Generate ``config.n_stability_draws`` alternative imputed series for stability checks.
+    """Generate alternative imputed series (``config.n_stability_draws`` by default).
 
+    Used for stability checks and, with ``n_draws`` and a distinct ``seed_offset``, for
+    the additional imputations of multiple-imputation detection p-values.
     ``fallback_counter`` (a one-element list), if given, is incremented whenever a draw
     could not propagate parameter uncertainty and fell back to a fixed-parameter draw.
     """
-    n_draws = int(config.n_stability_draws)
+    n_draws = int(config.n_stability_draws) if n_draws is None else int(n_draws)
     if n_draws <= 0 or provenance.n_censored == 0:
         return []
 
-    child_rngs = _spawn_stability_rngs(config.random_state, n_draws)
+    child_rngs = _spawn_stability_rngs(config.random_state, n_draws, seed_offset)
 
     draws: list[FloatArray] = []
     attrs_p = provenance.ndimpute_attrs
@@ -1517,3 +1533,24 @@ def prepare_series_with_censoring(
         weight_factors=weight_factors,
         config=cfg,
     )
+
+
+def resolve_imputation_dist(provenance: CensoringProvenance, config: CensoredConfig) -> str | None:
+    """Error distribution (``"normal"``/``"lognormal"``) for censored-regression imputation.
+
+    Uses the distribution of the time-conditional imputation when it was used, else
+    resolves ``config.dist``; returns ``None`` when it is not supported (Weibull).
+    """
+    attrs = provenance.ndimpute_attrs
+    if attrs.get("imputation_model") == "trend" and attrs.get("dist") in ("normal", "lognormal"):
+        return str(attrs["dist"])
+    try:
+        return _resolve_trend_dist(
+            provenance.original_values,
+            provenance.status_codes,
+            provenance.original_left,
+            provenance.original_right,
+            config.dist,
+        )
+    except ValueError:
+        return None

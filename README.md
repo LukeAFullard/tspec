@@ -79,7 +79,7 @@ fig, axes = result.plot()
 
 ## Near-Real-Time Disturbance Monitoring (`just_monitor`, v1.1)
 
-Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (about 70% over 24 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending**: with a planned `horizon` the familywise false-alarm rate is bounded by $\alpha$ (0.1–0.3% at $\alpha = 0.05$ in simulation, i.e. conservative), and without `horizon` an open-ended spending sequence keeps the bound for any monitoring length without using future data. Lan–DeMets-shaped **O'Brien–Fleming** spending, **`consecutive_k`** (which does *not* bound the familywise rate), and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b) are also available.
+Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (about 70% over 24 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending**: with a planned `horizon` the familywise false-alarm rate is bounded by $\alpha$ (0.2–0.6% at $\alpha = 0.05$ in simulation, i.e. conservative), and without `horizon` an open-ended spending sequence keeps the bound for any monitoring length without using future data. Lan–DeMets-shaped **O'Brien–Fleming** spending, **`consecutive_k`** (Monte Carlo-calibrated to bound the familywise rate when `horizon` is given, and faster to detect than Pocock; uncalibrated otherwise), and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b) are also available.
 
 ![Near-real-time monitoring with sequential multiplicity control](docs/assets/figures/tutorial_nrt_monitoring.png)
 
@@ -151,17 +151,19 @@ pip install --no-deps tspec
 
 ## Verification & Performance
 
-`tspec` was independently audited (`audit/AUDIT_REPORT.md`; reproducible scripts in `audit/`). Highlights:
+`tspec` was audited (`audit/AUDIT_REPORT.md`, original score 40%) and re-audited after the fixes (`audit/REAUDIT_REPORT.md`: 77%, then **82%** after the follow-up fixes in its addendum, *usable with stated caveats*; fixes and evidence in `audit/FIXES.md`; reproducible scripts in `audit/`). Highlights:
 
 - **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall and the O(n) TPTR variance match `statsmodels`, `astropy`, `scipy` and `pymannkendall` (or brute force) to about 1e-14.
 - **Calibration of the default procedures** (Monte Carlo, ≥ 300–1000 replicates):
-  - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 3–5% (raw screening p-values: 70–100%).
-  - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–0.5% with Monte Carlo significance (published per-frequency rule: 18–25%).
+  - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 2–6% across n = 50–500 (raw screening p-values: 70–100%).
+  - `stpd()` false turning-point probability at `alpha=0.01`: 0.2–0.6% (raw screening p-values: up to 2.2%), while detection of a single turning point rises (e.g. 0% → 52% at n=150, σ=1; 32% → 82% at n=500, σ=0.6).
+  - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–1.3% with Monte Carlo significance (published per-frequency rule: 18–25%).
   - `just_decompose()` trend-band coverage: ~95% for linear, jump and smoothly curved trends.
+  - Post-detection trend bands (detect-then-fit bootstrap): `stpd()` 95–97% and `analyze_series()` about 93% after correct detection (analytical conditional bands: 83–92%).
   - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
-  - Mann–Kendall Type-I error under AR(1) ρ = 0.5: ≈ 5–7% with the default `mk_correction="ar1"` (uncorrected: ~25%).
+  - Mann–Kendall Type-I error under AR(1) errors (ρ ≤ 0.7) with the default `mk_correction="ar1"`: 3.8–6.2% for n = 60–250 (parametric AR(1) bootstrap reference) and 4.9–5.2% at n = 400. Uncorrected, it is about 25% at ρ = 0.5.
   - `just_monitor()` prediction-interval coverage: ~95%.
-- **Known limitations:** bands from `stpd`/`analyze_series` and ALLSSA-selected seasonal bands are conditional on the detected structure and under-cover (about 83–92%); STPD's SNR gate can miss turning points regardless of sample size; detection p-values on censored data condition on one imputation; `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Known limitations** (full list: [docs/guide/limitations.md](docs/guide/limitations.md)): post-detection confidence bands can be slightly too narrow and are conditional on the number of breakpoints found are conditional on the number of breakpoints found (`analyze_series` trend band and segment-slope CIs about 93% at nominal 95%); detection p-values on censored data use one imputation by default (valid size in simulation; `detection_imputations` pools several, at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
 - **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
 - **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
 

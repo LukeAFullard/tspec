@@ -1,0 +1,26 @@
+{
+ "stpd,seasonal=0,cfrac=0.0": {
+  "R": 300,
+  "realized_cfrac": 0.0,
+  "null_FP": 0.0033333333333333335,
+  "detect": 0.98,
+  "decision_flip_null": 0.0,
+  "decision_flip_alt": 0.0
+ },
+ "stpd,seasonal=0,cfrac=0.2": {
+  "R": 300,
+  "realized_cfrac": 0.19937777777777776,
+  "null_FP": 0.016666666666666666,
+  "detect": 0.99,
+  "decision_flip_null": 0.0033333333333333335,
+  "decision_flip_alt": 0.01
+ },
+ "stpd,seasonal=0,cfrac=0.5": {
+  "R": 300,
+  "realized_cfrac": 0.49855555555555553,
+  "null_FP": 0.013333333333333334,
+  "detect": 0.9966666666666667,
+  "decision_flip_null": 0.006666666666666667,
+  "decision_flip_alt": 0.006666666666666667
+ }
+}

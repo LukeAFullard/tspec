@@ -54,5 +54,7 @@
     - Tobin, J. (1958). Estimation of relationships for limited dependent variables. *Econometrica*, 26(1), 24–36. https://doi.org/10.2307/1907382 *(censored-regression imputation model)*
     - Rubin, D. B. (1987). *Multiple Imputation for Nonresponse in Surveys*. Wiley. https://doi.org/10.1002/9780470316696
     - Barnard, J., & Rubin, D. B. (1999). Small-sample degrees of freedom with multiple imputation. *Biometrika*, 86(4), 948–955. https://doi.org/10.1093/biomet/86.4.948
+    - Licht, C. (2010). *New Methods for Generating Significance Levels from Multiply-Imputed Data* (Doctoral dissertation). University of Bamberg. *(z-transform pooling of p-values, used for `detection_imputations`)*
+    - van Buuren, S. (2018). *Flexible Imputation of Missing Data* (2nd ed.). Chapman & Hall/CRC. https://doi.org/10.1201/9780429492259
     - Meng, X.-L. (1994). Multiple-imputation inferences with uncongenial sources of input. *Statistical Science*, 9(4), 538–558. https://doi.org/10.1214/ss/1177010269
     - Daniels, H. E. (1944). The relation between measures of correlation in the universe of sample permutations. *Biometrika*, 33(2), 129–135. https://doi.org/10.1093/biomet/33.2.129 *(permutation variance of the censored Kendall statistic in Akritas–Theil–Sen)*
