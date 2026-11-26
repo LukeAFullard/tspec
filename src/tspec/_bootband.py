@@ -86,7 +86,7 @@ def bootstrap_piecewise_band(
     ystar_w = ((trend_fit + other_fit) * sw)[:, None] + resid[:, None] * v  # whitened
 
     def hinge(k: int) -> FloatArray:
-        return np.maximum(0.0, u - u[k])
+        return np.asarray(np.maximum(0.0, u - u[k]), dtype=np.float64)
 
     knots_sorted = sorted(int(k) for k in knots)
     cur = np.tile(np.array(knots_sorted, dtype=np.intp), (int(n_boot), 1))

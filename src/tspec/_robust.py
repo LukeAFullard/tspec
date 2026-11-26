@@ -808,7 +808,11 @@ def ar1_bootstrap_reference(
     span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
     u = (t - t[0]) / span
     rho_obs = float(_ols_lag1(y[:, None], u)[0])
-    rng = np.random.default_rng((int(seed), n))
+    # Deterministic per data set, but not shared across data sets: a seed depending only on
+    # n would refer every series of that length to the same bootstrap draws, so their
+    # Monte Carlo quantile error would not average out.
+    data_key = int(np.frombuffer(np.round(y, 12).tobytes(), dtype=np.uint8).astype(np.uint64).sum() % 2**31)
+    rng = np.random.default_rng((int(seed), n, data_key, int(round(rho_obs * 1e9)) % 2**31))
     r_t = float(np.clip(rho_obs, 0.0, 0.95))
     for _ in range(4):
         m = float(np.mean(_ols_lag1(_ar1_series(rng, n, np.full(400, r_t)), u)))
