@@ -791,6 +791,9 @@ def _build_segment_summaries(
     return tuple(segments), override_trend, override_ci_low, override_ci_high
 
 
+_BAND_INTERVAL = "basic"  # study switch: "basic" (default) or "percentile" bootstrap interval
+
+
 def _replicate_windowed_seasonal(
     t_valid: FloatArray,
     ystar: FloatArray,
@@ -970,8 +973,12 @@ def _pipeline_bootstrap(
     a_lvl = 1.0 - ci_level
     combined = f_trend + step_offsets
     dev = (boot.curves - combined[:, None]) * boot.dev_scale[:, None]
-    band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
-    band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
+    if _BAND_INTERVAL == "percentile":
+        band_lo = combined + np.quantile(dev, 0.5 * a_lvl, axis=1)
+        band_hi = combined + np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+    else:
+        band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+        band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
 
     # OLS segment slopes between the replicate's breakpoints
     sw = np.sqrt(w_stpd) if w_stpd is not None else np.ones(n)
