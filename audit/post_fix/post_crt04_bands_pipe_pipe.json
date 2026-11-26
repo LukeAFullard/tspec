@@ -1,0 +1,14 @@
+{
+ "bootstrap": {
+  "R": 200,
+  "correct_structure": 0.965,
+  "trend_band_cov|correct": 0.8618127518710419,
+  "segment_slope_cov|correct": 0.8601036269430051
+ },
+ "conditional": {
+  "R": 200,
+  "correct_structure": 0.965,
+  "trend_band_cov|correct": 0.8322358952216465,
+  "segment_slope_cov|correct": 0.9015544041450777
+ }
+}
