@@ -798,6 +798,7 @@ def _bootstrap_tp_curves(
     nuisance_cols: FloatArray | None = None,
     nuisance_trend: np.ndarray | None = None,
     adjust_fn: Any = None,
+    extra_df: float = 0.0,
 ) -> _TpBootstrap | None:
     """Wild residual bootstrap of the detect-then-fit STPD trend (audit CRT-04).
 
@@ -831,7 +832,7 @@ def _bootstrap_tp_curves(
     g = other_fit if other_fit is not None else np.zeros(n)
     sw = np.sqrt(w) if w is not None else np.ones(n)
     ncols = nuisance_cols if nuisance_cols is not None else np.empty((n, 0))
-    p_par = 2 + k_n + ncols.shape[1]
+    p_par = 2 + k_n + ncols.shape[1] + float(extra_df)
     resid = (y - trend_fit - g) * np.sqrt(n / max(1, n - p_par))
     rng = np.random.default_rng(seed)
     v = rng.choice(np.array([-1.0, 1.0]), size=(n, int(n_boot)))

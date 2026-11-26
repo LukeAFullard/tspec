@@ -892,6 +892,14 @@ def _pipeline_bootstrap(
     f_trend = stpd_res.piecewise_trend.fitted_trend
     use_seas = decomp is not None and bool(decomp.window_bounds) and bool(np.any(seasonal_part != 0.0))
 
+    # Effective degrees of freedom of the nuisance estimators (trace of their hat matrix,
+    # Hutchinson estimate), so the bootstrap residuals are inflated for all fitted terms.
+    extra_df = 2.0 * len(jump_valid_indices)
+    if use_seas and decomp is not None:
+        probes = np.random.default_rng((20261128, n)).choice(np.array([-1.0, 1.0]), size=(n, 32))
+        extra_df += float(np.mean(np.sum(probes * _replicate_windowed_seasonal(
+            t_valid, probes, decomp, jump_valid_indices, w_stpd), axis=0)))
+
     def _adjust(ystar: FloatArray) -> tuple[FloatArray, FloatArray]:
         seas_b = (
             _replicate_windowed_seasonal(t_valid, ystar, decomp, jump_valid_indices, w_stpd)
@@ -911,7 +919,7 @@ def _pipeline_bootstrap(
     boot = _bootstrap_tp_curves(
         t_valid, y_work, f_trend, tp_win, _refit, w=w_stpd, robust=robust, huber_k=huber_k,
         n_boot=int(n_boot), seed=(20261127, n, *[x[0] for x in tp_win]),
-        other_fit=step_offsets + seasonal_part, adjust_fn=_adjust,
+        other_fit=step_offsets + seasonal_part, adjust_fn=_adjust, extra_df=extra_df,
     )
     if boot is None:
         return None
