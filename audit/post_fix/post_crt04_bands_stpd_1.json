@@ -3,9 +3,9 @@
   "bootstrap": {
    "R": 300,
    "n_detected": 159,
-   "curve_cov_given_detect": 0.9503983228511531,
-   "curve_cov_all": 0.7432666666666667,
-   "mean_width": 0.6290916328026424
+   "curve_cov_given_detect": 0.9620545073375262,
+   "curve_cov_all": 0.7550444444444444,
+   "mean_width": 0.6734339731862513
   },
   "conditional": {
    "R": 300,
