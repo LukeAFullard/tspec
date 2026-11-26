@@ -1002,14 +1002,26 @@ def analyze_series(
     just_kwargs, decompose_kwargs, stpd_kwargs:
         Extra keyword arguments forwarded to :func:`just_jumps`,
         :func:`just_decompose`, and :func:`detect_turning_points`.
+    band_method : {"bootstrap", "conditional"}, default "bootstrap"
+        ``"bootstrap"``: when turning points are detected, the trend band and the OLS
+        segment-slope CIs come from a detect-then-fit wild bootstrap. Each replicate
+        re-estimates the jump steps and seasonal harmonics, re-locates every turning
+        point with STPD's knot estimator over its detecting window, and refits the
+        trend and segment slopes. ``"conditional"``: analytical intervals that treat the
+        detected structure as known. Bootstrap intervals apply with
+        ``slope_estimator="ols"`` and ``jump_adjustment="offset"``; otherwise, and when
+        no turning point is found, the analytical intervals are used.
+    n_boot : int, default 499
+        Bootstrap replicates for ``band_method="bootstrap"``.
 
     Returns
     -------
     PipelineResult
         Stage results, adjusted series, combined trend and bands, and per-segment
-        slope summaries (:attr:`PipelineResult.segments`). Trend bands and segment
-        CIs are conditional on the detected jumps/turning points and estimated
-        seasonality (empirically ~83-92% coverage at nominal 95%).
+        slope summaries (:attr:`PipelineResult.segments`). With the default
+        ``band_method="bootstrap"`` the trend band and OLS segment-slope CIs include
+        turning-point location, jump-step and seasonal-estimation uncertainty. They
+        remain conditional on the number of breakpoints found.
 
     Setting ``robust='huber'`` (convex Huber IRLS) or ``robust='mm'``
     (Huber-initialized Tukey biweight MM-type estimation, recommended for extreme

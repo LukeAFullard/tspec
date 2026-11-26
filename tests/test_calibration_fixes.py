@@ -377,3 +377,85 @@ def test_pooled_decisions_do_not_depend_on_imputation_seed() -> None:
         )
         flips += (len(a.jumps) > 0) != (len(b.jumps) > 0)
     assert flips <= 1
+
+
+# ---------------------------------------------------------------------------
+# CRT-06: short-series Mann-Kendall/Sen under AR(1) uses a parametric bootstrap reference
+# ---------------------------------------------------------------------------
+
+
+def _ar1_path(rng: np.random.Generator, n: int, phi: float) -> np.ndarray:
+    e = rng.normal(size=n)
+    x = np.empty(n)
+    x[0] = e[0] / np.sqrt(1 - phi**2)
+    for i in range(1, n):
+        x[i] = phi * x[i - 1] + e[i]
+    return x
+
+
+def test_short_series_mk_ar1_calibrated() -> None:
+    rng = np.random.default_rng(606)
+    n, phi, R = 60, 0.7, 300
+    t = 2000 + np.arange(n) / 12.0
+    rej = 0
+    for _ in range(R):
+        rej += fit_theil_sen_segment(t, _ar1_path(rng, n, phi), autocorr_correction="ar1").pvalue < 0.05
+    # analytic plug-in factor: ~8.6% (audit CRT-06); bootstrap reference ~5-6%
+    assert rej / R <= 0.075
+
+
+def test_mk_bootstrap_reference_is_deterministic() -> None:
+    rng = np.random.default_rng(1)
+    t = 2000 + np.arange(80) / 12.0
+    y = _ar1_path(rng, 80, 0.5)
+    a = fit_theil_sen_segment(t, y, autocorr_correction="ar1")
+    b = fit_theil_sen_segment(t, y, autocorr_correction="ar1")
+    assert a.pvalue == b.pvalue and a.ci_low == b.ci_low and a.ci_high == b.ci_high
+
+
+# ---------------------------------------------------------------------------
+# CRT-04: detect-then-fit bootstrap bands
+# ---------------------------------------------------------------------------
+
+
+def test_stpd_bootstrap_band_covers_after_detection() -> None:
+    hits_b = hits_c = n_ok = 0.0
+    for seed in range(12):
+        rng = np.random.default_rng(4040 + seed)
+        n = 500
+        span = n / 24
+        ttp = 2000 + span / 2
+        t = np.sort(rng.uniform(2000, 2000 + span, n))
+        truth = 3 + 0.5 * (t - 2000) - np.maximum(0, t - ttp)
+        y = truth + rng.normal(0, 0.6, n)
+        sb = tspec.stpd(t, y)
+        if len(sb.tp_times) != 1 or abs(float(sb.tp_times[0]) - ttp) > 0.5:
+            continue
+        assert sb.band_method == "bootstrap"
+        sc = tspec.stpd(t, y, band_method="conditional")
+        pb, pc = sb.piecewise_trend, sc.piecewise_trend
+        hits_b += float(np.mean((truth >= pb.trend_ci_low) & (truth <= pb.trend_ci_high)))
+        hits_c += float(np.mean((truth >= pc.trend_ci_low) & (truth <= pc.trend_ci_high)))
+        n_ok += 1
+    assert n_ok >= 6
+    assert hits_b / n_ok >= 0.90  # conditional band ~85% in this design
+    assert hits_b > hits_c
+
+
+def test_band_method_options_and_parity() -> None:
+    t, y, _ = _tp_series(5, 150, 0.3, bend=True)
+    assert tspec.stpd(t, y, parity_mode=True).band_method == "conditional"
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, band_method="bogus")  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        tspec.stpd(t, y, n_boot=10)
+    rng = np.random.default_rng(9)
+    tt = np.sort(rng.uniform(2000, 2012, 288))
+    yy = 3 + 0.4 * (tt - 2000) - 0.7 * np.maximum(0, tt - 2006) + 0.6 * np.cos(2 * np.pi * tt)
+    yy = yy + rng.normal(0, 0.2, tt.size)
+    a = tspec.analyze_series(tt, yy)
+    assert a.band_method == "bootstrap"
+    c = tspec.analyze_series(tt, yy, band_method="conditional")
+    assert c.band_method == "conditional"
+    assert np.mean(a.trend_ci_high - a.trend_ci_low) > np.mean(c.trend_ci_high - c.trend_ci_low)
+    assert "bootstrap intervals" in a.explain()
