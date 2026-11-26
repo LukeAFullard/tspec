@@ -286,3 +286,41 @@ def pool_pvalues(pvalues: FloatArray) -> float:
         return float(ndtr(-stat))
     nu = (m - 1) * (1.0 + 1.0 / r) ** 2
     return float(t_dist.sf(stat, nu))
+
+
+def window_congenial_imputations(
+    vals: FloatArray,
+    codes: IntArray,
+    left: FloatArray | None,
+    right: FloatArray | None,
+    X: FloatArray,
+    dist: str,
+    n_imputations: int,
+    seed: int | tuple[int, ...],
+    weights: FloatArray | None = None,
+) -> list[FloatArray] | None:
+    """Proper multiple imputations of one window from a censored regression on ``X``.
+
+    ``X`` should contain the structure being tested (e.g. the candidate jump or
+    turning point) so the imputations are congenial with the test: imputing from a
+    model without it pulls every imputation toward the null. Returns ``None`` when the
+    window has no censored values or the model cannot be fitted.
+    """
+    if not np.any(codes != 0):
+        return None
+    try:
+        fit = fit_censored_regression(vals, codes, X, left=left, right=right, weights=weights, dist=dist)
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    if not fit.converged or not np.all(np.isfinite(fit.cov)):
+        return None
+    rng = np.random.default_rng(seed)
+    out = []
+    for _ in range(int(n_imputations)):
+        out.append(
+            impute_censored_regression(
+                fit, vals, codes, X, rng, left=left, right=right, weights=weights,
+                mode="stochastic", draw_params=True,
+            )
+        )
+    return out

@@ -16,7 +16,7 @@ from typing import Any, Literal
 import numpy as np
 from scipy.stats import t as student_t
 
-from ._cenreg import pool_pvalues
+from ._cenreg import pool_pvalues, window_congenial_imputations
 from ._diagnostics import (
     DiagnosticReport,
     WarningItem,
@@ -43,6 +43,7 @@ from .censored import (
     generate_stability_draws,
     impute_window_local,
     prepare_series_with_censoring,
+    resolve_imputation_dist,
 )
 from .exceptions import InsufficientDataError
 from .just import WindowMode, _build_duration_windows
@@ -1581,7 +1582,8 @@ def _run_stpd_windows(
     rng: np.random.Generator | None = None,
     tp_calibration: str = "none",
     n_mc: int = 999,
-    y_imputations: list[FloatArray] | None = None,
+    mi_spec: tuple[int, str] | None = None,
+    mi_counter: list[int] | None = None,
 ) -> tuple[
     list[tuple[int, float, _WindowTpdStats, int, int]],
     list[tuple[int, _WindowTpdStats]],
@@ -1594,9 +1596,11 @@ def _run_stpd_windows(
     slope-change p-value is corrected for the data-driven choice of knot and direction,
     candidates are merged within ``tp_th``, and the merged p-values are Holm-adjusted so
     ``alpha`` bounds the probability of accepting any false turning point.
-    ``y_imputations`` (additional imputed versions of ``y_valid``) pools each candidate
-    window's calibrated p-value over the primary and additional imputations
-    (Licht–Rubin); the other gates use the primary series.
+    ``mi_spec = (n_imputations, dist)`` pools each candidate window's calibrated
+    p-value (Licht–Rubin) over ``n_imputations`` proper imputations of the window drawn
+    from a censored regression with a hinge at the candidate knot (congenial with the
+    test); the other gates use the primary imputation. ``mi_counter`` records
+    ``[n_pooled, n_fallback]``.
     """
     accepted_raw: list[tuple[int, float, _WindowTpdStats, int, int]] = []
     flagged_raw: list[tuple[int, _WindowTpdStats]] = []
@@ -1663,24 +1667,52 @@ def _run_stpd_windows(
             )
             if gates_ok:
                 n_knots = 2 * max(1, min(n_w - 2, n_w - m_eff) - max(2, m_eff))
-                if y_imputations:
+                imps: list[FloatArray] | None = None
+                if (
+                    mi_spec is not None
+                    and provenance is not None
+                    and bool(np.any(provenance.status_codes[w_start:w_stop] != 0))
+                ):
+                    span_w = float(t_w[-1] - t_w[0]) if t_w[-1] > t_w[0] else 1.0
+                    X_imp = np.column_stack(
+                        [
+                            np.ones(n_w),
+                            (t_w - t_w[0]) / span_w,
+                            np.maximum(0.0, t_w - t_w[stats.local_tp]) / span_w,
+                        ]
+                    )
+                    imps = window_congenial_imputations(
+                        provenance.original_values[w_start:w_stop],
+                        provenance.status_codes[w_start:w_stop],
+                        provenance.original_left[w_start:w_stop]
+                        if provenance.original_left is not None
+                        else None,
+                        provenance.original_right[w_start:w_stop]
+                        if provenance.original_right is not None
+                        else None,
+                        X_imp,
+                        mi_spec[1],
+                        mi_spec[0],
+                        (20261126, int(w_start), int(w_stop)),
+                        weights=w_w,
+                    )
+                    if mi_counter is not None:
+                        mi_counter[0 if imps is not None else 1] += 1
+                if imps is not None:
                     if tp_calibration == "montecarlo" and robust == "none":
-                        Y_w = np.column_stack(
-                            [y_w] + [y_m[w_start:w_stop] for y_m in y_imputations]
-                        )
                         p_m = _stpd_mc_pvalues(
-                            t_w, Y_w, m_eff, w_w, n_mc, (20261125, int(w_start), int(w_stop)),
-                            skip_above=alpha,
+                            t_w, np.column_stack(imps), m_eff, w_w, n_mc,
+                            (20261125, int(w_start), int(w_stop)), skip_above=alpha,
                         )
                         p_cal = pool_pvalues(p_m) if bool(np.any(p_m < 1.0)) else 1.0
                     else:
                         # Pool the fixed-knot p-values, then apply the Bonferroni factor
-                        raw = [stats.pval] + [
+                        raw = [
                             _tpd_window(
-                                t_w, y_m[w_start:w_stop], m_eff, w_w,
+                                t_w, y_m, m_eff, w_w,
                                 parity_mode=parity_mode, robust=robust, huber_k=huber_k,
                             ).pval
-                            for y_m in y_imputations
+                            for y_m in imps
                         ]
                         p_cal = float(min(1.0, n_knots * pool_pvalues(np.asarray(raw))))
                 elif stats.pval >= alpha:
@@ -2024,8 +2056,8 @@ def detect_turning_points(
         rng = np.random.default_rng(cfg.random_state if cfg is not None else 0)
 
     # Multiple imputation of censored values: candidate p-values are pooled over
-    # `n_imputations` imputations (the primary plus proper additional draws).
-    y_imps: list[FloatArray] | None = None
+    # `n_imputations` congenial imputations of each window (see _run_stpd_windows).
+    mi_spec: tuple[int, str] | None = None
     if (
         not parity_mode
         and cfg is not None
@@ -2035,22 +2067,10 @@ def detect_turning_points(
         and cfg.scope != "windowed"
         and eff_tp_cal != "none"
     ):
-        mi_fb = [0]
-        y_imps = generate_stability_draws(
-            prov, cfg, series.times_numeric, mi_fb, n_draws=cfg.n_imputations - 1, seed_offset=30_011
-        )
-        if mi_fb[0] > 0:
-            warnings_list.append(
-                WarningItem(
-                    code="STABILITY_DRAW_FALLBACK",
-                    severity="caution",
-                    message=(
-                        f"{mi_fb[0]} additional imputation(s) could not refit the imputation model "
-                        "and reused fixed parameters, so pooled p-values understate imputation "
-                        "uncertainty."
-                    ),
-                )
-            )
+        mi_dist = resolve_imputation_dist(prov, cfg)
+        if mi_dist is not None:
+            mi_spec = (int(cfg.n_imputations), mi_dist)
+    mi_counter = [0, 0]
 
     accepted_raw, flagged_raw, density_imbalanced, win_fb = _run_stpd_windows(
         series.times_numeric,
@@ -2075,8 +2095,21 @@ def detect_turning_points(
         rng=rng,
         tp_calibration=eff_tp_cal,
         n_mc=int(n_mc),
-        y_imputations=y_imps,
+        mi_spec=mi_spec,
+        mi_counter=mi_counter,
     )
+    if mi_counter[1] > 0:
+        warnings_list.append(
+            WarningItem(
+                code="MI_DETECTION_FALLBACK",
+                severity="caution",
+                message=(
+                    f"{mi_counter[1]} candidate window(s) could not be multiply imputed (censored "
+                    "regression did not converge); their p-values condition on the single "
+                    "primary imputation."
+                ),
+            )
+        )
 
     if eff_ndri_mode == "l2" and density_imbalanced:
         warnings_list.append(
@@ -2304,7 +2337,7 @@ def detect_turning_points(
         censoring=prov,
         diagnostics=diag,
         tp_calibration=eff_tp_cal,
-        n_imputations=(len(y_imps) + 1) if y_imps else 1,
+        n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
     )
 
 

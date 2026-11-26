@@ -19,7 +19,7 @@ import numpy as np
 from scipy.stats import f as f_dist
 from scipy.stats import t as t_dist
 
-from ._cenreg import pool_pvalues
+from ._cenreg import pool_pvalues, window_congenial_imputations
 from ._diagnostics import (
     DiagnosticReport,
     WarningItem,
@@ -45,6 +45,7 @@ from .censored import (
     impute_window_local,
     prepare_series_with_censoring,
     recensor_to_common_limit,
+    resolve_imputation_dist,
 )
 from .exceptions import InsufficientDataError
 from .results import (
@@ -1173,7 +1174,8 @@ def _run_just_jumps_array(
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
-    y_imputations: list[FloatArray] | None = None,
+    mi_spec: tuple[int, str] | None = None,
+    mi_counter: list[int] | None = None,
 ) -> tuple[
     list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
     list[WindowCandidate],
@@ -1181,10 +1183,12 @@ def _run_just_jumps_array(
 ]:
     """Core sliding-window JUST jump search + aggregation + merging.
 
-    ``y_imputations`` (additional imputed versions of ``y_valid``) pools each
-    candidate's jump and step p-values over the primary and additional imputations
-    (Licht–Rubin) before the Holm adjustment; candidate locations come from the
-    primary series.
+    ``mi_spec = (n_imputations, dist)`` pools each candidate's jump and step p-values
+    (Licht–Rubin) over ``n_imputations`` proper imputations of the candidate's window
+    drawn from a censored regression that includes the candidate jump (congenial with
+    the test), before the Holm adjustment. Candidate locations come from the primary
+    imputation ``y_valid``. ``mi_counter`` (``[n_pooled, n_fallback]``) records how
+    many candidates were pooled and how many fell back to the primary imputation.
     """
     candidates: list[WindowCandidate] = []
     window_fallbacks = 0
@@ -1300,51 +1304,84 @@ def _run_just_jumps_array(
             season_significance=season_significance,
             mc_cache=mc_cache,
         )
-        if y_imputations:
-            # Jump test: pool calibrated Monte Carlo p-values, or pool the fixed-split
-            # p-values and then apply the Bonferroni split count. Step test: always the
-            # latter (it is Bonferroni-corrected in both calibrations).
-            n_sp = _jump_split_count(int(t_w.size), "none" if parity_mode else robust)
-            mc_jump = calib == "montecarlo" and robust == "none"
-            pj: list[float] = []
-            ps: list[float] = []
+        ws_c, we_c = int(best_c.window_start), int(best_c.window_stop)
+        if (
+            mi_spec is not None
+            and provenance is not None
+            and pw_w.kind != "matrix"
+            and bool(np.any(provenance.status_codes[ws_c:we_c] != 0))
+        ):
+            n_imp, mi_dist = mi_spec
             n_w_c = int(t_w.size)
-            for i_m, y_m_w in enumerate(
-                [y_w] + [y_m[best_c.window_start : best_c.window_stop] for y_m in y_imputations]
-            ):
-                # Each additional imputation is tested at its own best split, the
-                # statistic whose null the max-over-splits calibration describes.
-                j_loc = j_idx - best_c.window_start
-                if i_m > 0 and robust == "none":
-                    j_best = _best_jump_split(
-                        t_w - t_w[0], y_m_w, pw_w, best_c.selected_freqs, 3, n_w_c - 2
-                    )
-                    if j_best is not None:
-                        j_loc = j_best
-                pj_m, ps_m = _nested_jump_ftests(
-                    t_w,
-                    y_m_w,
-                    pw_w,
-                    j_loc,
-                    best_c.selected_freqs,
-                    season=season,
-                    omega=omega,
-                    alpha=alpha,
-                    parity_mode=parity_mode,
-                    robust=robust,
-                    huber_k=huber_k,
-                    calibration=calib if mc_jump else "none",
-                    n_mc=n_mc,
-                    mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
-                    season_significance=season_significance,
-                    mc_cache=mc_cache,
-                    raw_step=True,
+            j_cand = j_idx - ws_c
+            u_w = (t_w - t_w[0]) / (float(t_w[-1] - t_w[0]) if t_w[-1] > t_w[0] else 1.0)
+            fr = best_c.selected_freqs
+            step_c = (np.arange(n_w_c) >= j_cand).astype(np.float64)
+            imps = None
+            # Imputation model: trend + candidate jump + harmonics; drop harmonics when the
+            # window has too few detected values for the full model.
+            for fr_imp in (fr, fr[:1], fr[:0]) if fr.size > 1 else (fr, fr[:0]):
+                cols = [np.ones(n_w_c), u_w]
+                for f_h in fr_imp:
+                    cols += [np.cos(2.0 * np.pi * f_h * t_w), np.sin(2.0 * np.pi * f_h * t_w)]
+                cols += [step_c, step_c * u_w]
+                imps = window_congenial_imputations(
+                    provenance.original_values[ws_c:we_c],
+                    provenance.status_codes[ws_c:we_c],
+                    provenance.original_left[ws_c:we_c] if provenance.original_left is not None else None,
+                    provenance.original_right[ws_c:we_c] if provenance.original_right is not None else None,
+                    np.column_stack(cols),
+                    mi_dist,
+                    n_imp,
+                    (20261126, ws_c, we_c),
+                    weights=pw_w.vector if pw_w.kind == "vector" else None,
                 )
-                pj.append(pj_m)
-                ps.append(ps_m)
-            pj_pool = pool_pvalues(np.asarray(pj, dtype=np.float64))
-            p_jump = pj_pool if mc_jump else float(min(1.0, n_sp * pj_pool))
-            p_step = float(min(1.0, n_sp * pool_pvalues(np.asarray(ps, dtype=np.float64))))
+                if imps is not None:
+                    break
+            if imps is None:
+                if mi_counter is not None:
+                    mi_counter[1] += 1
+            else:
+                if mi_counter is not None:
+                    mi_counter[0] += 1
+                # Jump test: pool calibrated Monte Carlo p-values (each imputation at its
+                # own best split, the statistic the max-over-splits null describes), or
+                # pool fixed-split p-values and apply the Bonferroni split count. Step
+                # test: always the latter (Bonferroni-corrected in both calibrations).
+                n_sp = _jump_split_count(n_w_c, "none" if parity_mode else robust)
+                mc_jump = calib == "montecarlo" and robust == "none"
+                pj: list[float] = []
+                ps: list[float] = []
+                for y_m_w in imps:
+                    j_loc = j_cand
+                    if robust == "none":
+                        j_best = _best_jump_split(t_w - t_w[0], y_m_w, pw_w, fr, 3, n_w_c - 2)
+                        if j_best is not None:
+                            j_loc = j_best
+                    pj_m, ps_m = _nested_jump_ftests(
+                        t_w,
+                        y_m_w,
+                        pw_w,
+                        j_loc,
+                        fr,
+                        season=season,
+                        omega=omega,
+                        alpha=alpha,
+                        parity_mode=parity_mode,
+                        robust=robust,
+                        huber_k=huber_k,
+                        calibration=calib if mc_jump else "none",
+                        n_mc=n_mc,
+                        mc_seed=(20261125, ws_c, we_c),
+                        season_significance=season_significance,
+                        mc_cache=mc_cache,
+                        raw_step=True,
+                    )
+                    pj.append(pj_m)
+                    ps.append(ps_m)
+                pj_pool = pool_pvalues(np.asarray(pj, dtype=np.float64))
+                p_jump = pj_pool if mc_jump else float(min(1.0, n_sp * pj_pool))
+                p_step = float(min(1.0, n_sp * pool_pvalues(np.asarray(ps, dtype=np.float64))))
         tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
 
     # Family-wise control across the distinct candidate locations (Holm step-down) when
@@ -1642,9 +1679,9 @@ def just_jumps(
     else:
         rng = np.random.default_rng(cfg.random_state if cfg is not None else 0)
 
-    # Multiple imputation of censored values: per-candidate p-values are pooled over
-    # `n_imputations` imputations (the primary plus proper additional draws).
-    y_imps: list[FloatArray] | None = None
+    # Multiple imputation of censored values: each candidate's p-values are pooled over
+    # `n_imputations` congenial imputations of its window (see _run_just_jumps_array).
+    mi_spec: tuple[int, str] | None = None
     if (
         not parity_mode
         and cfg is not None
@@ -1654,22 +1691,10 @@ def just_jumps(
         and cfg.scope != "windowed"
         and eff_calib != "none"
     ):
-        mi_fb = [0]
-        y_imps = generate_stability_draws(
-            prov, cfg, series.times_numeric, mi_fb, n_draws=cfg.n_imputations - 1, seed_offset=30_011
-        )
-        if mi_fb[0] > 0:
-            warnings_list.append(
-                WarningItem(
-                    code="STABILITY_DRAW_FALLBACK",
-                    severity="caution",
-                    message=(
-                        f"{mi_fb[0]} additional imputation(s) could not refit the imputation model "
-                        "and reused fixed parameters, so pooled p-values understate imputation "
-                        "uncertainty."
-                    ),
-                )
-            )
+        mi_dist = resolve_imputation_dist(prov, cfg)
+        if mi_dist is not None:
+            mi_spec = (int(cfg.n_imputations), mi_dist)
+    mi_counter = [0, 0]
 
     accepted, all_cands_valid, win_fb = _run_just_jumps_array(
         series.times_numeric,
@@ -1694,8 +1719,21 @@ def just_jumps(
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
-        y_imputations=y_imps,
+        mi_spec=mi_spec,
+        mi_counter=mi_counter,
     )
+    if mi_counter[1] > 0:
+        warnings_list.append(
+            WarningItem(
+                code="MI_DETECTION_FALLBACK",
+                severity="caution",
+                message=(
+                    f"{mi_counter[1]} candidate window(s) could not be multiply imputed (censored "
+                    "regression did not converge); their p-values condition on the single "
+                    "primary imputation."
+                ),
+            )
+        )
 
     if win_fb > 0:
         warnings_list.append(
@@ -1990,7 +2028,7 @@ def just_jumps(
         censoring=prov,
         diagnostics=diag,
         jump_calibration=eff_calib,
-        n_imputations=(len(y_imps) + 1) if y_imps else 1,
+        n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
     )
 
 

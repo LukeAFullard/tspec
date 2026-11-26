@@ -1523,3 +1523,24 @@ def prepare_series_with_censoring(
         weight_factors=weight_factors,
         config=cfg,
     )
+
+
+def resolve_imputation_dist(provenance: CensoringProvenance, config: CensoredConfig) -> str | None:
+    """Error distribution (``"normal"``/``"lognormal"``) for censored-regression imputation.
+
+    Uses the distribution of the time-conditional imputation when it was used, else
+    resolves ``config.dist``; returns ``None`` when it is not supported (Weibull).
+    """
+    attrs = provenance.ndimpute_attrs
+    if attrs.get("imputation_model") == "trend" and attrs.get("dist") in ("normal", "lognormal"):
+        return str(attrs["dist"])
+    try:
+        return _resolve_trend_dist(
+            provenance.original_values,
+            provenance.status_codes,
+            provenance.original_left,
+            provenance.original_right,
+            config.dist,
+        )
+    except ValueError:
+        return None
