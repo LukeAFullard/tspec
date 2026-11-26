@@ -799,6 +799,7 @@ def _bootstrap_tp_curves(
     nuisance_trend: np.ndarray | None = None,
     adjust_fn: Any = None,
     extra_df: float = 0.0,
+    extra_leverage: FloatArray | None = None,
 ) -> _TpBootstrap | None:
     """Wild residual bootstrap of the detect-then-fit STPD trend (audit CRT-04).
 
@@ -832,8 +833,25 @@ def _bootstrap_tp_curves(
     g = other_fit if other_fit is not None else np.zeros(n)
     sw = np.sqrt(w) if w is not None else np.ones(n)
     ncols = nuisance_cols if nuisance_cols is not None else np.empty((n, 0))
-    p_par = 2 + k_n + ncols.shape[1] + float(extra_df)
-    resid = (y - trend_fit - g) * np.sqrt(n / max(1, n - p_par))
+    # Leverage-adjusted (HC3-type) wild-bootstrap residuals e_i / sqrt(1 - h_ii): the
+    # trend's hat diagonal (connected hinge design at the detected knots) plus any
+    # nuisance-estimator leverage supplied by the caller. Falls back to a global
+    # sqrt(n / (n - p)) inflation if the leverages are degenerate.
+    span_l = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+    u_l = (t - t[0]) / span_l
+    x_tr = np.column_stack(
+        [np.ones(n), u_l, *[np.maximum(0.0, u_l - u_l[gi]) for gi, _, _, _ in tp_windows]]
+    )
+    q_tr, _ = np.linalg.qr(x_tr * sw[:, None], mode="reduced")
+    lev = np.sum(q_tr * q_tr, axis=1)
+    if extra_leverage is not None:
+        lev = lev + np.asarray(extra_leverage, dtype=np.float64)
+    raw = y - trend_fit - g
+    if np.all(np.isfinite(lev)) and float(np.max(lev)) < 0.99:
+        resid = raw / np.sqrt(1.0 - lev)
+    else:
+        p_par = 2 + k_n + ncols.shape[1] + float(extra_df)
+        resid = raw * np.sqrt(n / max(1, n - p_par))
     rng = np.random.default_rng(seed)
     v = rng.choice(np.array([-1.0, 1.0]), size=(n, int(n_boot)))
     ystar = (trend_fit + g)[:, None] + resid[:, None] * v

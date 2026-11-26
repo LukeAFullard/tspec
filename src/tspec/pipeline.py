@@ -831,6 +831,38 @@ def _replicate_windowed_seasonal(
     return np.asarray(out, dtype=np.float64)
 
 
+def _windowed_seasonal_leverage(
+    t_valid: FloatArray,
+    decomp: JustDecomposeResult,
+    jump_valid_indices: list[int],
+    w: FloatArray | None,
+) -> FloatArray:
+    """Diagonal of the (linear) windowed seasonal estimator's hat matrix."""
+    n = int(t_valid.size)
+    num = np.zeros(n)
+    den = np.zeros(n)
+    jv = np.asarray(sorted(jump_valid_indices), dtype=np.intp)
+    for (lb, ub), freqs in zip(decomp.window_bounds, decomp.window_frequencies, strict=True):
+        size0 = ub - lb
+        fr = np.asarray(freqs, dtype=np.float64)
+        n_h = 2 * int(fr.size)
+        if size0 < 4 or n_h == 0:
+            continue
+        ty = t_valid[lb:ub]
+        ty_loc = ty - ty[0]
+        local_j = np.array([int(j - lb) for j in jv if lb + 2 <= j < ub - 1], dtype=np.intp)
+        d_w, _cs = build_design_matrix(ty_loc, "linear", local_j, False, fr)
+        sw = np.sqrt(w[lb:ub]) if w is not None else np.ones(size0)
+        pinv = np.linalg.pinv(d_w * sw[:, None]) * sw[None, :]  # coef = pinv @ y
+        h_cols = slice(d_w.shape[1] - n_h, d_w.shape[1])
+        diag_w = np.sum(d_w[:, h_cols] * pinv[h_cols, :].T, axis=1)
+        tau0 = float(ty[size0 // 2]) if (size0 % 2 == 1) else 0.5 * float(ty[size0 // 2] + ty[size0 // 2 - 1])
+        g = np.exp(decomp.window_dilation * (ty - tau0) ** 2)
+        num[lb:ub] += diag_w * g
+        den[lb:ub] += g
+    return np.where(den > 0, num / np.where(den > 0, den, 1.0), 0.0)
+
+
 def _replicate_step_offsets(
     t_valid: FloatArray, y_deseas: FloatArray, jump_valid_indices: list[int], w: FloatArray | None
 ) -> FloatArray:
@@ -920,6 +952,11 @@ def _pipeline_bootstrap(
         t_valid, y_work, f_trend, tp_win, _refit, w=w_stpd, robust=robust, huber_k=huber_k,
         n_boot=int(n_boot), seed=(20261127, n, *[x[0] for x in tp_win]),
         other_fit=step_offsets + seasonal_part, adjust_fn=_adjust, extra_df=extra_df,
+        extra_leverage=(
+            _windowed_seasonal_leverage(t_valid, decomp, jump_valid_indices, w_stpd)
+            if use_seas and decomp is not None
+            else None
+        ),
     )
     if boot is None:
         return None
