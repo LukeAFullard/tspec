@@ -37,6 +37,7 @@ How `tspec` handles this:
 | `TREND_IMPUTATION_FALLBACK` | Warning | Time-conditional censored imputation failed and the time-invariant marginal model was used; trends among censored values are biased toward zero. |
 | `LONG_MONITORING_HORIZON` | Caution | The monitoring span exceeds the stable historical span, so extrapolated trend uncertainty grows quadratically. Keep `account_for_forecast_uncertainty=True` (default) or re-baseline periodically. |
 | `UNADJUSTED_REPEATED_TESTING` | Warning | Multiplicity controls (`freq_correction`, `sequential_control`) are disabled in `just_monitor()` outside `parity_mode=True`. |
+| `MI_DETECTION_FALLBACK` | Caution | With `detection_imputations > 1`, some candidate windows could not be re-imputed (too few detected values for the censored regression); their p-values use the single primary imputation. |
 | `UNCALIBRATED_CONSECUTIVE_K` | Caution | `sequential_control="consecutive_k"` was used without `horizon`, so each step is tested at the full `alpha` and the familywise false-alarm rate grows with monitoring length. Pass a planned `horizon` to calibrate the per-step level. |
 | `PENDING_CONFIRMATION` | Info | Under `sequential_control="consecutive_k"`, the latest observation exceeded the threshold but has not yet reached `consecutive_k` consecutive hits. |
 | `THRESHOLD_SCALE_MISMATCH` | Caution | Threshold-only selection (`jump_alpha=None`) with `mag_th=0.05` (NDVI scale) looks badly scaled for your data's IQR. Set a domain-meaningful `mag_th` or use the calibrated default `jump_alpha=0.05`. |

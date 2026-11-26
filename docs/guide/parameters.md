@@ -48,6 +48,7 @@ A plain-English translation of every key parameter in `tspec`, its default value
 | `imputation_model` | Whether censored values are imputed conditionally on time (`"trend"`, censored regression) or from one time-invariant distribution (`"marginal"`). | `"trend"` | Keep `"trend"`; `"marginal"` flattens trends among censored values and biases slopes toward zero. |
 | `trend_harmonics` | Seasonal harmonics (cycles/time unit) included in the `"trend"` imputation model. | `(1, 2)` for dates, none for numeric time | Add harmonics that match your seasonality; numeric time must be in years for `(1, 2)` to mean annual/semi-annual. |
 | `n_imputations` | Multiple imputations pooled with Rubin's rules for censored OLS segment slopes in `analyze_series()`. | `20` | 20–50 is typical; `1` disables pooling (CIs then ignore imputation uncertainty). |
+| `detection_imputations` | Imputations over which `just_jumps()`/`stpd()` pool each candidate's calibrated p-value on censored data. | `1` (single imputation) | `20` makes detections independent of the imputation seed and conservative, at some jump power under heavy censoring. |
 
 ## Near-Real-Time Monitoring (`just_monitor`, v1.1)
 
