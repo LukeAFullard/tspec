@@ -927,10 +927,11 @@ def _bootstrap_refit_draw(
 def _spawn_stability_rngs(
     random_state: int | np.random.Generator | None,
     n_draws: int,
+    seed_offset: int = 10_007,
 ) -> list[np.random.Generator]:
     """Create deterministic or fresh child RNGs honoring int, Generator, or None seeds."""
     if isinstance(random_state, (int, np.integer)):
-        ss = np.random.SeedSequence(int(random_state) + 10_007)
+        ss = np.random.SeedSequence(int(random_state) + int(seed_offset))
         return [np.random.default_rng(s) for s in ss.spawn(n_draws)]
     if isinstance(random_state, np.random.Generator):
         child_seeds = random_state.integers(0, 2**32 - 1, size=n_draws)
@@ -944,17 +945,22 @@ def generate_stability_draws(
     config: CensoredConfig,
     t_valid: FloatArray,
     fallback_counter: list[int] | None = None,
+    *,
+    n_draws: int | None = None,
+    seed_offset: int = 10_007,
 ) -> list[FloatArray]:
-    """Generate ``config.n_stability_draws`` alternative imputed series for stability checks.
+    """Generate alternative imputed series (``config.n_stability_draws`` by default).
 
+    Used for stability checks and, with ``n_draws`` and a distinct ``seed_offset``, for
+    the additional imputations of multiple-imputation detection p-values.
     ``fallback_counter`` (a one-element list), if given, is incremented whenever a draw
     could not propagate parameter uncertainty and fell back to a fixed-parameter draw.
     """
-    n_draws = int(config.n_stability_draws)
+    n_draws = int(config.n_stability_draws) if n_draws is None else int(n_draws)
     if n_draws <= 0 or provenance.n_censored == 0:
         return []
 
-    child_rngs = _spawn_stability_rngs(config.random_state, n_draws)
+    child_rngs = _spawn_stability_rngs(config.random_state, n_draws, seed_offset)
 
     draws: list[FloatArray] = []
     attrs_p = provenance.ndimpute_attrs

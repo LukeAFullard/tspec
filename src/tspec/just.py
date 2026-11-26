@@ -19,6 +19,7 @@ import numpy as np
 from scipy.stats import f as f_dist
 from scipy.stats import t as t_dist
 
+from ._cenreg import pool_pvalues
 from ._diagnostics import (
     DiagnosticReport,
     WarningItem,
@@ -186,6 +187,9 @@ class JustJumpResult(BaseResult):
     jump_calibration : str
         ``"montecarlo"``, ``"bonferroni"``, or ``"none"``: how ``jump_pvalue``
         accounts for the split search (plus Holm adjustment across candidates).
+    n_imputations : int
+        Number of imputations whose per-candidate p-values were pooled (Licht–Rubin)
+        for censored data; ``1`` means a single imputation.
     """
 
     jumps: tuple[JumpEvent, ...]
@@ -204,6 +208,7 @@ class JustJumpResult(BaseResult):
     censoring: CensoringProvenance | None
     diagnostics: DiagnosticReport
     jump_calibration: str = "none"
+    n_imputations: int = 1
 
     @property
     def jump_indices(self) -> IntArray:
@@ -264,6 +269,8 @@ class JustJumpResult(BaseResult):
                 if self.jump_calibration in ("montecarlo", "bonferroni")
                 else "uncalibrated screening F-test"
             )
+            if self.n_imputations > 1:
+                p_label += f" pooled over {self.n_imputations} imputations"
             for k, j in enumerate(self.jumps, start=1):
                 t_str = format_timestamp(j.time, self.is_datetime)
                 step_word = "upward" if j.magnitude >= 0 else "downward"
@@ -732,29 +739,24 @@ def _detect_jump_in_window(
     return best_ind, best_mag, best_dir, best_rss, best_freqs
 
 
-def _mc_maxf_pvalue(
+def _mc_maxf_null(
     t0: FloatArray,
     pw_win: PreparedWeights,
     test_freqs: FloatArray,
-    f_obs: float,
     j_lo: int,
     j_hi: int,
     n_mc: int,
     seed: int | Sequence[int],
-) -> float:
-    """Exact Monte Carlo p-value of an observed jump F statistic against the null
-    distribution of the **maximum** F over all candidate splits ``j_lo <= j < j_hi``.
+) -> tuple[FloatArray, int, int] | None:
+    """Monte Carlo draws of the null maximum jump F over splits ``j_lo <= j < j_hi``.
 
-    Under Gaussian errors with the supplied weights, the split-wise jump F statistics
-    (null: linear trend + fixed harmonics; alternative: adds a level and slope change at
-    ``j``) are pivotal, so simulating standard-normal whitened errors yields the exact
-    finite-sample null distribution of ``max_j F_j`` for this window design. This corrects
-    the anti-conservative fixed-split F reference used for a data-chosen split
-    (Andrews, 1993).
+    Returns ``(max_f_draws, n_splits, dof2)`` or ``None`` when the design is degenerate.
+    The draws depend only on the window design, weights, harmonics and seed, so they
+    can be reused for several response vectors (e.g. multiple imputations).
     """
     n = int(t0.size)
-    if j_hi <= j_lo or not np.isfinite(f_obs):
-        return float("nan")
+    if j_hi <= j_lo:
+        return None
     span = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
     u = (t0 - t0[0]) / span
     n_f = int(test_freqs.size)
@@ -767,7 +769,7 @@ def _mc_maxf_pvalue(
         X0[:, 3::2] = np.sin(ph)
     dof2 = n - X0.shape[1] - 2
     if dof2 <= 0:
-        return float("nan")
+        return None
     q0, _ = np.linalg.qr(whiten_matrix(X0, pw_win), mode="reduced")
     splits = np.arange(j_lo, j_hi)
     n_j = int(splits.size)
@@ -782,10 +784,10 @@ def _mc_maxf_pvalue(
     det = s11 * s22 - s12 * s12
     ok = (s11 > 0.0) & (s22 > 0.0) & (det > 1e-10 * s11 * s22)
     if not np.any(ok):
-        return float("nan")
+        return None
     a, b, s11, s22, s12, det = a[:, ok], b[:, ok], s11[ok], s22[ok], s12[ok], det[ok]
     rng = np.random.default_rng(seed)
-    exceed = 0
+    draws = np.empty(int(n_mc), dtype=np.float64)
     done = 0
     chunk = 256
     while done < n_mc:
@@ -798,8 +800,48 @@ def _mc_maxf_pvalue(
         red = (s22[:, None] * g1 * g1 - 2.0 * s12[:, None] * g1 * g2 + s11[:, None] * g2 * g2) / det[:, None]
         red = np.minimum(red, rss0[None, :] * (1.0 - 1e-12))
         f_null = (0.5 * red) / ((rss0[None, :] - red) / dof2)
-        exceed += int(np.sum(np.max(f_null, axis=0) >= f_obs))
+        draws[done : done + m] = np.max(f_null, axis=0)
         done += m
+    return draws, n_j, int(dof2)
+
+
+def _mc_maxf_pvalue(
+    t0: FloatArray,
+    pw_win: PreparedWeights,
+    test_freqs: FloatArray,
+    f_obs: float,
+    j_lo: int,
+    j_hi: int,
+    n_mc: int,
+    seed: int | Sequence[int],
+    cache: dict[Any, Any] | None = None,
+) -> float:
+    """Exact Monte Carlo p-value of an observed jump F statistic against the null
+    distribution of the **maximum** F over all candidate splits ``j_lo <= j < j_hi``.
+
+    Under Gaussian errors with the supplied weights, the split-wise jump F statistics
+    (null: linear trend + fixed harmonics; alternative: adds a level and slope change at
+    ``j``) are pivotal, so simulating standard-normal whitened errors yields the exact
+    finite-sample null distribution of ``max_j F_j`` for this window design. This corrects
+    the anti-conservative fixed-split F reference used for a data-chosen split
+    (Andrews, 1993). ``cache`` (keyed by seed, design size and harmonics) reuses the
+    null draws across response vectors on the same window.
+    """
+    if not np.isfinite(f_obs):
+        return float("nan")
+    key = (
+        tuple(seed) if isinstance(seed, Sequence) else seed,
+        int(t0.size), j_lo, j_hi, int(n_mc), test_freqs.tobytes(),
+    )
+    null = cache.get(key) if cache is not None else None
+    if null is None:
+        null = _mc_maxf_null(t0, pw_win, test_freqs, j_lo, j_hi, n_mc, seed)
+        if cache is not None:
+            cache[key] = null
+    if null is None:
+        return float("nan")
+    draws, n_j, dof2 = null
+    exceed = int(np.sum(draws >= f_obs))
     p_mc = float((1 + exceed) / (n_mc + 1))
     if exceed == 0:
         # Below Monte Carlo resolution: report the (valid) Bonferroni bound over the
@@ -808,6 +850,14 @@ def _mc_maxf_pvalue(
         p_bonf = float(min(1.0, n_j * f_dist.sf(f_obs, 2, dof2)))
         return min(p_mc, p_bonf)
     return p_mc
+
+
+def _jump_split_count(n_win: int, robust: str) -> int:
+    """Number of candidate splits used by the Bonferroni corrections in the jump tests."""
+    if robust != "none":
+        min_seg = min(max(6, min(n_win // 5, 8)), max(3, (n_win - 1) // 2))
+        return max(1, n_win - 2 * min_seg + 1)
+    return max(1, n_win - 5)
 
 
 def _nested_jump_ftests(
@@ -828,6 +878,8 @@ def _nested_jump_ftests(
     n_mc: int = 999,
     mc_seed: int | Sequence[int] = 0,
     season_significance: str = "per_frequency",
+    mc_cache: dict[Any, Any] | None = None,
+    raw_step: bool = False,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -1008,11 +1060,14 @@ def _nested_jump_ftests(
     f_jump = max(0.0, (rss0 - rss1) / 2.0) / den
     f_step = max(0.0, rss_hinge - rss1) / den
     if calib == "montecarlo":
-        p_jump = _mc_maxf_pvalue(t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed)
+        p_jump = _mc_maxf_pvalue(
+            t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed, cache=mc_cache
+        )
         # The step test (jump vs best continuous hinge) is also evaluated at the
         # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
         # analytical Bonferroni correction over the scanned splits.
-        p_step = float(min(1.0, float(n_cands) * float(f_dist.sf(f_step, 1, dof2))))
+        step_mult = 1.0 if raw_step else float(n_cands)
+        p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step, 1, dof2))))
         return float(p_jump), p_step
     p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
     p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2))))
@@ -1072,12 +1127,19 @@ def _run_just_jumps_array(
     provenance: CensoringProvenance | None = None,
     censor_cfg: CensoredConfig | None = None,
     rng: np.random.Generator | None = None,
+    y_imputations: list[FloatArray] | None = None,
 ) -> tuple[
     list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
     list[WindowCandidate],
     int,
 ]:
-    """Core sliding-window JUST jump search + aggregation + merging."""
+    """Core sliding-window JUST jump search + aggregation + merging.
+
+    ``y_imputations`` (additional imputed versions of ``y_valid``) pools each
+    candidate's jump and step p-values over the primary and additional imputations
+    (Licht–Rubin) before the Holm adjustment; candidate locations come from the
+    primary series.
+    """
     candidates: list[WindowCandidate] = []
     window_fallbacks = 0
     window_y_cache: dict[tuple[int, int], FloatArray] = {}
@@ -1163,6 +1225,7 @@ def _run_just_jumps_array(
         "bonferroni" if bonferroni_window else "none"
     )
     tested: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+    mc_cache: dict[Any, Any] = {}
     for item in grouped:
         j_idx, occ, mag_val, dir_val, _bucket, dis_raw, best_c = item
         if abs(mag_val) < mag_th and abs(dir_val) < dir_th:
@@ -1189,7 +1252,41 @@ def _run_just_jumps_array(
             n_mc=n_mc,
             mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
             season_significance=season_significance,
+            mc_cache=mc_cache,
         )
+        if y_imputations:
+            # Jump test: pool calibrated Monte Carlo p-values, or pool the fixed-split
+            # p-values and then apply the Bonferroni split count. Step test: always the
+            # latter (it is Bonferroni-corrected in both calibrations).
+            n_sp = _jump_split_count(int(t_w.size), "none" if parity_mode else robust)
+            mc_jump = calib == "montecarlo" and robust == "none"
+            pj: list[float] = []
+            ps: list[float] = []
+            for y_m_w in [y_w] + [y_m[best_c.window_start : best_c.window_stop] for y_m in y_imputations]:
+                pj_m, ps_m = _nested_jump_ftests(
+                    t_w,
+                    y_m_w,
+                    pw_w,
+                    j_idx - best_c.window_start,
+                    best_c.selected_freqs,
+                    season=season,
+                    omega=omega,
+                    alpha=alpha,
+                    parity_mode=parity_mode,
+                    robust=robust,
+                    huber_k=huber_k,
+                    calibration=calib if mc_jump else "none",
+                    n_mc=n_mc,
+                    mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
+                    season_significance=season_significance,
+                    mc_cache=mc_cache,
+                    raw_step=True,
+                )
+                pj.append(pj_m)
+                ps.append(ps_m)
+            pj_pool = pool_pvalues(np.asarray(pj, dtype=np.float64))
+            p_jump = pj_pool if mc_jump else float(min(1.0, n_sp * pj_pool))
+            p_step = float(min(1.0, n_sp * pool_pvalues(np.asarray(ps, dtype=np.float64))))
         tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
 
     # Family-wise control across the distinct candidate locations (Holm step-down) when
@@ -1487,6 +1584,35 @@ def just_jumps(
     else:
         rng = np.random.default_rng(cfg.random_state if cfg is not None else 0)
 
+    # Multiple imputation of censored values: per-candidate p-values are pooled over
+    # `n_imputations` imputations (the primary plus proper additional draws).
+    y_imps: list[FloatArray] | None = None
+    if (
+        not parity_mode
+        and cfg is not None
+        and prov is not None
+        and prov.n_censored > 0
+        and cfg.n_imputations > 1
+        and cfg.scope != "windowed"
+        and eff_calib != "none"
+    ):
+        mi_fb = [0]
+        y_imps = generate_stability_draws(
+            prov, cfg, series.times_numeric, mi_fb, n_draws=cfg.n_imputations - 1, seed_offset=30_011
+        )
+        if mi_fb[0] > 0:
+            warnings_list.append(
+                WarningItem(
+                    code="STABILITY_DRAW_FALLBACK",
+                    severity="caution",
+                    message=(
+                        f"{mi_fb[0]} additional imputation(s) could not refit the imputation model "
+                        "and reused fixed parameters, so pooled p-values understate imputation "
+                        "uncertainty."
+                    ),
+                )
+            )
+
     accepted, all_cands_valid, win_fb = _run_just_jumps_array(
         series.times_numeric,
         series.values,
@@ -1510,6 +1636,7 @@ def just_jumps(
         provenance=prov,
         censor_cfg=cfg,
         rng=rng,
+        y_imputations=y_imps,
     )
 
     if win_fb > 0:
@@ -1805,6 +1932,7 @@ def just_jumps(
         censoring=prov,
         diagnostics=diag,
         jump_calibration=eff_calib,
+        n_imputations=(len(y_imps) + 1) if y_imps else 1,
     )
 
 

@@ -254,3 +254,35 @@ def rubin_pool(estimates: FloatArray, variances: FloatArray, df_complete: float)
     df_obs = (df_complete + 1.0) / (df_complete + 3.0) * df_complete * (1.0 - lam)
     df = 1.0 / (1.0 / df_old + 1.0 / max(df_obs, 1e-12))
     return q, t_var, float(df)
+
+
+def pool_pvalues(pvalues: FloatArray) -> float:
+    """Pool one-sided evidence p-values across multiple imputations (Licht–Rubin).
+
+    Each p-value is transformed to ``z = Phi^{-1}(1 - p)`` (standard normal under the
+    null), and Rubin's rules are applied with unit within-imputation variance:
+    ``T = 1 + (1 + 1/M) B`` with ``B`` the between-imputation variance of ``z``, and the
+    pooled statistic ``mean(z) / sqrt(T)`` is referred to a t distribution with Rubin's
+    (1987) degrees of freedom ``(M - 1) (1 + 1/r)^2``, ``r = (1 + 1/M) B``
+    (Licht, 2010; van Buuren, 2018, Sec. 5.3). Non-finite p-values are ignored, and
+    p-values are capped at 0.999 so a degenerate ``p = 1`` (e.g. from a Monte Carlo
+    p-value with no smaller null draw) cannot dominate the between-imputation variance;
+    the cap can only make the pooled p-value larger.
+    """
+    from scipy.stats import t as t_dist
+
+    p = np.asarray(pvalues, dtype=np.float64)
+    p = p[np.isfinite(p)]
+    if p.size == 0:
+        return float("nan")
+    if p.size == 1:
+        return float(p[0])
+    z = -ndtri(np.clip(p, 1e-300, 0.999))
+    m = int(z.size)
+    b = float(np.var(z, ddof=1))
+    r = (1.0 + 1.0 / m) * b
+    stat = float(np.mean(z)) / np.sqrt(1.0 + r)
+    if r <= 1e-12:
+        return float(ndtr(-stat))
+    nu = (m - 1) * (1.0 + 1.0 / r) ** 2
+    return float(t_dist.sf(stat, nu))
