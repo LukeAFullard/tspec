@@ -151,7 +151,7 @@ pip install --no-deps tspec
 
 ## Verification & Performance
 
-`tspec` was independently audited (`audit/AUDIT_REPORT.md`; reproducible scripts in `audit/`). Highlights:
+`tspec` was audited (`audit/AUDIT_REPORT.md`, original score 40%) and re-audited after the fixes (`audit/REAUDIT_REPORT.md`: 77%, *usable with stated caveats*; fixes and evidence in `audit/FIXES.md`; reproducible scripts in `audit/`). Highlights:
 
 - **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall and the O(n) TPTR variance match `statsmodels`, `astropy`, `scipy` and `pymannkendall` (or brute force) to about 1e-14.
 - **Calibration of the default procedures** (Monte Carlo, ≥ 300–1000 replicates):
