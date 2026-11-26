@@ -321,3 +321,52 @@ def test_consecutive_k_calibrated_null_rate() -> None:
             sequential_control="consecutive_k", horizon=48, n_mc=199,
         ).detected
     assert alarms <= 4  # nominal 5% familywise (about 1 alarm expected)
+
+
+# ---------------------------------------------------------------------------
+# Censored detection: candidate p-values pooled over multiple imputations
+# ---------------------------------------------------------------------------
+
+
+def test_pool_pvalues_properties() -> None:
+    from tspec._cenreg import pool_pvalues
+
+    assert pool_pvalues(np.array([0.03])) == pytest.approx(0.03)
+    # Identical p-values (no between-imputation variance) reproduce the common value
+    assert pool_pvalues(np.full(10, 0.02)) == pytest.approx(0.02, rel=1e-6)
+    # Disagreement between imputations makes the pooled evidence weaker
+    assert pool_pvalues(np.array([0.001, 0.2, 0.01, 0.5])) > 0.01
+    assert np.isnan(pool_pvalues(np.array([np.nan])))
+
+
+def _censored_jump_series(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    n = 150
+    t = np.sort(rng.uniform(2000, 2000 + n / 24, n))
+    y = 2 + 0.1 * (t - 2000) + 1.0 * (t >= 2000 + n / 48) + rng.normal(0, 0.4, n)
+    dl = float(np.quantile(y, 0.4))
+    return t, np.array([f"<{dl:.6g}" if v < dl else float(v) for v in y], dtype=object)
+
+
+def test_detection_pvalues_pooled_over_imputations() -> None:
+    t, ys = _censored_jump_series(11)
+    res = tspec.just_jumps(t, ys, season="none")
+    assert res.n_imputations == 20
+    assert any(abs(j.time_year - (2000 + 150 / 48)) < 0.5 for j in res.jumps)
+    assert "pooled over 20 imputations" in res.explain()
+    single = tspec.just_jumps(t, ys, season="none", censoring=tspec.CensoredConfig(n_imputations=1))
+    assert single.n_imputations == 1
+    unc = tspec.just_jumps(t, np.array([float(v) if not isinstance(v, str) else 0.0 for v in ys]), season="none")
+    assert unc.n_imputations == 1
+    tp = tspec.stpd(t, ys)
+    assert tp.n_imputations == 20
+
+
+def test_pooled_decisions_do_not_depend_on_imputation_seed() -> None:
+    flips = 0
+    for seed in range(8):
+        t, ys = _censored_jump_series(40 + seed)
+        a = tspec.just_jumps(t, ys, season="none", censoring=tspec.CensoredConfig(random_state=0))
+        b = tspec.just_jumps(t, ys, season="none", censoring=tspec.CensoredConfig(random_state=1))
+        flips += (len(a.jumps) > 0) != (len(b.jumps) > 0)
+    assert flips <= 1
