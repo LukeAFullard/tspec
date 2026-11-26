@@ -376,6 +376,13 @@ class StpdResult(BaseResult):
                 "`just_jumps()` or `analyze_series()` to check!"
             )
 
+        if self.turning_points:
+            lines.append(
+                "Note: the piecewise-trend band is conditional on the detected turning points "
+                "and omits their location uncertainty (in simulation it covered about 85-96% "
+                "at nominal 95% after correct detection)."
+            )
+
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
 

@@ -283,6 +283,13 @@ class PipelineResult(BaseResult):
                 if seg.pvalue is not None:
                     msg += f", p={seg.pvalue:.2e}"
                 lines.append(msg + ".")
+            if len(self.segments) > 1:
+                lines.append(
+                    "Note: segment CIs and the trend band are conditional on the detected "
+                    "breakpoints and omit their location uncertainty (in simulation the trend "
+                    "band covered about 83-92% at nominal 95% even when the structure was found "
+                    "correctly)."
+                )
 
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
