@@ -1,0 +1,18 @@
+{
+ "n=150,sigma=1.0": {
+  "bootstrap": {
+   "R": 300,
+   "n_detected": 159,
+   "curve_cov_given_detect": 0.9495597484276729,
+   "curve_cov_all": 0.7427555555555555,
+   "mean_width": 0.6289123197204223
+  },
+  "conditional": {
+   "R": 300,
+   "n_detected": 159,
+   "curve_cov_given_detect": 0.9480083857442347,
+   "curve_cov_all": 0.7443333333333334,
+   "mean_width": 0.5828952717437298
+  }
+ }
+}

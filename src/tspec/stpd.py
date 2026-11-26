@@ -88,6 +88,9 @@ class TurningPointEvent:
         Distance from the detecting window's center.
     window_censored_fraction, coincides_with_dl_shift, stability_rate
         Censored-data diagnostics.
+    detection_window : tuple of int or None
+        ``(start, stop, margin)`` of the detecting window on the valid axis (used by
+        the bootstrap bands).
     """
 
     index: int
@@ -107,6 +110,7 @@ class TurningPointEvent:
     window_censored_fraction: float = 0.0
     coincides_with_dl_shift: bool = False
     stability_rate: float | None = None
+    detection_window: tuple[int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -152,8 +156,10 @@ class PiecewiseTrendResult(BaseResult):
     ci_level : float
         Pointwise confidence level.
     trend_ci_low, trend_ci_high : ndarray or None
-        Pointwise band, conditional on the turning-point locations (``None`` for
-        ``mode="l1"``).
+        Pointwise band. From :func:`fit_piecewise_trend` it is conditional on the
+        given turning points (``None`` for ``mode="l1"``); from
+        :func:`detect_turning_points` with ``band_method='bootstrap'`` it includes
+        knot-location uncertainty.
     """
 
     tp_indices: IntArray
@@ -263,6 +269,9 @@ class StpdResult(BaseResult):
     n_imputations : int
         Number of imputations whose candidate p-values were pooled (Licht–Rubin) for
         censored data; ``1`` means a single imputation.
+    band_method : str
+        How ``piecewise_trend.trend_ci_*`` was computed: ``'bootstrap'`` (detect-then-fit
+        bootstrap including knot-location uncertainty) or ``'conditional'``.
     """
 
     turning_points: tuple[TurningPointEvent, ...]
@@ -284,6 +293,7 @@ class StpdResult(BaseResult):
     diagnostics: DiagnosticReport
     tp_calibration: str = "none"
     n_imputations: int = 1
+    band_method: str = "conditional"
 
     @property
     def tp_indices(self) -> IntArray:
@@ -376,11 +386,11 @@ class StpdResult(BaseResult):
                 "`just_jumps()` or `analyze_series()` to check!"
             )
 
-        if self.turning_points:
+        if self.turning_points and self.band_method != "bootstrap":
             lines.append(
                 "Note: the piecewise-trend band is conditional on the detected turning points "
                 "and omits their location uncertainty (in simulation it covered about 85-96% "
-                "at nominal 95% after correct detection)."
+                "at nominal 95% after correct detection); use band_method='bootstrap'."
             )
 
         lines.extend(format_explain_warnings(self.diagnostics))
@@ -744,6 +754,117 @@ def _stpd_window_tstats(
     with np.errstate(divide="ignore", invalid="ignore"):
         tstat = np.where(se > 0, np.abs(diff) / se, 0.0)
     return np.asarray(np.nan_to_num(tstat, nan=0.0), dtype=np.float64)
+
+
+@dataclass(frozen=True)
+class _TpBootstrap:
+    curves: FloatArray
+    knots: IntArray
+    ystar: FloatArray
+    nuisance_fit: FloatArray
+    nuisance_trend: FloatArray
+
+
+def _batched_window_knots(
+    t: FloatArray, Y: FloatArray, margin: int, w: FloatArray | None
+) -> IntArray:
+    """STPD knot estimate (local index) of each column of ``Y`` over one window.
+
+    Same estimator as :func:`_tpd_window` (non-robust): forward and backward sequential
+    scans, keeping the direction with the smaller residual sum of squares.
+    """
+    n = int(t.size)
+    t_fwd = t - t[0]
+    t_rev = t_fwd[-1] - t_fwd[::-1]
+    w_rev = w[::-1] if w is not None else None
+    ind_f, _, rss_f = _seq_scan_batch(t_fwd, Y, margin, w)
+    ind_b, _, rss_b = _seq_scan_batch(t_rev, Y[::-1], margin, w_rev)
+    return np.asarray(np.where(rss_f <= rss_b, ind_f, n - 1 - ind_b), dtype=np.intp)
+
+
+def _bootstrap_tp_curves(
+    t: FloatArray,
+    y: FloatArray,
+    trend_fit: FloatArray,
+    tp_windows: list[tuple[int, int, int, int]],
+    refit: Any,
+    *,
+    w: FloatArray | None = None,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
+    n_boot: int = 499,
+    seed: tuple[int, ...] = (20261126,),
+    other_fit: FloatArray | None = None,
+    nuisance_cols: FloatArray | None = None,
+    nuisance_trend: np.ndarray | None = None,
+) -> _TpBootstrap | None:
+    """Wild residual bootstrap of the detect-then-fit STPD trend (audit CRT-04).
+
+    Data are simulated from the fitted structure, ``y* = f + g + e v``: ``f`` is the
+    fitted connected trend, ``g`` any other fitted structure (``other_fit``), ``e`` the
+    residuals inflated by ``sqrt(n/(n - p))`` and ``v`` Rademacher signs (wild bootstrap,
+    which keeps heteroscedasticity and the weights). In each replicate:
+
+    - ``nuisance_cols`` (seasonal harmonics, jump steps) are re-estimated by weighted
+      least squares jointly with the trend at the detected knots and removed;
+    - every turning point is re-located with STPD's own knot estimator on the
+      replicate's data over the window that detected it (forward/backward sequential
+      scans; the robust variant for ``robust != 'none'``);
+    - the trend is refitted with ``refit(y_adjusted, knots)``. ``nuisance_trend`` flags
+      nuisance columns whose fitted contribution belongs to the reported trend (jump
+      steps).
+
+    Returns the replicate curves ``(n, B)`` (reported-trend scale), the re-estimated
+    knots ``(B, K)``, the replicate series ``y*`` and their fitted nuisance part
+    ``(n, B)``, or ``None`` if no turning points are given.
+    """
+    n = int(t.size)
+    k_n = len(tp_windows)
+    if k_n == 0:
+        return None
+    g = other_fit if other_fit is not None else np.zeros(n)
+    sw = np.sqrt(w) if w is not None else np.ones(n)
+    ncols = nuisance_cols if nuisance_cols is not None else np.empty((n, 0))
+    p_par = 2 + k_n + ncols.shape[1]
+    resid = (y - trend_fit - g) * np.sqrt(n / max(1, n - p_par))
+    rng = np.random.default_rng(seed)
+    v = rng.choice(np.array([-1.0, 1.0]), size=(n, int(n_boot)))
+    ystar = (trend_fit + g)[:, None] + resid[:, None] * v
+
+    nuis_trend = np.zeros((n, int(n_boot)))
+    nuis_fit = np.zeros((n, int(n_boot)))
+    if ncols.shape[1] > 0:
+        span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+        u = (t - t[0]) / span
+        hinges = [np.maximum(0.0, u - u[gi]) for gi, _, _, _ in tp_windows]
+        x_full = np.column_stack([np.ones(n), u, *hinges, ncols])
+        coef, *_ = np.linalg.lstsq(x_full * sw[:, None], ystar * sw[:, None], rcond=None)
+        c_n = coef[-ncols.shape[1] :]
+        nuis_fit = ncols @ c_n
+        tmask = nuisance_trend if nuisance_trend is not None else np.zeros(ncols.shape[1], dtype=bool)
+        if np.any(tmask):
+            nuis_trend = ncols[:, tmask] @ c_n[tmask]
+        y_adj = ystar - nuis_fit
+    else:
+        y_adj = ystar
+
+    knots = np.empty((int(n_boot), k_n), dtype=np.intp)
+    for j, (_gi, w0, w1, m_eff) in enumerate(tp_windows):
+        t_w = t[w0:w1]
+        w_w = w[w0:w1] if w is not None else None
+        if robust == "none":
+            knots[:, j] = w0 + _batched_window_knots(t_w, y_adj[w0:w1], m_eff, w_w)
+        else:
+            for b in range(int(n_boot)):
+                st = _tpd_window(t_w, y_adj[w0:w1, b], m_eff, w_w, robust=robust, huber_k=huber_k)
+                knots[b, j] = w0 + int(st.local_tp)
+    curves = np.empty((n, int(n_boot)), dtype=np.float64)
+    for b in range(int(n_boot)):
+        kb = np.unique(np.clip(knots[b], 1, n - 2))
+        curves[:, b] = refit(y_adj[:, b], kb) + nuis_trend[:, b]
+    return _TpBootstrap(
+        curves=curves, knots=knots, ystar=ystar, nuisance_fit=nuis_fit, nuisance_trend=nuis_trend
+    )
 
 
 def _stpd_mc_pvalue(
@@ -1804,6 +1925,8 @@ def detect_turning_points(
     parity_mode: bool = False,
     tp_calibration: Literal["montecarlo", "bonferroni", "none"] | None = None,
     n_mc: int = 999,
+    band_method: Literal["bootstrap", "conditional"] | None = None,
+    n_boot: int = 499,
 ) -> StpdResult:
     """Detect continuous trend turning points via STPD (Ghaderpour et al., 2024).
 
@@ -1889,6 +2012,17 @@ def detect_turning_points(
         Monte Carlo replicates per window for ``tp_calibration='montecarlo'``
         (default ``999``). Candidates whose raw p-value already exceeds ``alpha`` are
         not simulated.
+    band_method:
+        Pointwise band of the piecewise trend. ``'bootstrap'`` (default, forced to
+        ``'conditional'`` by ``parity_mode``) is a wild residual bootstrap of the
+        detect-then-fit procedure: every replicate re-locates each turning point with
+        STPD's own knot estimator over the window that detected it and refits the
+        trend, so knot-location uncertainty is included. ``'conditional'`` is the
+        analytical band that treats the turning points as known (it under-covers after
+        detection: about 85-92% at nominal 95% in simulation). Without turning points
+        the analytical band is used.
+    n_boot:
+        Bootstrap replicates for ``band_method='bootstrap'`` (default ``499``).
     """
     if window_mode not in ("count", "duration"):
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
@@ -1916,6 +2050,13 @@ def detect_turning_points(
         )
     if int(n_mc) < 99:
         raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
+    if band_method is not None and band_method not in ("bootstrap", "conditional"):
+        raise ValueError(
+            f"Unknown `band_method` {band_method!r}. Options: 'bootstrap', 'conditional'."
+        )
+    if int(n_boot) < 99:
+        raise ValueError(f"`n_boot` must be >= 99; got {n_boot}.")
+    eff_band = "conditional" if parity_mode else (band_method or "bootstrap")
     if not (0.0 <= ndri_th <= 1.0):
         raise ValueError("`ndri_th` must lie in [0, 1].")
     if not (0.0 < alpha < 1.0):
@@ -2224,6 +2365,36 @@ def detect_turning_points(
         ci_level=ci_level,
     )
 
+    band_used = "conditional"
+    if eff_band == "bootstrap" and accepted_raw:
+        tp_win = [
+            (int(it[0]), int(it[3]), int(it[4]), max(2, min(eff_margin, (int(it[4]) - int(it[3]) - 3) // 2)))
+            for it in accepted_raw
+        ]
+
+        def _refit(yb: FloatArray, kb: IntArray) -> FloatArray:
+            return _fit_piecewise_core(
+                series.times_numeric, series.times_raw, series.is_datetime, yb, kb,
+                series.valid_to_orig, series.n_input, series.n_dropped_nan,
+                series.sampling_rate_ratio, w=w_valid, mode=eff_refit_mode,
+                huber_k=huber_k, ci_level=ci_level,
+            ).fitted_trend
+
+        boot = _bootstrap_tp_curves(
+            series.times_numeric, series.values, pw_trend.fitted_trend, tp_win, _refit,
+            w=w_valid, robust=eff_robust, huber_k=huber_k, n_boot=int(n_boot),
+            seed=(20261126, int(series.n_valid), *[int(x[0]) for x in tp_win]),
+        )
+        if boot is not None:
+            dev = boot.curves - pw_trend.fitted_trend[:, None]
+            a_lvl = 1.0 - ci_level
+            pw_trend = replace(
+                pw_trend,
+                trend_ci_low=pw_trend.fitted_trend - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1),
+                trend_ci_high=pw_trend.fitted_trend - np.quantile(dev, 0.5 * a_lvl, axis=1),
+            )
+            band_used = "bootstrap"
+
     tp_events: list[TurningPointEvent] = []
     for k, (g_idx, dist_c, st, w_start, w_stop) in enumerate(accepted_raw):
         orig_idx = int(series.valid_to_orig[g_idx])
@@ -2278,6 +2449,11 @@ def detect_turning_points(
                 window_censored_fraction=win_cen,
                 coincides_with_dl_shift=coincides_dl,
                 stability_rate=stab_rate,
+                detection_window=(
+                    int(w_start),
+                    int(w_stop),
+                    max(2, min(eff_margin, (int(w_stop) - int(w_start) - 3) // 2)),
+                ),
             )
         )
 
@@ -2339,6 +2515,7 @@ def detect_turning_points(
         diagnostics=diag,
         tp_calibration=eff_tp_cal,
         n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
+        band_method=band_used,
     )
 
 

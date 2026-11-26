@@ -1,0 +1,22 @@
+{
+ "phi=0.0": {
+  "R": 1000,
+  "typeI_at_0.05": 0.046,
+  "sen_CI95_coverage": 0.947
+ },
+ "phi=0.3": {
+  "R": 1000,
+  "typeI_at_0.05": 0.062,
+  "sen_CI95_coverage": 0.934
+ },
+ "phi=0.5": {
+  "R": 1000,
+  "typeI_at_0.05": 0.05,
+  "sen_CI95_coverage": 0.946
+ },
+ "phi=0.7": {
+  "R": 1000,
+  "typeI_at_0.05": 0.062,
+  "sen_CI95_coverage": 0.937
+ }
+}

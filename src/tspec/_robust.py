@@ -755,6 +755,10 @@ _AR1_BOOT_B = 999
 # asymptotic standard error sqrt((1 - rho^2)/n). Widening it beyond 1 compensates the
 # plug-in error of the reference (tail probabilities are convex in rho).
 _AR1_BOOT_JITTER = 1.0
+# Upward shift of the reference autocorrelation, in standard errors (Berger-Boos-type:
+# the reference quantile increases with rho, so referring to an upper value of rho
+# guards against the plug-in error when rho is under-estimated).
+_AR1_BOOT_SHIFT = 0.0
 
 
 def _ols_lag1(y_cols: FloatArray, u: FloatArray) -> FloatArray:
@@ -822,7 +826,8 @@ def ar1_bootstrap_reference(
         m = float(np.mean(_ols_lag1(_ar1_series(rng, n, np.full(400, r_t)), u)))
         r_t = float(np.clip(r_t + (rho_obs - m), 0.0, 0.95))
     se = _AR1_BOOT_JITTER * float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
-    rhos = np.clip(r_t + se * rng.standard_normal(int(n_boot)), 0.0, 0.95)
+    se0 = float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
+    rhos = np.clip(r_t + _AR1_BOOT_SHIFT * se0 + se * rng.standard_normal(int(n_boot)), 0.0, 0.95)
     yb = _ar1_series(rng, n, rhos)
     sb = _mk_s_columns(yb)
     vb = n * (n - 1) * (2 * n + 5) / 18.0 * _ar1_factor_from_rho(_ols_lag1(yb, u), n)
