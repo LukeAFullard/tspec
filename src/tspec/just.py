@@ -805,6 +805,52 @@ def _mc_maxf_null(
     return draws, n_j, int(dof2)
 
 
+def _best_jump_split(
+    t0: FloatArray,
+    y: FloatArray,
+    pw_win: PreparedWeights,
+    test_freqs: FloatArray,
+    j_lo: int,
+    j_hi: int,
+) -> int | None:
+    """Split ``j_lo <= j < j_hi`` maximising the jump F statistic (level + slope change)
+    against a linear trend plus fixed harmonics, via 2-column Schur complements."""
+    n = int(t0.size)
+    if j_hi <= j_lo:
+        return None
+    span = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
+    u = (t0 - t0[0]) / span
+    n_f = int(test_freqs.size)
+    X0 = np.empty((n, 2 + 2 * n_f), dtype=np.float64)
+    X0[:, 0] = 1.0
+    X0[:, 1] = u
+    if n_f > 0:
+        ph = np.outer((2.0 * np.pi) * t0, test_freqs)
+        X0[:, 2::2] = np.cos(ph)
+        X0[:, 3::2] = np.sin(ph)
+    q0, _ = np.linalg.qr(whiten_matrix(X0, pw_win), mode="reduced")
+    splits = np.arange(j_lo, j_hi)
+    n_j = int(splits.size)
+    step = (np.arange(n)[:, None] >= splits[None, :]).astype(np.float64)
+    zw = whiten_matrix(np.hstack([step, step * u[:, None]]), pw_win)
+    zp = zw - q0 @ (q0.T @ zw)
+    a_m = zp[:, :n_j]
+    b_m = zp[:, n_j:]
+    s11 = np.sum(a_m * a_m, axis=0)
+    s22 = np.sum(b_m * b_m, axis=0)
+    s12 = np.sum(a_m * b_m, axis=0)
+    det = s11 * s22 - s12 * s12
+    ok = (s11 > 0.0) & (s22 > 0.0) & (det > 1e-10 * s11 * s22)
+    if not np.any(ok):
+        return None
+    yw = whiten_vector(y, pw_win)
+    r = yw - q0 @ (q0.T @ yw)
+    g1 = a_m.T @ r
+    g2 = b_m.T @ r
+    red = np.where(ok, (s22 * g1 * g1 - 2.0 * s12 * g1 * g2 + s11 * g2 * g2) / np.where(ok, det, 1.0), -np.inf)
+    return int(splits[int(np.argmax(red))])
+
+
 def _mc_maxf_pvalue(
     t0: FloatArray,
     pw_win: PreparedWeights,
@@ -1262,12 +1308,24 @@ def _run_just_jumps_array(
             mc_jump = calib == "montecarlo" and robust == "none"
             pj: list[float] = []
             ps: list[float] = []
-            for y_m_w in [y_w] + [y_m[best_c.window_start : best_c.window_stop] for y_m in y_imputations]:
+            n_w_c = int(t_w.size)
+            for i_m, y_m_w in enumerate(
+                [y_w] + [y_m[best_c.window_start : best_c.window_stop] for y_m in y_imputations]
+            ):
+                # Each additional imputation is tested at its own best split, the
+                # statistic whose null the max-over-splits calibration describes.
+                j_loc = j_idx - best_c.window_start
+                if i_m > 0 and robust == "none":
+                    j_best = _best_jump_split(
+                        t_w - t_w[0], y_m_w, pw_w, best_c.selected_freqs, 3, n_w_c - 2
+                    )
+                    if j_best is not None:
+                        j_loc = j_best
                 pj_m, ps_m = _nested_jump_ftests(
                     t_w,
                     y_m_w,
                     pw_w,
-                    j_idx - best_c.window_start,
+                    j_loc,
                     best_c.selected_freqs,
                     season=season,
                     omega=omega,
