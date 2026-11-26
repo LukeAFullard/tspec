@@ -734,7 +734,9 @@ def just_monitor(
           ``horizon``, the constant per-step level is calibrated by Monte Carlo so that
           the probability of any alarm within the horizon is at most ``alpha`` under the
           fitted history model with Gaussian errors (future sampling gaps are resampled
-          from the history, so the level uses no monitoring data). Without ``horizon``, each step is tested at the full
+          from the history, so the level uses no monitoring data; ALLSSA-selected
+          harmonics are held fixed, and robust fits are simulated as weighted least
+          squares with the robust history weights). Without ``horizon``, each step is tested at the full
           ``alpha``, which does **not** control the familywise rate (warning
           ``UNCALIBRATED_CONSECUTIVE_K``).
         - ``"none"``: unadjusted per-step testing (used by ``parity_mode=True``).

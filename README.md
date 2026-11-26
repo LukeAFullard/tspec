@@ -79,7 +79,7 @@ fig, axes = result.plot()
 
 ## Near-Real-Time Disturbance Monitoring (`just_monitor`, v1.1)
 
-Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (about 70% over 24 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending**: with a planned `horizon` the familywise false-alarm rate is bounded by $\alpha$ (0.1–0.3% at $\alpha = 0.05$ in simulation, i.e. conservative), and without `horizon` an open-ended spending sequence keeps the bound for any monitoring length without using future data. Lan–DeMets-shaped **O'Brien–Fleming** spending, **`consecutive_k`** (Monte Carlo-calibrated to bound the familywise rate when `horizon` is given, and faster to detect than Pocock; uncalibrated otherwise), and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b) are also available.
+Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (about 70% over 24 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending**: with a planned `horizon` the familywise false-alarm rate is bounded by $\alpha$ (0.2–0.6% at $\alpha = 0.05$ in simulation, i.e. conservative), and without `horizon` an open-ended spending sequence keeps the bound for any monitoring length without using future data. Lan–DeMets-shaped **O'Brien–Fleming** spending, **`consecutive_k`** (Monte Carlo-calibrated to bound the familywise rate when `horizon` is given, and faster to detect than Pocock; uncalibrated otherwise), and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b) are also available.
 
 ![Near-real-time monitoring with sequential multiplicity control](docs/assets/figures/tutorial_nrt_monitoring.png)
 
@@ -155,9 +155,9 @@ pip install --no-deps tspec
 
 - **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall and the O(n) TPTR variance match `statsmodels`, `astropy`, `scipy` and `pymannkendall` (or brute force) to about 1e-14.
 - **Calibration of the default procedures** (Monte Carlo, ≥ 300–1000 replicates):
-  - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 3–5% (raw screening p-values: 70–100%).
+  - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 2–6% across n = 50–500 (raw screening p-values: 70–100%).
   - `stpd()` false turning-point probability at `alpha=0.01`: 0.2–0.6% (raw screening p-values: up to 2.2%), while detection of a single turning point rises (e.g. 0% → 52% at n=150, σ=1; 32% → 82% at n=500, σ=0.6).
-  - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–0.5% with Monte Carlo significance (published per-frequency rule: 18–25%).
+  - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–1.3% with Monte Carlo significance (published per-frequency rule: 18–25%).
   - `just_decompose()` trend-band coverage: ~95% for linear, jump and smoothly curved trends.
   - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
   - Mann–Kendall Type-I error under AR(1) ρ = 0.5: ≈ 5–7% with the default `mk_correction="ar1"` (uncorrected: ~25%).

@@ -21,7 +21,7 @@ Statistical-calibration release following an independent audit (`audit/AUDIT_REP
   - `snr_th` now defaults to `None`, which resolves to `0` (no SNR gate), or `1.0` with `parity_mode=True`.
   - Effect: false turning points on straight-line series fall from up to 2.2% to 0.2–0.6% at `alpha=0.01`, and single-turning-point detection rises from 0% to 52% (n=150, σ=1) and from 32% to 82% (n=500, σ=0.6).
 - **`just_monitor(sequential_control="consecutive_k")`** with a `horizon`: the per-step level is now calibrated by Monte Carlo so that `k` consecutive exceedances within the horizon occur with probability ≤ `alpha` under the fitted history model (new `n_mc`, default 999). Future sampling gaps are resampled from the history, so the level uses no monitoring data.
-  - Effect at `alpha=0.05`: the familywise false-alarm rate is 3–5% over 24–96 steps (uncalibrated: up to 15% over 96 steps), and 2σ steps are detected more often than with Pocock spending (82–87% vs. 48–49% within 24 steps).
+  - Effect at `alpha=0.05`: the familywise false-alarm rate is 3.3–5.3% over 24–96 steps (Monte Carlo SE 0.6–1.1%) (uncalibrated: up to 15% over 96 steps), and 2σ steps are detected more often than with Pocock spending (82–87% vs. 48–49% within 24 steps).
   - Without `horizon` the per-step `alpha` is unchanged and the new warning `UNCALIBRATED_CONSECUTIVE_K` is reported.
 - **`analyze_series`**:
   - New `mk_correction="ar1"` (default) corrects Mann–Kendall/Sen inference for serial correlation; `"hamed_rao"` and `"none"` are also available.
