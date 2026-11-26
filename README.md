@@ -160,9 +160,9 @@ pip install --no-deps tspec
   - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–1.3% with Monte Carlo significance (published per-frequency rule: 18–25%).
   - `just_decompose()` trend-band coverage: ~95% for linear, jump and smoothly curved trends.
   - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
-  - Mann–Kendall Type-I error under AR(1) ρ = 0.5: ≈ 5–7% with the default `mk_correction="ar1"` (uncorrected: ~25%).
+  - Mann–Kendall Type-I error under AR(1) errors with the default `mk_correction="ar1"`: 4–5% for n = 400 up to ρ = 0.7, but 7–9% (Sen CI coverage 91–93%) for short series (n ≤ 150) with ρ ≥ 0.5. Uncorrected, it is about 25% at ρ = 0.5.
   - `just_monitor()` prediction-interval coverage: ~95%.
-- **Known limitations:** bands from `stpd`/`analyze_series` are conditional on the detected structure and under-cover (about 83–92%); detection p-values on censored data use one imputation by default (valid size in simulation; `detection_imputations` pools several, at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Known limitations:** bands from `stpd`/`analyze_series` are conditional on the detected structure and under-cover (about 83–92%); detection p-values on censored data use one imputation by default (valid size in simulation; `detection_imputations` pools several, at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators; Mann–Kendall/Sen remain somewhat liberal for short, strongly autocorrelated series.
 - **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
 - **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
 
