@@ -957,12 +957,19 @@ def _pipeline_bootstrap(
             if use_seas and decomp is not None
             else None
         ),
+        analytic_sd=(
+            0.5 * (stpd_res.piecewise_trend.trend_ci_high - stpd_res.piecewise_trend.trend_ci_low)
+            / float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n - 2 - len(tp_win))))
+            if stpd_res.piecewise_trend.trend_ci_low is not None
+            and stpd_res.piecewise_trend.trend_ci_high is not None
+            else None
+        ),
     )
     if boot is None:
         return None
     a_lvl = 1.0 - ci_level
     combined = f_trend + step_offsets
-    dev = boot.curves - combined[:, None]
+    dev = (boot.curves - combined[:, None]) * boot.dev_scale[:, None]
     band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
     band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
 
@@ -986,7 +993,13 @@ def _pipeline_bootstrap(
     if len(seg_bounds) - 1 != len(segments):
         return band_lo, band_hi, segments
     d = np.full((int(n_boot), len(segments)), np.nan)
+    d_fixed = np.full((int(n_boot), len(segments)), np.nan)
+    y_fixed_deseas = boot.ystar - seasonal_part[:, None]
     for b in range(int(n_boot)):
+        for k in range(len(segments)):
+            d_fixed[b, k] = _ols_slope(
+                y_fixed_deseas[seg_bounds[k] : seg_bounds[k + 1], b], seg_bounds[k], seg_bounds[k + 1]
+            )
         kb = sorted(int(k) for k in np.unique(boot.knots[b]) if 0 < k < n)
         bb = sorted({0, n, *jumps_sorted, *kb})
         if len(bb) != len(seg_bounds):
@@ -1001,6 +1014,18 @@ def _pipeline_bootstrap(
         dk = d[:, k][np.isfinite(d[:, k])] - s_true
         if dk.size < 0.8 * int(n_boot) or not np.isfinite(s_true):
             continue
+        # Variance calibration (as for the band): scale up to the analytical OLS slope SE
+        # where the fixed-structure bootstrap under-disperses.
+        sd_fix = float(np.nanstd(d_fixed[:, k], ddof=1))
+        dof_k = max(1, (b - a) - 2)
+        se_an = (
+            (float(seg.slope_ci_high) - float(seg.slope_ci_low))
+            / (2.0 * float(t_dist.ppf(0.5 + 0.5 * ci_level, df=dof_k)))
+            if seg.slope_ci_high is not None
+            else float("nan")
+        )
+        if sd_fix > 0 and np.isfinite(se_an):
+            dk = dk * float(np.clip(se_an / sd_fix, 1.0, 2.0))
         lo = seg.slope - float(np.quantile(dk, 1.0 - 0.5 * a_lvl))
         hi = seg.slope - float(np.quantile(dk, 0.5 * a_lvl))
         shifted = seg.slope - dk

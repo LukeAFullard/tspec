@@ -763,6 +763,7 @@ class _TpBootstrap:
     ystar: FloatArray
     nuisance_fit: FloatArray
     nuisance_trend: FloatArray
+    dev_scale: FloatArray
 
 
 def _batched_window_knots(
@@ -800,6 +801,7 @@ def _bootstrap_tp_curves(
     adjust_fn: Any = None,
     extra_df: float = 0.0,
     extra_leverage: FloatArray | None = None,
+    analytic_sd: FloatArray | None = None,
 ) -> _TpBootstrap | None:
     """Wild residual bootstrap of the detect-then-fit STPD trend (audit CRT-04).
 
@@ -890,8 +892,26 @@ def _bootstrap_tp_curves(
     for b in range(int(n_boot)):
         kb = np.unique(np.clip(knots[b], 1, n - 2))
         curves[:, b] = refit(y_adj[:, b], kb) + nuis_trend[:, b]
+
+    # Variance calibration: the wild bootstrap under-disperses the sequential trend
+    # estimator even with the structure fixed (by about 6% in width in simulation). The
+    # same replicates refitted with the original knots and nuisance structure give the
+    # bootstrap's fixed-structure dispersion; where it falls below the exact analytical
+    # conditional standard error, deviations are scaled up by the ratio (clipped to
+    # [1, 2]), so the location and nuisance uncertainty is added on top of the correct
+    # fixed-structure variance.
+    dev_scale = np.ones(n)
+    if analytic_sd is not None and np.all(np.isfinite(analytic_sd)):
+        k0 = np.unique(np.clip(np.array([gi for gi, _, _, _ in tp_windows], dtype=np.intp), 1, n - 2))
+        y_fixed = ystar - g[:, None]
+        fixed = np.column_stack([refit(y_fixed[:, b], k0) for b in range(int(n_boot))])
+        sd_fixed = np.std(fixed - trend_fit[:, None], axis=1, ddof=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = np.where(sd_fixed > 0, np.asarray(analytic_sd) / sd_fixed, 1.0)
+        dev_scale = np.clip(np.nan_to_num(ratio, nan=1.0), 1.0, 2.0)
     return _TpBootstrap(
-        curves=curves, knots=knots, ystar=ystar, nuisance_fit=nuis_fit, nuisance_trend=nuis_trend
+        curves=curves, knots=knots, ystar=ystar, nuisance_fit=nuis_fit, nuisance_trend=nuis_trend,
+        dev_scale=dev_scale,
     )
 
 
@@ -2408,13 +2428,20 @@ def detect_turning_points(
                 huber_k=huber_k, ci_level=ci_level,
             ).fitted_trend
 
+        a_sd = None
+        if pw_trend.trend_ci_low is not None and pw_trend.trend_ci_high is not None:
+            dof_a = max(1, int(series.n_valid) - 2 - len(tp_win))
+            a_sd = 0.5 * (pw_trend.trend_ci_high - pw_trend.trend_ci_low) / float(
+                student_t.ppf(0.5 + 0.5 * ci_level, df=dof_a)
+            )
         boot = _bootstrap_tp_curves(
             series.times_numeric, series.values, pw_trend.fitted_trend, tp_win, _refit,
             w=w_valid, robust=eff_robust, huber_k=huber_k, n_boot=int(n_boot),
             seed=(20261126, int(series.n_valid), *[int(x[0]) for x in tp_win]),
+            analytic_sd=a_sd,
         )
         if boot is not None:
-            dev = boot.curves - pw_trend.fitted_trend[:, None]
+            dev = (boot.curves - pw_trend.fitted_trend[:, None]) * boot.dev_scale[:, None]
             a_lvl = 1.0 - ci_level
             pw_trend = replace(
                 pw_trend,
