@@ -106,3 +106,117 @@ def test_red_noise_warning_triggered_on_ar1_residuals(rng: np.random.Generator) 
 
     # Ensure unused imports check clean
     _ = just_jumps, just_decompose, pytest
+
+
+def test_analyze_series_jump_plus_tp_offset_joint_refit_and_no_spurious_tp() -> None:
+    """BLK-01: local pre-STPD step offset + post-STPD joint fit avoids spurious TPs & covers truth."""
+    rng = np.random.default_rng(63003)
+    t = np.linspace(2012.0, 2024.0, 144)
+    t0 = t - t[0]
+    tr_true = 2.0 + 0.2 * t0 + np.where(t >= 2016.0, 2.0, 0.0) - 1.0 * np.maximum(0.0, t - 2020.0)
+    seas = 0.8 * np.cos(2.0 * np.pi * t0) + 0.25 * np.sin(4.0 * np.pi * t0)
+    y = tr_true + seas + rng.normal(0.0, 0.2, size=t.size)
+
+    res = analyze_series(
+        t,
+        y,
+        jump_adjustment="offset",
+        just_kwargs={"season": "ols", "n_mc": 199},
+        decompose_kwargs={"season": "ols"},
+        stpd_kwargs={"n_mc": 199},
+        band_method="bootstrap",
+        n_boot=149,
+    )
+    assert res.jumps is not None and len(res.jumps.jumps) == 1
+    assert abs(res.jumps.jumps[0].time_year - 2016.0) <= 0.5
+    assert res.turning_points is not None and len(res.turning_points.turning_points) == 1
+    assert abs(res.turning_points.turning_points[0].time_year - 2020.0) <= 0.75
+    assert res.band_method == "bootstrap"
+    assert res.trend_ci_low is not None and res.trend_ci_high is not None
+    cov = float(np.mean((res.trend_ci_low <= tr_true) & (tr_true <= res.trend_ci_high)))
+    assert cov >= 0.80
+
+
+def test_analyze_series_bootstrap_on_segment_mode_and_zero_tp_and_explain() -> None:
+    """CRT-04 & MAJ-03: bootstrap runs on jump_adjustment='segment' and 0-TP jump/seasonal series."""
+    rng = np.random.default_rng(202605)
+    t = np.linspace(2012.0, 2024.0, 144)
+    t0 = t - t[0]
+
+    # Segment mode with jump + TP
+    tr_seg = 2.0 + 0.2 * t0 + np.where(t >= 2016.0, 2.0, 0.0) - 1.0 * np.maximum(0.0, t - 2020.0)
+    y_seg = tr_seg + 0.7 * np.cos(2.0 * np.pi * t0) + rng.normal(0.0, 0.2, size=t.size)
+    res_seg = analyze_series(
+        t,
+        y_seg,
+        jump_adjustment="segment",
+        just_kwargs={"season": "ols", "n_mc": 199},
+        decompose_kwargs={"season": "ols"},
+        stpd_kwargs={"n_mc": 199},
+        band_method="bootstrap",
+        n_boot=149,
+    )
+    assert res_seg.band_method == "bootstrap"
+    assert res_seg.turning_points is not None
+    assert res_seg.turning_points.snr_th == 0.0
+    assert res_seg.turning_points.tp_calibration == "montecarlo"
+    assert "segmented piecewise-linear trend" in res_seg.turning_points.piecewise_trend.explain()
+
+    # Jump-only series (0 TPs) still runs bootstrap and never contradicts explain()
+    tr_j = 2.0 + 0.1 * t0 + np.where(t >= 2018.0, 2.0, 0.0)
+    y_j = tr_j + 0.6 * np.cos(2.0 * np.pi * t0) + rng.normal(0.0, 0.2, size=t.size)
+    res_j = analyze_series(
+        t,
+        y_j,
+        just_kwargs={"season": "ols", "n_mc": 199},
+        decompose_kwargs={"season": "ols"},
+        stpd_kwargs={"n_mc": 199},
+        band_method="bootstrap",
+        n_boot=149,
+    )
+    assert res_j.band_method == "bootstrap"
+    assert "band_method='bootstrap' includes it" not in res_j.explain()
+
+
+def test_analyze_series_robust_mm_bootstrap_resists_20sigma_spikes() -> None:
+    """CRT-09: robust='mm' pipeline bootstrap down-weights isolated 20-sigma spikes."""
+    rng = np.random.default_rng(777)
+    t = np.linspace(2012.0, 2024.0, 144)
+    t0 = t - t[0]
+    tr = 2.0 + 0.4 * t0 - 1.1 * np.maximum(0.0, t - 2018.0)
+    y_clean = tr + 0.6 * np.cos(2.0 * np.pi * t0) + rng.normal(0.0, 0.2, size=t.size)
+    y_spike = y_clean.copy()
+    y_spike[[25, 70, 115]] += 20.0 * 0.2
+
+    r_clean = analyze_series(
+        t, y_clean, robust="mm", just_kwargs={"season": "ols"}, decompose_kwargs={"season": "ols"}, n_boot=149
+    )
+    r_spike = analyze_series(
+        t, y_spike, robust="mm", just_kwargs={"season": "ols"}, decompose_kwargs={"season": "ols"}, n_boot=149
+    )
+    assert r_clean.trend_ci_low is not None and r_clean.trend_ci_high is not None
+    assert r_spike.trend_ci_low is not None and r_spike.trend_ci_high is not None
+    w_clean = float(np.mean(r_clean.trend_ci_high - r_clean.trend_ci_low))
+    w_spike = float(np.mean(r_spike.trend_ci_high - r_spike.trend_ci_low))
+    assert w_spike / w_clean < 1.5
+
+
+def test_analyze_series_2d_weights_emits_stpd_drop_warning() -> None:
+    """MAJ-08: 2D inverse-covariance weights emit TWO_D_WEIGHTS_DROPPED_FOR_STPD."""
+    rng = np.random.default_rng(19)
+    n = 72
+    t = np.linspace(2015.0, 2021.0, n)
+    y = 2.0 + 0.3 * (t - 2015.0) + rng.normal(0.0, 0.2, size=n)
+    P = np.eye(n)
+    res = analyze_series(
+        t,
+        y,
+        weights=P,
+        just_kwargs={"season": "none", "n_mc": 199},
+        decompose_kwargs={"season": "none"},
+        stpd_kwargs={"n_mc": 199},
+        band_method="conditional",
+    )
+    codes = {w.code for w in res.diagnostics.warnings}
+    assert "TWO_D_WEIGHTS_DROPPED_FOR_STPD" in codes
+

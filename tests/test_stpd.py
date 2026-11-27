@@ -81,3 +81,54 @@ def test_fit_piecewise_trend_sequential_vs_joint(rng: np.random.Generator) -> No
         r_jnt.intercepts[1] + r_jnt.slopes[1] * t[36],
         atol=1e-10,
     )
+
+
+def test_stpd_weighted_heteroscedastic_ndri_rmse_not_inflated() -> None:
+    """BLK-05: weighted NDRI_RMSE normalizes by sqrt(n_side), not sqrt(sum(w_side))."""
+    rng = np.random.default_rng(20260102)
+    t = np.linspace(2010.0, 2020.0, 120)
+    tr = 2.0 + 0.5 * (t - 2010.0) - 1.5 * np.maximum(0.0, t - 2015.0)
+    sigma = np.where(t < 2015.0, 0.2, 0.8)
+    w = 1.0 / (sigma * sigma)
+    y = tr + rng.normal(0.0, sigma)
+
+    res = detect_turning_points(t, y, weights=w, alpha=0.01, band_method="conditional", n_mc=199)
+    assert len(res.turning_points) == 1
+    assert abs(res.turning_points[0].time_year - 2015.0) <= 0.75
+    assert res.turning_points[0].ndri_rmse < 0.25
+    assert len(res.flagged_jumps) == 0
+
+
+def test_stpd_holm_before_merge_preserves_significant_tp() -> None:
+    """CRT-01: insignificant overlapping windows cannot overwrite a significant TP."""
+    rng = np.random.default_rng(77)
+    t = np.linspace(2010.0, 2020.0, 120)
+    # Replicates where finer stepping previously let a closer-to-center p_cal=1 window overwrite
+    detected = 0
+    for _ in range(10):
+        y = np.where(t <= 2013.2, 0.0, 2.0 * (t - 2013.2)) + rng.normal(0.0, 0.7, size=120)
+        res = detect_turning_points(
+            t, y, size=48, step=6, alpha=0.01, band_method="conditional", n_mc=199
+        )
+        if res.turning_points:
+            detected += 1
+    assert detected >= 8
+
+
+def test_stpd_robust_explain_and_parity_mode_guards() -> None:
+    """MIN-04 & MIN-05: robust explain cites nested F-test; parity_mode skips n_mc/n_boot guard."""
+    rng = np.random.default_rng(42)
+    t = np.linspace(0.0, 6.0, 73)
+    y = np.where(t <= 3.0, 1.0 + 1.5 * t, 5.5 - 3.0 * (t - 3.0)) + rng.normal(0.0, 0.25, size=73)
+
+    r_rob = detect_turning_points(
+        t, y, size=60, step=12, margin=8, robust="huber", band_method="conditional"
+    )
+    assert len(r_rob.turning_points) == 1
+    assert "robust nested F-test" in r_rob.explain()
+
+    r_par = detect_turning_points(
+        t, y, size=60, step=12, margin=8, parity_mode=True, n_mc=1, n_boot=1
+    )
+    assert len(r_par.turning_points) == 1
+

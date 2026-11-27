@@ -213,10 +213,17 @@ class PiecewiseTrendResult(BaseResult):
         return "\n".join(lines)
 
     def explain(self) -> str:
-        lines = [
-            f"Fitted a continuous connected trend with {self.slopes.size} linear segment(s) "
-            f"across {self.diagnostics.n_valid} observations."
-        ]
+        if self.mode == "segmented":
+            lead = (
+                f"Fitted a segmented piecewise-linear trend across epochs separated by abrupt jumps "
+                f"({self.slopes.size} linear segment(s) across {self.diagnostics.n_valid} observations)."
+            )
+        else:
+            lead = (
+                f"Fitted a continuous connected trend with {self.slopes.size} linear segment(s) "
+                f"across {self.diagnostics.n_valid} observations."
+            )
+        lines = [lead]
         for k, s in enumerate(self.slopes, start=1):
             lines.append(f"  - Segment {k} slope: {s:+.4g} per unit time.")
         lines.extend(format_explain_warnings(self.diagnostics))
@@ -294,6 +301,7 @@ class StpdResult(BaseResult):
     tp_calibration: str = "none"
     n_imputations: int = 1
     band_method: str = "conditional"
+    robust: str = "none"
 
     @property
     def tp_indices(self) -> IntArray:
@@ -349,10 +357,11 @@ class StpdResult(BaseResult):
                 f"Detected {len(self.turning_points)} continuous turning point(s) "
                 "where the rate of change shifted smoothly without a sudden vertical jump:"
             )
+            test_name = "robust nested F-test" if self.robust != "none" else "t-test"
             p_lbl = (
-                "family-wise calibrated t-test"
+                f"family-wise calibrated {test_name}"
                 if self.tp_calibration in ("montecarlo", "bonferroni")
-                else "uncalibrated screening t-test"
+                else f"uncalibrated screening {test_name}"
             )
             if self.n_imputations > 1:
                 p_lbl += f" pooled over {self.n_imputations} imputations"
@@ -802,6 +811,9 @@ def _bootstrap_tp_curves(
     extra_df: float = 0.0,
     extra_leverage: FloatArray | None = None,
     analytic_sd: FloatArray | None = None,
+    allow_empty_tps: bool = False,
+    l1_refit: bool = False,
+    refit_with_nuisance: Any = None,
 ) -> _TpBootstrap | None:
     """Wild residual bootstrap of the detect-then-fit STPD trend (audit CRT-04).
 
@@ -815,9 +827,10 @@ def _bootstrap_tp_curves(
     - every turning point is re-located with STPD's own knot estimator on the
       replicate's data over the window that detected it (forward/backward sequential
       scans; the robust variant for ``robust != 'none'``);
-    - the trend is refitted with ``refit(y_adjusted, knots)``. ``nuisance_trend`` flags
-      nuisance columns whose fitted contribution belongs to the reported trend (jump
-      steps).
+    - the trend is refitted with ``refit(y_adjusted, knots)`` (or
+      ``refit_with_nuisance(ystar, nuis_fit, nuis_trend, knots, b)`` when provided).
+      ``nuisance_trend`` flags nuisance columns whose fitted contribution belongs to
+      the reported trend (jump steps).
 
     ``adjust_fn(ystar) -> (nuisance_fit, nuisance_trend_fit)`` replaces the
     least-squares nuisance step with a caller-supplied replica of the estimator that
@@ -826,11 +839,11 @@ def _bootstrap_tp_curves(
 
     Returns the replicate curves ``(n, B)`` (reported-trend scale), the re-estimated
     knots ``(B, K)``, the replicate series ``y*`` and their fitted nuisance part
-    ``(n, B)``, or ``None`` if no turning points are given.
+    ``(n, B)``, or ``None`` if no turning points are given and ``allow_empty_tps`` is False.
     """
     n = int(t.size)
     k_n = len(tp_windows)
-    if k_n == 0:
+    if k_n == 0 and not allow_empty_tps:
         return None
     g = other_fit if other_fit is not None else np.zeros(n)
     sw = np.sqrt(w) if w is not None else np.ones(n)
@@ -849,14 +862,33 @@ def _bootstrap_tp_curves(
     if extra_leverage is not None:
         lev = lev + np.asarray(extra_leverage, dtype=np.float64)
     raw = y - trend_fit - g
+    p_par = 2 + k_n + ncols.shape[1] + float(extra_df)
     if np.all(np.isfinite(lev)) and float(np.max(lev)) < 0.99:
         resid = raw / np.sqrt(1.0 - lev)
     else:
-        p_par = 2 + k_n + ncols.shape[1] + float(extra_df)
         resid = raw * np.sqrt(n / max(1, n - p_par))
     rng = np.random.default_rng(seed)
     v = rng.choice(np.array([-1.0, 1.0]), size=(n, int(n_boot)))
-    ystar = (trend_fit + g)[:, None] + resid[:, None] * v
+    if l1_refit:
+        # Exact L1 (LP) hinge fits interpolate p = k + 2 observations with identically zero
+        # residuals, pinning those points in every wild-bootstrap draw (CRT-09). Unpin exact
+        # interpolation points by drawing replacement magnitudes from the non-zero residuals,
+        # and inflate for the p exact-zero degrees of freedom.
+        r_abs = np.abs(raw)
+        max_r = float(np.max(r_abs)) if n > 0 else 0.0
+        nz = r_abs > 1e-11 * max(max_r, 1e-300)
+        n_nz = int(np.sum(nz))
+        if 0 < n_nz < n:
+            scale_l1 = float(np.sqrt(n / max(1.0, float(n_nz) - float(p_par))))
+            r_pool = np.abs(raw[nz]) * scale_l1
+            r_mat = np.broadcast_to((np.abs(raw) * scale_l1)[:, None], (n, int(n_boot))).copy()
+            zero_idx = np.flatnonzero(~nz)
+            r_mat[zero_idx, :] = rng.choice(r_pool, size=(zero_idx.size, int(n_boot)), replace=True)
+            ystar = (trend_fit + g)[:, None] + r_mat * v
+        else:
+            ystar = (trend_fit + g)[:, None] + resid[:, None] * v
+    else:
+        ystar = (trend_fit + g)[:, None] + resid[:, None] * v
 
     nuis_trend = np.zeros((n, int(n_boot)))
     nuis_fit = np.zeros((n, int(n_boot)))
@@ -890,8 +922,11 @@ def _bootstrap_tp_curves(
                 knots[b, j] = w0 + int(st.local_tp)
     curves = np.empty((n, int(n_boot)), dtype=np.float64)
     for b in range(int(n_boot)):
-        kb = np.unique(np.clip(knots[b], 1, n - 2))
-        curves[:, b] = refit(y_adj[:, b], kb) + nuis_trend[:, b]
+        kb = np.unique(np.clip(knots[b], 1, n - 2)) if k_n > 0 else np.empty(0, dtype=np.intp)
+        if refit_with_nuisance is not None:
+            curves[:, b] = refit_with_nuisance(ystar[:, b], nuis_fit[:, b], nuis_trend[:, b], kb, b)
+        else:
+            curves[:, b] = refit(y_adj[:, b], kb) + nuis_trend[:, b]
 
     # Variance calibration: the wild bootstrap under-disperses the sequential trend
     # estimator even with the structure fixed (by about 6% in width in simulation). The
@@ -902,7 +937,11 @@ def _bootstrap_tp_curves(
     # fixed-structure variance.
     dev_scale = np.ones(n)
     if analytic_sd is not None and np.all(np.isfinite(analytic_sd)):
-        k0 = np.unique(np.clip(np.array([gi for gi, _, _, _ in tp_windows], dtype=np.intp), 1, n - 2))
+        k0 = (
+            np.unique(np.clip(np.array([gi for gi, _, _, _ in tp_windows], dtype=np.intp), 1, n - 2))
+            if k_n > 0
+            else np.empty(0, dtype=np.intp)
+        )
         y_fixed = ystar - g[:, None]
         fixed = np.column_stack([refit(y_fixed[:, b], k0) for b in range(int(n_boot))])
         sd_fixed = np.std(fixed - trend_fit[:, None], axis=1, ddof=1)
@@ -1305,8 +1344,8 @@ def _tpd_window(
         fit_cent_norm = float(np.sqrt(np.sum(w_stat * (y_fit - y_fit_wmean) ** 2)))
         nr1 = float(np.sqrt(np.sum(w1 * r1 * r1)))
         nr2 = float(np.sqrt(np.sum(w2 * r2 * r2)))
-        rmse1 = nr1 / np.sqrt(float(np.sum(w1)))
-        rmse2 = nr2 / np.sqrt(float(np.sum(w2)))
+        rmse1 = nr1 / np.sqrt(float(n_left))
+        rmse2 = nr2 / np.sqrt(float(n_right))
 
     zero_tol = 1e-14 * max(fit_norm, fit_cent_norm, float(np.finfo(np.float64).tiny))
     if res_norm <= zero_tol:
@@ -1460,11 +1499,14 @@ def _fit_piecewise_core(
     t0 = t_num - t_num[0]
     cond_num = 1.0
     huber_converged = True
+    l1_fallback_flag: list[bool] = []
     trend_ci_low: FloatArray | None = None
     trend_ci_high: FloatArray | None = None
 
     if mode == "l1":
-        slopes, intercepts, y_fit, cond_num = fit_l1_piecewise(t_num, y, tp_sorted, w=w)
+        slopes, intercepts, y_fit, cond_num = fit_l1_piecewise(
+            t_num, y, tp_sorted, w=w, fallback_flag=l1_fallback_flag
+        )
         selected_dir: Literal["forward", "backward", "joint"] = "joint"
     elif mode in ("joint", "huber"):
         # Continuous piecewise linear hinge basis scaled by span s_t for numerical conditioning:
@@ -1588,10 +1630,8 @@ def _fit_piecewise_core(
             wp_sum = float(np.sum(wp))
             y_wmean = float(np.sum(wp * y_pair)) / wp_sum if wp_sum > 0.0 else 0.0
             ny_cent = float(np.sqrt(np.sum(wp * (y_pair - y_wmean) ** 2)))
-            w1_sum = float(np.sum(w1))
-            w2_sum = float(np.sum(w2))
-            rmse1 = nr1 / np.sqrt(w1_sum) if w1_sum > 0.0 else 0.0
-            rmse2 = nr2 / np.sqrt(w2_sum) if w2_sum > 0.0 else 0.0
+            rmse1 = nr1 / np.sqrt(float(i1 - i0 + 1))
+            rmse2 = nr2 / np.sqrt(float(i2 - i1 + 1))
 
         zero_tol = 1e-14 * max(ny_raw, ny_cent, 1e-300)
         directions[k - 1] = slopes[k] - slopes[k - 1]
@@ -1616,6 +1656,18 @@ def _fit_piecewise_core(
                 severity="caution",
                 message="Huber IRLS hinge-spline fit reached its iteration limit before converging.",
                 suggestion="Treat the robust trend and its CI as approximate.",
+            ),
+        )
+    if l1_fallback_flag and l1_fallback_flag[0]:
+        rn_warns = (
+            *rn_warns,
+            WarningItem(
+                code="L1_SOLVER_FALLBACK",
+                severity="warning",
+                message=(
+                    "HiGHS L1 linear-program solver did not converge cleanly; fell back to "
+                    "reweighted L1 IRLS approximation."
+                ),
             ),
         )
     diag = DiagnosticReport(
@@ -1900,20 +1952,36 @@ def _run_stpd_windows(
         if sig_and_strong and ndri_val >= ndri_th:
             flagged_raw.append((g_idx, stats))
 
-    # Merge nearby accepted TPs within tp_th, keeping closest to window center
+    # Group nearby candidates within tp_th and deduplicate (CRT-01):
+    # When calibrated, compute each merged cluster's Simes p-value min_j (c / j) * p_(j)
+    # so an insignificant window closer to center can never overwrite a significant turning
+    # point, while preserving exact FWER <= alpha under positively dependent overlapping windows
+    # without over-penalizing Holm's denominator with redundant overlapping windows.
     accepted_raw.sort(key=lambda item: item[0])
-    r = 1
-    while r < len(accepted_raw):
-        if t_valid[accepted_raw[r][0]] - t_valid[accepted_raw[r - 1][0]] < tp_th:
-            if accepted_raw[r][1] < accepted_raw[r - 1][1]:
-                accepted_raw[r - 1] = accepted_raw[r]
-            del accepted_raw[r]
-        else:
-            r += 1
-
     if tp_calibration != "none" and accepted_raw:
-        # Holm step-down across merged candidate locations, then keep p_adj < alpha
-        raw_p = np.array([item[2].pval for item in accepted_raw], dtype=np.float64)
+        clusters: list[list[tuple[int, float, _WindowTpdStats, int, int]]] = [[accepted_raw[0]]]
+        for item in accepted_raw[1:]:
+            if t_valid[item[0]] - t_valid[clusters[-1][-1][0]] < tp_th:
+                clusters[-1].append(item)
+            else:
+                clusters.append([item])
+        merged: list[tuple[int, float, _WindowTpdStats, int, int]] = []
+        for cl in clusters:
+            c_len = len(cl)
+            p_sorted = np.sort(np.array([it[2].pval for it in cl], dtype=np.float64))
+            p_simes = float(
+                np.min(np.minimum(1.0, (c_len / np.arange(1, c_len + 1, dtype=np.float64)) * p_sorted))
+            )
+            # Pick representative closest to window center among significant windows (or min pval)
+            sig_members = [it for it in cl if it[2].pval < alpha]
+            if sig_members:
+                rep = min(sig_members, key=lambda it: (it[1], it[2].pval))
+            else:
+                rep = min(cl, key=lambda it: (it[2].pval, it[1]))
+            merged.append((rep[0], rep[1], replace(rep[2], pval=p_simes), rep[3], rep[4]))
+
+        # Holm step-down across merged candidate clusters, then keep p_adj < alpha
+        raw_p = np.array([item[2].pval for item in merged], dtype=np.float64)
         m_c = int(raw_p.size)
         order = np.argsort(raw_p)
         adj = np.empty(m_c, dtype=np.float64)
@@ -1923,9 +1991,18 @@ def _run_stpd_windows(
             adj[i_c] = running
         accepted_raw = [
             (it[0], it[1], replace(it[2], pval=float(p_a)), it[3], it[4])
-            for it, p_a in zip(accepted_raw, adj, strict=True)
+            for it, p_a in zip(merged, adj, strict=True)
             if p_a < alpha
         ]
+    else:
+        r = 1
+        while r < len(accepted_raw):
+            if t_valid[accepted_raw[r][0]] - t_valid[accepted_raw[r - 1][0]] < tp_th:
+                if accepted_raw[r][1] < accepted_raw[r - 1][1]:
+                    accepted_raw[r - 1] = accepted_raw[r]
+                del accepted_raw[r]
+            else:
+                r += 1
 
     # Deduplicate nearby flagged jump candidates within tp_th, keeping highest NDRI
     flagged_raw.sort(key=lambda item: item[0])
@@ -2096,13 +2173,13 @@ def detect_turning_points(
         raise ValueError(
             f"Unknown `tp_calibration` {tp_calibration!r}. Options: 'montecarlo', 'bonferroni', 'none'."
         )
-    if int(n_mc) < 99:
+    if not parity_mode and int(n_mc) < 99:
         raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     if band_method is not None and band_method not in ("bootstrap", "conditional"):
         raise ValueError(
             f"Unknown `band_method` {band_method!r}. Options: 'bootstrap', 'conditional'."
         )
-    if int(n_boot) < 99:
+    if not parity_mode and int(n_boot) < 99:
         raise ValueError(f"`n_boot` must be >= 99; got {n_boot}.")
     eff_band = "conditional" if parity_mode else (band_method or "bootstrap")
     if not (0.0 <= ndri_th <= 1.0):
@@ -2439,6 +2516,7 @@ def detect_turning_points(
             w=w_valid, robust=eff_robust, huber_k=huber_k, n_boot=int(n_boot),
             seed=(20261126, int(series.n_valid), *[int(x[0]) for x in tp_win]),
             analytic_sd=a_sd,
+            l1_refit=(eff_refit_mode == "l1"),
         )
         if boot is not None:
             dev = (boot.curves - pw_trend.fitted_trend[:, None]) * boot.dev_scale[:, None]
@@ -2573,6 +2651,7 @@ def detect_turning_points(
         tp_calibration=eff_tp_cal,
         n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
         band_method=band_used,
+        robust=eff_robust,
     )
 
 

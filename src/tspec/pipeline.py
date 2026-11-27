@@ -24,6 +24,8 @@ from ._robust import (
     fit_l1_piecewise,
     fit_theil_sen_segment,
     solve_huber_irls,
+    solve_mm_biweight,
+    tukey_weight,
     validate_robust_args,
 )
 from ._time import format_timestamp
@@ -44,13 +46,16 @@ from .results import (
 )
 from .spectral import _lssa_core, build_design_matrix
 from .stpd import (
+    SNR_TH_DEFAULT,
     FlaggedJumpCandidate,
     PiecewiseTrendResult,
     RefitMode,
     StpdResult,
     TurningPointEvent,
+    _batched_window_knots,
     _bootstrap_tp_curves,
     _fit_piecewise_core,
+    _tpd_window,
     fit_piecewise_trend,
 )
 from .stpd import (
@@ -175,6 +180,7 @@ class PipelineResult(BaseResult):
     slope_fan_low: FloatArray | None = None
     slope_fan_high: FloatArray | None = None
     band_method: str = "conditional"
+    requested_band_method: str = "bootstrap"
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
@@ -300,19 +306,26 @@ class PipelineResult(BaseResult):
                 if seg.pvalue is not None:
                     msg += f", p={seg.pvalue:.2e}"
                 lines.append(msg + ".")
-            if len(self.segments) > 1 and self.band_method == "bootstrap":
+            if self.band_method == "bootstrap":
                 lines.append(
                     "Segment CIs and the trend band are detect-then-fit bootstrap intervals: "
                     "they include turning-point location, jump-step and seasonal-estimation "
                     "uncertainty, but are conditional on the number of breakpoints found."
                 )
-            elif len(self.segments) > 1:
-                lines.append(
-                    "Note: segment CIs and the trend band are conditional on the detected "
-                    "breakpoints and omit their location uncertainty (in simulation the trend "
-                    "band covered about 83-92% at nominal 95% even when the structure was found "
-                    "correctly); band_method='bootstrap' includes it."
-                )
+            elif len(self.segments) > 1 or self.trend_ci_low is not None:
+                if self.requested_band_method == "bootstrap":
+                    lines.append(
+                        f"Note: conditional/analytical intervals were used (slope_estimator={self.slope_estimator!r}, "
+                        f"jump_adjustment={self.jump_adjustment!r}) because bootstrap trend bands apply to "
+                        "OLS/Huber STPD trend fits."
+                    )
+                else:
+                    lines.append(
+                        "Note: segment CIs and the trend band are conditional on the detected "
+                        "breakpoints and omit their location uncertainty (in simulation the trend "
+                        "band covered about 83-92% at nominal 95% even when the structure was found "
+                        "correctly); band_method='bootstrap' includes it."
+                    )
 
         lines.extend(format_explain_warnings(self.diagnostics))
         return "\n".join(lines)
@@ -388,38 +401,102 @@ def _estimate_vertical_step_offsets(
     *,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    local_half_window: int | None = None,
+    tp_valid_indices: list[int] | None = None,
 ) -> FloatArray:
-    """Estimate cumulative vertical step offsets at JUST jump indices."""
+    """Estimate cumulative vertical step offsets at JUST jump indices.
+
+    Before STPD runs (``tp_valid_indices is None``), each jump's vertical step is
+    estimated on a local window around the jump (clamped inside adjacent jumps) so
+    that an undetected turning point elsewhere in an inter-jump epoch cannot tilt
+    the fitted line and corrupt the step offset (BLK-01). Once STPD has identified
+    ``tp_valid_indices``, passing them performs a unified joint fit of vertical
+    step indicators and continuous trend hinges over the full series.
+    """
     n = int(t_valid.size)
     offsets = np.zeros(n, dtype=np.float64)
     if not jump_valid_indices:
         return offsets
 
     j_arr = np.sort(np.unique(np.asarray(jump_valid_indices, dtype=np.intp)))
+    j_arr = j_arr[(j_arr > 0) & (j_arr < n)]
+    if j_arr.size == 0:
+        return offsets
     t0 = t_valid - t_valid[0]
-    pw = prepare_weights(weights_valid, n)
-    fit = _lssa_core(
-        t0,
-        y_deseas,
-        pw,
-        np.empty(0, dtype=np.float64),
-        j_arr,
-        0.05,
-        "linear",
-        False,
-        np.empty(0, dtype=np.float64),
-        robust=robust,
-        huber_k=huber_k,
+    pw_full = prepare_weights(weights_valid, n)
+
+    if tp_valid_indices is not None:
+        # Unified post-STPD joint model: [1, u, (u - u_tp)_+, ..., I(t >= t_j), ...]
+        s_t = float(t0[-1]) if float(t0[-1]) > 0.0 else 1.0
+        u = t0 / s_t
+        tp_arr = np.sort(
+            np.unique(
+                np.asarray(
+                    [tp for tp in tp_valid_indices if 0 < tp < n and int(tp) not in set(j_arr.tolist())],
+                    dtype=np.intp,
+                )
+            )
+        )
+        cols: list[FloatArray] = [np.ones(n, dtype=np.float64), u]
+        for tp in tp_arr:
+            cols.append(np.maximum(0.0, u - u[int(tp)]))
+        for j in j_arr:
+            step_col = np.zeros(n, dtype=np.float64)
+            step_col[int(j) :] = 1.0
+            cols.append(step_col)
+        D_joint = np.column_stack(cols)
+        if robust == "mm":
+            coeff = solve_mm_biweight(D_joint, y_deseas, pw_full, k=huber_k, compute_cov=False).ols.coeff
+        elif robust == "huber":
+            coeff = solve_huber_irls(D_joint, y_deseas, pw_full, k=huber_k, compute_cov=False).ols.coeff
+        else:
+            coeff = solve_weighted_ols(D_joint, y_deseas, pw_full, compute_cov=False).coeff
+        m_j = int(j_arr.size)
+        step_coefs = coeff[-m_j:]
+        for k, j in enumerate(j_arr):
+            offsets[int(j) :] += float(step_coefs[k])
+        return offsets
+
+    # Pre-STPD local two-piece linear step estimation around each jump
+    half_w = (
+        max(6, int(local_half_window))
+        if local_half_window is not None
+        else max(10, min(20, n // 6))
     )
     m = int(j_arr.size)
-    intercepts = fit.coeff[: m + 1]
-    slopes = fit.coeff[m + 1 : 2 * m + 2]
-
     for k, j in enumerate(j_arr):
-        left_val = float(intercepts[k] + slopes[k] * t0[j])
-        right_val = float(intercepts[k + 1] + slopes[k + 1] * t0[j])
-        step_k = right_val - left_val
-        offsets[j:] += step_k
+        j_int = int(j)
+        prev_j = int(j_arr[k - 1]) if k > 0 else 0
+        next_j = int(j_arr[k + 1]) if k + 1 < m else n
+        lo = max(prev_j, j_int - half_w)
+        hi = min(next_j, j_int + half_w)
+        j_loc = j_int - lo
+        n_loc = hi - lo
+        if j_loc < 1 or (n_loc - j_loc) < 1:
+            continue
+        t_loc = t0[lo:hi] - t0[lo]
+        y_loc = y_deseas[lo:hi]
+        pw_loc = pw_full.subset(np.arange(lo, hi, dtype=np.intp))
+        if j_loc >= 3 and (n_loc - j_loc) >= 3 and float(t_loc[j_loc - 1]) > 0.0 and float(t_loc[-1] - t_loc[j_loc]) > 0.0:
+            fit_loc = _lssa_core(
+                t_loc,
+                y_loc,
+                pw_loc,
+                np.empty(0, dtype=np.float64),
+                np.array([j_loc], dtype=np.intp),
+                0.05,
+                "linear",
+                False,
+                np.empty(0, dtype=np.float64),
+                robust=robust,
+                huber_k=huber_k,
+            )
+            left_val = float(fit_loc.coeff[0] + fit_loc.coeff[2] * t_loc[j_loc])
+            right_val = float(fit_loc.coeff[1] + fit_loc.coeff[3] * t_loc[j_loc])
+            step_k = right_val - left_val
+        else:
+            step_k = float(np.median(y_loc[j_loc:]) - np.median(y_loc[:j_loc]))
+        offsets[j_int:] += step_k
 
     return offsets
 
@@ -687,9 +764,21 @@ def _build_segment_summaries(
                 tp_rel = np.array([tp - e0 for tp in tp_epoch], dtype=np.intp)
                 w_ep = _slice_w(e0, e1)
                 w_vec = np.asarray(w_ep, dtype=np.float64) if (w_ep is not None and np.ndim(w_ep) == 1) else None
+                l1_fb: list[bool] = []
                 slopes_ep, intercepts_ep, y_fit_ep, _ = fit_l1_piecewise(
-                    t_valid[e0:e1], y_deseas[e0:e1], tp_rel, w=w_vec
+                    t_valid[e0:e1], y_deseas[e0:e1], tp_rel, w=w_vec, fallback_flag=l1_fb
                 )
+                if l1_fb and l1_fb[0] and mi_warnings is not None:
+                    mi_warnings.append(
+                        WarningItem(
+                            code="L1_SOLVER_FALLBACK",
+                            severity="warning",
+                            message=(
+                                f"HiGHS L1 linear-program solver did not converge cleanly on epoch {ep_i}; "
+                                "fell back to reweighted L1 IRLS approximation."
+                            ),
+                        )
+                    )
                 override_trend[e0:e1] = y_fit_ep
                 for k in range(len(sub_bounds) - 1):
                     s0, s1 = sub_bounds[k], sub_bounds[k + 1]
@@ -910,25 +999,113 @@ def _windowed_seasonal_leverage(
 
 
 def _replicate_step_offsets(
-    t_valid: FloatArray, y_deseas: FloatArray, jump_valid_indices: list[int], w: FloatArray | None
+    t_valid: FloatArray,
+    y_deseas: FloatArray,
+    jump_valid_indices: list[int],
+    w: FloatArray | None,
+    *,
+    local_half_window: int | None = None,
 ) -> FloatArray:
-    """Vectorised :func:`_estimate_vertical_step_offsets` (non-robust) over columns."""
+    """Vectorised local-window :func:`_estimate_vertical_step_offsets` over columns."""
     n, nb = y_deseas.shape
-    out = np.zeros((n, nb))
+    out = np.zeros((n, nb), dtype=np.float64)
     if not jump_valid_indices:
         return out
     j_arr = np.sort(np.unique(np.asarray(jump_valid_indices, dtype=np.intp)))
+    j_arr = j_arr[(j_arr > 0) & (j_arr < n)]
+    if j_arr.size == 0:
+        return out
     t0 = t_valid - t_valid[0]
-    d_m, cs = build_design_matrix(t0, "linear", j_arr, False, np.empty(0, dtype=np.float64))
-    d_raw = d_m / cs[None, :]
-    sw = np.sqrt(w) if w is not None else np.ones(n)
-    coef, *_ = np.linalg.lstsq(d_raw * sw[:, None], y_deseas * sw[:, None], rcond=None)
+    sw_all = np.sqrt(w) if w is not None else np.ones(n, dtype=np.float64)
+    half_w = (
+        max(6, int(local_half_window))
+        if local_half_window is not None
+        else max(10, min(20, n // 6))
+    )
     m = int(j_arr.size)
     for k, j in enumerate(j_arr):
-        left = coef[k] + coef[m + 1 + k] * t0[j]
-        right = coef[k + 1] + coef[m + 2 + k] * t0[j]
-        out[j:] += (right - left)[None, :]
+        j_int = int(j)
+        prev_j = int(j_arr[k - 1]) if k > 0 else 0
+        next_j = int(j_arr[k + 1]) if k + 1 < m else n
+        lo = max(prev_j, j_int - half_w)
+        hi = min(next_j, j_int + half_w)
+        j_loc = j_int - lo
+        n_loc = hi - lo
+        if j_loc < 1 or (n_loc - j_loc) < 1:
+            continue
+        t_loc = t0[lo:hi] - t0[lo]
+        sw_loc = sw_all[lo:hi]
+        y_loc = y_deseas[lo:hi]
+        if j_loc >= 3 and (n_loc - j_loc) >= 3 and float(t_loc[j_loc - 1]) > 0.0 and float(t_loc[-1] - t_loc[j_loc]) > 0.0:
+            d_m, cs = build_design_matrix(
+                t_loc, "linear", np.array([j_loc], dtype=np.intp), False, np.empty(0, dtype=np.float64)
+            )
+            d_raw = d_m / cs[None, :]
+            coef, *_ = np.linalg.lstsq(d_raw * sw_loc[:, None], y_loc * sw_loc[:, None], rcond=None)
+            left = coef[0] + coef[2] * t_loc[j_loc]
+            right = coef[1] + coef[3] * t_loc[j_loc]
+            out[j_int:] += (right - left)[None, :]
+        else:
+            step_k = np.median(y_loc[j_loc:], axis=0) - np.median(y_loc[:j_loc], axis=0)
+            out[j_int:] += step_k[None, :]
     return out
+
+
+def _joint_step_offsets_single(
+    t_valid: FloatArray,
+    y_deseas_1d: FloatArray,
+    jump_arr: IntArray,
+    tp_arr: IntArray,
+    sw: FloatArray,
+) -> FloatArray:
+    """Fast weighted joint step-offset fit [1, u, hinges(tp), steps(j)] for one replicate."""
+    n = int(t_valid.size)
+    offsets = np.zeros(n, dtype=np.float64)
+    if jump_arr.size == 0:
+        return offsets
+    t0 = t_valid - t_valid[0]
+    s_t = float(t0[-1]) if float(t0[-1]) > 0.0 else 1.0
+    u = t0 / s_t
+    j_set = set(jump_arr.tolist())
+    cols: list[FloatArray] = [np.ones(n, dtype=np.float64), u]
+    for tp in tp_arr:
+        ti = int(tp)
+        if 0 < ti < n and ti not in j_set:
+            cols.append(np.maximum(0.0, u - u[ti]))
+    for j in jump_arr:
+        col = np.zeros(n, dtype=np.float64)
+        col[int(j) :] = 1.0
+        cols.append(col)
+    D_j = np.column_stack(cols)
+    coef, *_ = np.linalg.lstsq(D_j * sw[:, None], y_deseas_1d * sw, rcond=None)
+    m_j = int(jump_arr.size)
+    step_c = coef[-m_j:]
+    for k, j in enumerate(jump_arr):
+        offsets[int(j) :] += float(step_c[k])
+    return offsets
+
+
+def _robust_bootstrap_weights(
+    raw_resid: FloatArray,
+    w_stpd: FloatArray | None,
+    robust: RobustMethod,
+    huber_k: float,
+) -> FloatArray | None:
+    """Down-weight isolated outliers during vectorized bootstrap WLS nuisance refits (CRT-09)."""
+    if robust == "none":
+        return w_stpd
+    mad_s = float(1.482602218505602 * np.median(np.abs(raw_resid)))
+    rms_r = float(np.sqrt(np.mean(raw_resid * raw_resid)))
+    if mad_s <= 1e-14 * max(rms_r, 1e-300):
+        return w_stpd
+    u_r = raw_resid / mad_s
+    au = np.abs(u_r)
+    w_rob = (
+        np.maximum(tukey_weight(u_r), 1e-12)
+        if robust == "mm"
+        else np.where(au <= huber_k, 1.0, huber_k / np.maximum(au, huber_k))
+    )
+    return w_rob if w_stpd is None else np.asarray(w_stpd * w_rob, dtype=np.float64)
 
 
 def _pipeline_bootstrap(
@@ -949,83 +1126,212 @@ def _pipeline_bootstrap(
     ci_level: float,
     n_boot: int,
     segments: tuple[SegmentSummary, ...],
+    jump_adjustment: Literal["offset", "segment"] = "offset",
+    local_half_window: int | None = None,
 ) -> tuple[FloatArray, FloatArray, tuple[SegmentSummary, ...]] | None:
     """Detect-then-fit bootstrap band and OLS segment-slope CIs for ``analyze_series``.
 
-    Wild residual bootstrap of the fitted structure (connected trend + jump steps +
-    seasonal harmonics). In every replicate the jump steps and harmonics are
-    re-estimated jointly by weighted least squares, each turning point is re-located
-    with STPD's own knot estimator over its detecting window, and the connected trend
-    is refitted (audit CRT-04). Segment slopes are re-estimated by OLS between the
-    replicate's breakpoints. Returns ``(band_low, band_high, segments)`` or ``None``.
+    Wild residual bootstrap of the fitted structure (connected or segmented trend +
+    jump steps + seasonal harmonics). Supports turning-point series, jump-only /
+    seasonal-only series (0 turning points), both ``jump_adjustment='offset'`` and
+    ``'segment'``, and robust M/MM down-weighting of isolated outliers in nuisance
+    refits (BLK-01, CRT-04, CRT-09). Returns ``(band_low, band_high, segments)`` or ``None``.
     """
     tps = stpd_res.turning_points
-    if not tps or any(tp.detection_window is None for tp in tps):
+    if any(tp.detection_window is None for tp in tps):
         return None
     n = int(t_valid.size)
+    f_trend = stpd_res.piecewise_trend.fitted_trend
+    use_seas = decomp is not None and bool(decomp.window_bounds) and bool(np.any(seasonal_part != 0.0))
+    jumps_sorted = sorted({int(j) for j in jump_valid_indices if 0 < j < n})
+    if not tps and not use_seas and not jumps_sorted:
+        return None
+
     tp_win = [
         (int(tp.valid_index), *tp.detection_window)  # type: ignore[misc]
         for tp in tps
     ]
-    f_trend = stpd_res.piecewise_trend.fitted_trend
-    use_seas = decomp is not None and bool(decomp.window_bounds) and bool(np.any(seasonal_part != 0.0))
+    combined = f_trend + step_offsets
+    raw_full = y_work - combined - seasonal_part
+    w_boot = _robust_bootstrap_weights(raw_full, w_stpd, robust, huber_k)
+    sw_boot = np.sqrt(w_boot) if w_boot is not None else np.ones(n, dtype=np.float64)
+    a_lvl = 1.0 - ci_level
 
-    # Effective degrees of freedom of the nuisance estimators (trace of their hat matrix,
-    # Hutchinson estimate), so the bootstrap residuals are inflated for all fitted terms.
-    extra_df = 2.0 * len(jump_valid_indices)
-    if use_seas and decomp is not None:
-        probes = np.random.default_rng((20261128, n)).choice(np.array([-1.0, 1.0]), size=(n, 32))
-        extra_df += float(np.mean(np.sum(probes * _replicate_windowed_seasonal(
-            t_valid, probes, decomp, jump_valid_indices, w_stpd), axis=0)))
-
-    def _adjust(ystar: FloatArray) -> tuple[FloatArray, FloatArray]:
+    if jump_adjustment == "segment" and jumps_sorted:
+        # Epoch-by-epoch detect-then-fit wild bootstrap with full-series seasonal re-estimation
+        bounds = [0, *jumps_sorted, n]
+        n_ep = len(bounds) - 1
+        lev = np.zeros(n, dtype=np.float64)
+        p_tr_tot = 0
+        for ep_i in range(n_ep):
+            e0, e1 = bounds[ep_i], bounds[ep_i + 1]
+            ne = e1 - e0
+            if ne < 2:
+                continue
+            te = t_valid[e0:e1]
+            sp = float(te[-1] - te[0]) if float(te[-1] - te[0]) > 0.0 else 1.0
+            ue = (te - te[0]) / sp
+            ep_tps = [gi - e0 for gi, _, _, _ in tp_win if e0 < gi < e1]
+            x_e = np.column_stack([np.ones(ne), ue, *[np.maximum(0.0, ue - ue[k]) for k in ep_tps]])
+            q_e, _ = np.linalg.qr(x_e * sw_boot[e0:e1, None], mode="reduced")
+            lev[e0:e1] = np.sum(q_e * q_e, axis=1)
+            p_tr_tot += 2 + len(ep_tps)
+        extra_lev = (
+            _windowed_seasonal_leverage(t_valid, decomp, jumps_sorted, w_boot)
+            if use_seas and decomp is not None
+            else np.zeros(n, dtype=np.float64)
+        )
+        lev_tot = lev + extra_lev
+        if np.all(np.isfinite(lev_tot)) and float(np.max(lev_tot)) < 0.99:
+            resid = raw_full / np.sqrt(1.0 - lev_tot)
+        else:
+            resid = raw_full * np.sqrt(n / max(1.0, float(n - p_tr_tot)))
+        rng = np.random.default_rng((20261127, n, *jumps_sorted, *[x[0] for x in tp_win]))
+        v = rng.choice(np.array([-1.0, 1.0]), size=(n, int(n_boot)))
+        ystar = (f_trend + seasonal_part)[:, None] + resid[:, None] * v
         seas_b = (
-            _replicate_windowed_seasonal(t_valid, ystar, decomp, jump_valid_indices, w_stpd)
+            _replicate_windowed_seasonal(t_valid, ystar, decomp, jumps_sorted, w_boot)
             if use_seas and decomp is not None
             else np.zeros_like(ystar)
         )
-        steps_b = _replicate_step_offsets(t_valid, ystar - seas_b, jump_valid_indices, w_stpd)
-        return seas_b + steps_b, steps_b
+        y_deseas_b = ystar - seas_b
+        y_fixed_deseas = ystar - seasonal_part[:, None]
 
-    def _refit(yb: FloatArray, kb: IntArray) -> FloatArray:
-        return _fit_piecewise_core(
-            t_valid, t_raw_valid, series.is_datetime, yb, kb, series.valid_to_orig,
-            series.n_input, series.n_dropped_nan, series.sampling_rate_ratio,
-            w=w_stpd, mode=refit_mode, huber_k=huber_k, ci_level=ci_level,
-        ).fitted_trend
+        # Re-locate turning points in their detecting windows (clamped inside each epoch)
+        k_n = len(tp_win)
+        knots = np.empty((int(n_boot), k_n), dtype=np.intp)
+        for j_i, (_gi, w0, w1, m_eff) in enumerate(tp_win):
+            t_w = t_valid[w0:w1]
+            w_w = w_stpd[w0:w1] if w_stpd is not None else None
+            if robust == "none":
+                knots[:, j_i] = w0 + _batched_window_knots(t_w, y_deseas_b[w0:w1], m_eff, w_w)
+            else:
+                for b in range(int(n_boot)):
+                    st = _tpd_window(t_w, y_deseas_b[w0:w1, b], m_eff, w_w, robust=robust, huber_k=huber_k)
+                    knots[b, j_i] = w0 + int(st.local_tp)
 
-    boot = _bootstrap_tp_curves(
-        t_valid, y_work, f_trend, tp_win, _refit, w=w_stpd, robust=robust, huber_k=huber_k,
-        n_boot=int(n_boot), seed=(20261127, n, *[x[0] for x in tp_win]),
-        other_fit=step_offsets + seasonal_part, adjust_fn=_adjust, extra_df=extra_df,
-        extra_leverage=(
-            _windowed_seasonal_leverage(t_valid, decomp, jump_valid_indices, w_stpd)
-            if use_seas and decomp is not None
-            else None
-        ),
-        analytic_sd=(
-            0.5 * (stpd_res.piecewise_trend.trend_ci_high - stpd_res.piecewise_trend.trend_ci_low)
-            / float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n - 2 - len(tp_win))))
-            if stpd_res.piecewise_trend.trend_ci_low is not None
-            and stpd_res.piecewise_trend.trend_ci_high is not None
-            else None
-        ),
-    )
-    if boot is None:
-        return None
-    a_lvl = 1.0 - ci_level
-    combined = f_trend + step_offsets
-    dev = (boot.curves - combined[:, None]) * boot.dev_scale[:, None]
-    if _BAND_INTERVAL == "percentile":
-        band_lo = combined + np.quantile(dev, 0.5 * a_lvl, axis=1)
-        band_hi = combined + np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+        curves = np.empty((n, int(n_boot)), dtype=np.float64)
+        fixed = np.empty((n, int(n_boot)), dtype=np.float64)
+        dev_scale = np.ones(n, dtype=np.float64)
+        pw_ci_lo = stpd_res.piecewise_trend.trend_ci_low
+        pw_ci_hi = stpd_res.piecewise_trend.trend_ci_high
+        for ep_i in range(n_ep):
+            e0, e1 = bounds[ep_i], bounds[ep_i + 1]
+            ne = e1 - e0
+            w_ep = w_stpd[e0:e1] if w_stpd is not None else None
+            ep_tp_cols = [j_i for j_i, (gi, _, _, _) in enumerate(tp_win) if e0 < gi < e1]
+            k0_ep = np.array([tp_win[j_i][0] - e0 for j_i in ep_tp_cols], dtype=np.intp)
+            k0_ep = np.unique(np.clip(k0_ep, 1, max(1, ne - 2))) if k0_ep.size > 0 and ne >= 3 else np.empty(0, dtype=np.intp)
+            for b in range(int(n_boot)):
+                if ep_tp_cols and ne >= 3:
+                    kb_ep = np.unique(np.clip(knots[b, ep_tp_cols] - e0, 1, ne - 2))
+                else:
+                    kb_ep = np.empty(0, dtype=np.intp)
+                curves[e0:e1, b] = _fit_piecewise_core(
+                    t_valid[e0:e1], t_raw_valid[e0:e1], series.is_datetime, y_deseas_b[e0:e1, b], kb_ep,
+                    series.valid_to_orig[e0:e1], ne, 0, series.sampling_rate_ratio,
+                    w=w_ep, mode=refit_mode, huber_k=huber_k, ci_level=ci_level,
+                ).fitted_trend
+                fixed[e0:e1, b] = _fit_piecewise_core(
+                    t_valid[e0:e1], t_raw_valid[e0:e1], series.is_datetime, y_fixed_deseas[e0:e1, b], k0_ep,
+                    series.valid_to_orig[e0:e1], ne, 0, series.sampling_rate_ratio,
+                    w=w_ep, mode=refit_mode, huber_k=huber_k, ci_level=ci_level,
+                ).fitted_trend
+            if pw_ci_lo is not None and pw_ci_hi is not None:
+                dof_ep = max(1, ne - 2 - int(k0_ep.size))
+                a_sd_ep = 0.5 * (pw_ci_hi[e0:e1] - pw_ci_lo[e0:e1]) / float(
+                    t_dist.ppf(0.5 + 0.5 * ci_level, df=dof_ep)
+                )
+                sd_fix_ep = np.std(fixed[e0:e1] - f_trend[e0:e1, None], axis=1, ddof=1)
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    ratio_ep = np.where(sd_fix_ep > 0, a_sd_ep / sd_fix_ep, 1.0)
+                dev_scale[e0:e1] = np.clip(np.nan_to_num(ratio_ep, nan=1.0), 1.0, 2.0)
+
+        dev = (curves - combined[:, None]) * dev_scale[:, None]
+        if _BAND_INTERVAL == "percentile":
+            band_lo = combined + np.quantile(dev, 0.5 * a_lvl, axis=1)
+            band_hi = combined + np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+        else:
+            band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+            band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
+        boot_knots = knots
+        boot_ystar = ystar
     else:
-        band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
-        band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
+        # Offset mode (or no jumps): wild bootstrap with local pre-STPD steps + joint post-STPD refit
+        extra_df = 2.0 * len(jumps_sorted)
+        if use_seas and decomp is not None:
+            probes = np.random.default_rng((20261128, n)).choice(np.array([-1.0, 1.0]), size=(n, 32))
+            extra_df += float(np.mean(np.sum(probes * _replicate_windowed_seasonal(
+                t_valid, probes, decomp, jumps_sorted, w_boot), axis=0)))
+
+        j_arr_b = np.asarray(jumps_sorted, dtype=np.intp)
+
+        def _adjust(ystar_in: FloatArray) -> tuple[FloatArray, FloatArray]:
+            seas_in = (
+                _replicate_windowed_seasonal(t_valid, ystar_in, decomp, jumps_sorted, w_boot)
+                if use_seas and decomp is not None
+                else np.zeros_like(ystar_in)
+            )
+            steps_in = _replicate_step_offsets(
+                t_valid, ystar_in - seas_in, jumps_sorted, w_boot, local_half_window=local_half_window
+            )
+            return seas_in + steps_in, steps_in
+
+        def _refit(yb: FloatArray, kb: IntArray) -> FloatArray:
+            return _fit_piecewise_core(
+                t_valid, t_raw_valid, series.is_datetime, yb, kb, series.valid_to_orig,
+                series.n_input, series.n_dropped_nan, series.sampling_rate_ratio,
+                w=w_stpd, mode=refit_mode, huber_k=huber_k, ci_level=ci_level,
+            ).fitted_trend
+
+        def _refit_joint(
+            ystar_b: FloatArray,
+            nuis_fit_b: FloatArray,
+            nuis_trend_b: FloatArray,
+            kb: IntArray,
+            _b: int,
+        ) -> FloatArray:
+            y_des_b = ystar_b - (nuis_fit_b - nuis_trend_b)
+            if j_arr_b.size > 0:
+                steps_j_b = _joint_step_offsets_single(t_valid, y_des_b, j_arr_b, kb, sw_boot)
+                return _refit(y_des_b - steps_j_b, kb) + steps_j_b
+            return _refit(y_des_b, kb)
+
+        boot = _bootstrap_tp_curves(
+            t_valid, y_work, f_trend, tp_win, _refit, w=w_stpd, robust=robust, huber_k=huber_k,
+            n_boot=int(n_boot), seed=(20261127, n, *jumps_sorted, *[x[0] for x in tp_win]),
+            other_fit=step_offsets + seasonal_part, adjust_fn=_adjust, extra_df=extra_df,
+            extra_leverage=(
+                _windowed_seasonal_leverage(t_valid, decomp, jumps_sorted, w_boot)
+                if use_seas and decomp is not None
+                else None
+            ),
+            analytic_sd=(
+                0.5 * (stpd_res.piecewise_trend.trend_ci_high - stpd_res.piecewise_trend.trend_ci_low)
+                / float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n - 2 - len(tp_win))))
+                if stpd_res.piecewise_trend.trend_ci_low is not None
+                and stpd_res.piecewise_trend.trend_ci_high is not None
+                else None
+            ),
+            allow_empty_tps=True,
+            l1_refit=(refit_mode == "l1"),
+            refit_with_nuisance=_refit_joint if j_arr_b.size > 0 else None,
+        )
+        if boot is None:
+            return None
+        dev = (boot.curves - combined[:, None]) * boot.dev_scale[:, None]
+        if _BAND_INTERVAL == "percentile":
+            band_lo = combined + np.quantile(dev, 0.5 * a_lvl, axis=1)
+            band_hi = combined + np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+        else:
+            band_lo = combined - np.quantile(dev, 1.0 - 0.5 * a_lvl, axis=1)
+            band_hi = combined - np.quantile(dev, 0.5 * a_lvl, axis=1)
+        y_deseas_b = boot.ystar - (boot.nuisance_fit - boot.nuisance_trend)
+        boot_knots = boot.knots
+        boot_ystar = boot.ystar
 
     # OLS segment slopes between the replicate's breakpoints
-    sw = np.sqrt(w_stpd) if w_stpd is not None else np.ones(n)
-    y_deseas_b = boot.ystar - (boot.nuisance_fit - boot.nuisance_trend)
+    sw = np.sqrt(w_stpd) if w_stpd is not None else np.ones(n, dtype=np.float64)
 
     def _ols_slope(y_seg: FloatArray, a: int, b: int) -> float:
         if b - a < 3 or t_valid[b - 1] <= t_valid[a]:
@@ -1034,7 +1340,6 @@ def _pipeline_bootstrap(
         coef, *_ = np.linalg.lstsq(x, y_seg * sw[a:b], rcond=None)
         return float(coef[1])
 
-    jumps_sorted = sorted(j for j in jump_valid_indices if 0 < j < n)
     new_segments = list(segments)
     truth_curve = combined
     seg_bounds = sorted(
@@ -1044,13 +1349,13 @@ def _pipeline_bootstrap(
         return band_lo, band_hi, segments
     d = np.full((int(n_boot), len(segments)), np.nan)
     d_fixed = np.full((int(n_boot), len(segments)), np.nan)
-    y_fixed_deseas = boot.ystar - seasonal_part[:, None]
+    y_fixed_deseas = boot_ystar - seasonal_part[:, None]
     for b in range(int(n_boot)):
         for k in range(len(segments)):
             d_fixed[b, k] = _ols_slope(
                 y_fixed_deseas[seg_bounds[k] : seg_bounds[k + 1], b], seg_bounds[k], seg_bounds[k + 1]
             )
-        kb = sorted(int(k) for k in np.unique(boot.knots[b]) if 0 < k < n)
+        kb = sorted(int(k) for k in np.unique(boot_knots[b]) if 0 < k < n) if boot_knots.shape[1] > 0 else []
         bb = sorted({0, n, *jumps_sorted, *kb})
         if len(bb) != len(seg_bounds):
             continue
@@ -1383,6 +1688,11 @@ def analyze_series(
     y_deseas = y_work_valid - seasonal_part
 
     step_offsets = np.zeros(series.n_valid, dtype=np.float64)
+    if decomp_res is not None and decomp_res.window_bounds:
+        med_win = int(np.median([ub - lb for lb, ub in decomp_res.window_bounds]))
+        local_half_w = max(8, min(med_win // 2, max(8, series.n_valid // 6)))
+    else:
+        local_half_w = max(10, min(20, max(10, series.n_valid // 6)))
     if jump_valid_indices and jump_adjustment == "offset":
         step_offsets = _estimate_vertical_step_offsets(
             t_valid,
@@ -1391,6 +1701,7 @@ def analyze_series(
             w_valid_raw,
             robust=rob_method,
             huber_k=huber_k,
+            local_half_window=local_half_w,
         )
         y_adj = y_deseas - step_offsets
     else:
@@ -1434,6 +1745,20 @@ def analyze_series(
 
     # Stage 4: STPD continuous turning-point detection
     stpd_res: StpdResult | None = None
+    if w_valid_raw is not None and np.ndim(w_valid_raw) == 2:
+        _add_warnings(
+            [
+                WarningItem(
+                    code="TWO_D_WEIGHTS_DROPPED_FOR_STPD",
+                    severity="caution",
+                    message=(
+                        "2D inverse-covariance weights were applied in JUST stages, but STPD and "
+                        "per-segment trend fits support scalar/1D weights only and were run unweighted."
+                    ),
+                    suggestion="Pass 1D observation weights if heteroscedastic weighting is needed in STPD.",
+                )
+            ]
+        )
     w_stpd = w_valid_raw if (w_valid_raw is not None and np.ndim(w_valid_raw) <= 1) else None
     if detect_turning_points:
         eff_stpd_ci = float(s_kw.get("ci_level", ci_level))
@@ -1487,11 +1812,17 @@ def analyze_series(
                         for tp in seg_res.turning_points:
                             g_valid = s0 + int(tp.valid_index)
                             seg_valid_idx.append(g_valid)
+                            g_win = (
+                                (s0 + tp.detection_window[0], s0 + tp.detection_window[1], tp.detection_window[2])
+                                if tp.detection_window is not None
+                                else None
+                            )
                             seg_tps.append(
                                 replace(
                                     tp,
                                     valid_index=g_valid,
                                     index=int(series.valid_to_orig[g_valid]),
+                                    detection_window=g_win,
                                 )
                             )
                         for fj in seg_res.flagged_jumps:
@@ -1584,6 +1915,19 @@ def analyze_series(
                 trend_ci_low=seg_ci_low_arr if seg_has_ci else None,
                 trend_ci_high=seg_ci_high_arr if seg_has_ci else None,
             )
+            eff_seg_snr = (
+                (1.0 if s_kw.get("parity_mode") else SNR_TH_DEFAULT)
+                if s_kw.get("snr_th") is None
+                else float(s_kw["snr_th"])
+            )
+            eff_seg_tp_cal = (
+                "none"
+                if s_kw.get("parity_mode")
+                else str(
+                    s_kw.get("tp_calibration")
+                    or ("bonferroni" if rob_method != "none" else "montecarlo")
+                )
+            )
             stpd_res = StpdResult(
                 turning_points=tuple(seg_tps),
                 flagged_jumps=tuple(seg_flagged),
@@ -1596,12 +1940,14 @@ def analyze_series(
                 snr_mode=str(s_kw.get("snr_mode", "centered")),
                 ndri_mode=str(s_kw.get("ndri_mode", "rmse")),
                 alpha=float(s_kw.get("alpha", 0.01)),
-                snr_th=float(s_kw.get("snr_th", 1.0)),
+                snr_th=eff_seg_snr,
                 ndri_th=float(s_kw.get("ndri_th", 0.3)),
                 dir_th=float(s_kw.get("dir_th", 0.0)),
                 tp_th=float(s_kw.get("tp_th", 1.0)),
                 censoring=prov,
                 diagnostics=seg_diag,
+                tp_calibration=eff_seg_tp_cal,
+                robust=rob_method,
             )
         else:
             try:
@@ -1611,7 +1957,8 @@ def analyze_series(
                     weights=w_stpd,
                     **s_kw,
                 )
-                # Exclude turning points sitting directly on an already-detected JUST jump
+                # Exclude turning points sitting directly on an already-detected JUST jump,
+                # then jointly refine vertical step offsets + connected trend (BLK-01).
                 if jump_valid_indices:
                     j_th = float(j_kw.get("jump_th", 0.75))
                     excl_tol = 0.5 * j_th
@@ -1621,34 +1968,44 @@ def analyze_series(
                         for tp in raw_stpd.turning_points
                         if all(abs(tp.time_year - jt) > excl_tol for jt in jump_times)
                     )
-                    if len(kept_tps) != len(raw_stpd.turning_points):
-                        kept_valid_idx = [tp.valid_index for tp in kept_tps]
-                        eff_refit_mode_j: RefitMode = s_kw.get("refit_mode") or (
-                            "huber" if rob_method != "none" else "sequential"
+                    kept_valid_idx = [tp.valid_index for tp in kept_tps]
+                    step_offsets = _estimate_vertical_step_offsets(
+                        t_valid,
+                        y_deseas,
+                        jump_valid_indices,
+                        w_valid_raw,
+                        robust=rob_method,
+                        huber_k=huber_k,
+                        tp_valid_indices=kept_valid_idx,
+                    )
+                    y_adj = y_deseas - step_offsets
+                    eff_refit_mode_j: RefitMode = s_kw.get("refit_mode") or (
+                        "huber" if rob_method != "none" else "sequential"
+                    )
+                    pw_refit = fit_piecewise_trend(
+                        t_raw_valid,
+                        y_adj,
+                        kept_valid_idx,
+                        weights=w_stpd,
+                        mode=eff_refit_mode_j,
+                        huber_k=huber_k,
+                        ci_level=eff_stpd_ci,
+                    )
+                    updated_tps = tuple(
+                        replace(
+                            tp,
+                            slope_before=float(pw_refit.slopes[k]),
+                            slope_after=float(pw_refit.slopes[k + 1]),
+                            direction=float(pw_refit.directions[k]),
                         )
-                        pw_refit = fit_piecewise_trend(
-                            t_raw_valid,
-                            y_adj,
-                            kept_valid_idx,
-                            weights=w_stpd,
-                            mode=eff_refit_mode_j,
-                            huber_k=huber_k,
-                            ci_level=eff_stpd_ci,
-                        )
-                        updated_tps = tuple(
-                            replace(
-                                tp,
-                                slope_before=float(pw_refit.slopes[k]),
-                                slope_after=float(pw_refit.slopes[k + 1]),
-                                direction=float(pw_refit.directions[k]),
-                            )
-                            for k, tp in enumerate(kept_tps)
-                        )
-                        raw_stpd = replace(
-                            raw_stpd,
-                            turning_points=updated_tps,
-                            piecewise_trend=pw_refit,
-                        )
+                        for k, tp in enumerate(kept_tps)
+                    )
+                    raw_stpd = replace(
+                        raw_stpd,
+                        turning_points=updated_tps,
+                        piecewise_trend=pw_refit,
+                        values=y_adj,
+                    )
                 stpd_res = _remap_stpd_to_orig(raw_stpd)
                 _add_warnings(stpd_res.diagnostics.warnings)
             except InsufficientDataError as exc:
@@ -1727,25 +2084,34 @@ def analyze_series(
             trend_ci_high = override_ci_high
 
     band_used = "conditional"
+    has_boot_structure = (
+        stpd_res is not None
+        and (
+            bool(stpd_res.turning_points)
+            or bool(jump_valid_indices)
+            or (remove_seasonality and decomp_res is not None and bool(np.any(seasonal_part != 0.0)))
+        )
+    )
     if (
         band_method == "bootstrap"
         and stpd_res is not None
-        and stpd_res.turning_points
+        and has_boot_structure
         and override_trend is None
         and trend_ci_low is not None
-        and not (jump_adjustment == "segment" and jump_valid_indices)
     ):
         refit_mode_b: RefitMode = s_kw.get("refit_mode") or (
             "huber" if rob_method != "none" else "sequential"
         )
         boot_out = _pipeline_bootstrap(
             t_valid, t_raw_valid, series, y_work_valid, stpd_res, step_offsets, seasonal_part,
-            jump_valid_indices if jump_adjustment == "offset" else [],
+            jump_valid_indices,
             decomp_res if remove_seasonality else None,
             w_stpd if (w_stpd is None or np.ndim(w_stpd) == 1) else None,
             refit_mode_b, robust=rob_method, huber_k=huber_k,
             ci_level=float(s_kw.get("ci_level", ci_level)), n_boot=int(n_boot),
             segments=segments,
+            jump_adjustment=jump_adjustment,
+            local_half_window=local_half_w,
         )
         if boot_out is not None:
             trend_ci_low, trend_ci_high, segments = boot_out
@@ -1796,4 +2162,5 @@ def analyze_series(
         slope_fan_low=slope_fan_low,
         slope_fan_high=slope_fan_high,
         band_method=band_used,
+        requested_band_method=band_method,
     )
