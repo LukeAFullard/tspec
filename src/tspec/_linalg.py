@@ -280,19 +280,13 @@ def solve_weighted_ols(
     D_w = whiten_matrix(D, pw)
     Q, R = np.linalg.qr(D_w, mode="reduced")
 
-    # Fast O(nc) diagonal conditioning proxy; only pay for full svdvals when near-singular
-    diag_abs = np.abs(np.diag(R))
-    d_max = float(np.max(diag_abs)) if diag_abs.size else 0.0
-    d_min = float(np.min(diag_abs)) if diag_abs.size else 0.0
-    if d_max == 0.0 or d_min <= 1e-8 * d_max:
-        s_vals = linalg.svdvals(R, check_finite=False)
-        s_max = float(s_vals[0]) if s_vals.size else 0.0
-        s_min = float(s_vals[-1]) if s_vals.size else 0.0
-        cond = (s_max / s_min) if s_min > 0.0 else np.inf
-        rank_deficient = (s_max == 0.0) or (s_min <= rcond * s_max)
-    else:
-        cond = d_max / d_min
-        rank_deficient = False
+    # Exact 2-norm conditioning from SVD of the small (nc x nc) upper-triangular factor R.
+    # Diagonal ratios alone can severely underestimate cond(R) on Kahan-type matrices.
+    s_vals = linalg.svdvals(R, check_finite=False)
+    s_max = float(s_vals[0]) if s_vals.size else 0.0
+    s_min = float(s_vals[-1]) if s_vals.size else 0.0
+    cond = (s_max / s_min) if s_min > 0.0 else np.inf
+    rank_deficient = (s_max == 0.0) or (s_min <= rcond * s_max)
 
     if not rank_deficient:
         qty = Q.T @ y_w

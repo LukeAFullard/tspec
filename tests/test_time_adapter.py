@@ -87,3 +87,44 @@ def test_sampling_rate_ratio_detects_density_shift() -> None:
 
     t_shift = np.concatenate([np.linspace(0.0, 5.0, 25), np.linspace(5.05, 10.0, 200)])
     assert estimate_sampling_rate_ratio(t_shift) > 4.0
+
+
+def test_datetime_edge_cases_range_2262_iso_and_tz() -> None:
+    """CRT-06: Python datetimes enforce ns range, year 2262 does not overflow, object/Series ISO strings work."""
+    from datetime import timezone
+
+    # Python datetime outside 1678-2262 must raise ValueError instead of silently wrapping
+    with pytest.raises(ValueError, match="1678-2262"):
+        coerce_times([datetime(2500, 1, 1), datetime(2500, 2, 1)])
+    with pytest.raises(ValueError, match="1678-2262"):
+        coerce_times([date(1500, 1, 1), date(1500, 2, 1)])
+
+    # Year 2262 (valid within ns range) must not overflow when computing year_length
+    t_2262 = np.array(["2262-01-01", "2262-02-01", "2262-03-01"], dtype="datetime64[D]")
+    t_num, _, is_dt = coerce_times(t_2262)
+    assert is_dt is True
+    assert np.isclose(t_num[0], 2262.0, atol=1e-12)
+    assert np.all(np.diff(t_num) > 0)
+
+    # Tz-aware Python datetimes normalize cleanly to UTC
+    tz_dts = [
+        datetime(2020, 1, 1, 0, 0, tzinfo=timezone.utc),
+        datetime(2020, 7, 2, 0, 0, tzinfo=timezone.utc),
+    ]
+    t_tz, _, is_dt_tz = coerce_times(tz_dts)
+    assert is_dt_tz is True
+    assert np.isclose(t_tz[0], 2020.0, atol=1e-12)
+    assert np.isclose(t_tz[1], 2020.5, atol=1e-12)
+
+    # Object array of ISO date strings and pandas Series of ISO date strings
+    iso_obj = np.array(["2020-01-01", "2020-07-02", "2021-01-01"], dtype=object)
+    t_obj, _, is_dt_obj = coerce_times(iso_obj)
+    assert is_dt_obj is True
+    assert np.allclose(t_obj, [2020.0, 2020.5, 2021.0], atol=1e-12)
+
+    pd = pytest.importorskip("pandas")
+    s_iso = pd.Series(["2020-01-01", "2020-07-02", "2021-01-01"])
+    t_s, _, is_dt_s = coerce_times(s_iso)
+    assert is_dt_s is True
+    assert np.allclose(t_s, [2020.0, 2020.5, 2021.0], atol=1e-12)
+

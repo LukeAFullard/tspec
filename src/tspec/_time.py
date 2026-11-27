@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 import numpy as np
@@ -60,10 +60,13 @@ def _datetime64_to_decimal_year(dt64: np.ndarray[Any, Any]) -> FloatArray:
     years = dt_ns.astype("datetime64[Y]")
     year_int = years.astype(np.int64) + 1970
     start_of_year = years.astype("datetime64[ns]")
-    start_of_next_year = (years + np.timedelta64(1, "Y")).astype("datetime64[ns]")
+    # Compute year length in days (avoiding datetime64[ns] overflow in year 2262 -> 2263)
+    days_in_year = (
+        (years + np.timedelta64(1, "Y")).astype("datetime64[D]") - years.astype("datetime64[D]")
+    ).astype(np.float64)
+    year_length = days_in_year * 86_400_000_000_000.0
 
     elapsed = (dt_ns - start_of_year).astype(np.float64)
-    year_length = (start_of_next_year - start_of_year).astype(np.float64)
     return np.asarray(year_int.astype(np.float64) + elapsed / year_length, dtype=np.float64)
 
 
@@ -79,6 +82,19 @@ def _check_datetime_ns_range(dt: np.ndarray[Any, Any]) -> None:
                 "Datetime values outside 1678-2262 cannot be represented at nanosecond precision; "
                 "pass numeric decimal years instead."
             )
+
+
+def _py_datetime_to_us(x: Any) -> np.datetime64:
+    """Convert a Python datetime/date or np.datetime64 to UTC-naive datetime64[us]."""
+    if isinstance(x, np.datetime64):
+        return np.datetime64(x, "us")
+    if isinstance(x, datetime):
+        if x.tzinfo is not None:
+            x = x.astimezone(timezone.utc).replace(tzinfo=None)
+        return np.datetime64(x, "us")
+    if isinstance(x, date):
+        return np.datetime64(datetime(x.year, x.month, x.day), "us")
+    raise TypeError(f"Unsupported datetime element type: {type(x).__name__}")
 
 
 def coerce_times(
@@ -130,17 +146,34 @@ def coerce_times(
             is_datetime = True
             if any(x is None for x in arr):
                 raise ValueError("Time vector contains None/NaT entries.")
-            raw_dt = np.array(
-                [
-                    np.datetime64(x, "ns")
-                    if isinstance(x, (datetime, np.datetime64))
-                    else np.datetime64(datetime(x.year, x.month, x.day), "ns")
-                    for x in arr
-                ],
-                dtype="datetime64[ns]",
-            )
+            try:
+                parsed_us = np.array([_py_datetime_to_us(x) for x in arr], dtype="datetime64[us]")
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "Could not convert time vector `t` to float or datetime64."
+                ) from exc
+            _check_datetime_ns_range(parsed_us)
+            raw_dt = parsed_us.astype("datetime64[ns]")
             t_num = _datetime64_to_decimal_year(raw_dt)
             t_raw = raw_dt
+        elif isinstance(first_non_none, str):
+            if any(x is None for x in arr):
+                raise ValueError("Time vector contains None/NaT entries.")
+            try:
+                t_num = np.asarray(arr, dtype=np.float64)
+                t_raw = t_num.copy()
+            except (TypeError, ValueError):
+                try:
+                    parsed_us = np.array(arr.tolist(), dtype="datetime64[us]")
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "String time vector `t` could not be parsed as float or ISO-8601 datetime64."
+                    ) from exc
+                _check_datetime_ns_range(parsed_us)
+                raw_dt = parsed_us.astype("datetime64[ns]")
+                is_datetime = True
+                t_num = _datetime64_to_decimal_year(raw_dt)
+                t_raw = raw_dt
         else:
             try:
                 t_num = np.asarray(arr, dtype=np.float64)

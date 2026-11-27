@@ -91,3 +91,60 @@ def test_lssa_scalar_weight_invariance(rng: np.random.Generator) -> None:
     assert np.allclose(r1.coeff, r2.coeff, atol=1e-12)
     assert np.allclose(r1.cov, r2.cov, atol=1e-12)
     assert np.isclose(r2.norm_res, 7.5 * r1.norm_res, rtol=1e-12)
+
+
+def test_lssa_omega_validation_and_order_preservation() -> None:
+    """MAJ-07: lssa preserves caller omega order and rejects non-positive/NaN frequencies."""
+    rng = np.random.default_rng(123)
+    t = np.linspace(0.0, 5.0, 60)
+    y = np.cos(2 * np.pi * t) + rng.normal(0.0, 0.1, 60)
+    om = [3.0, 1.0, 2.0]
+    res = lssa(t, y, omega=om)
+    assert res.frequencies.tolist() == [3.0, 1.0, 2.0]
+    assert int(np.argmax(res.spectrum)) == 1
+    assert "per-frequency critical value" in res.summary()
+
+    with pytest.raises(ValueError, match="strictly positive"):
+        lssa(t, y, omega=[-1.0, 1.0])
+    with pytest.raises(ValueError, match="strictly positive"):
+        lssa(t, y, omega=[1.0, np.nan])
+    with pytest.raises(ValueError, match="strictly positive"):
+        allssa(t, y, omega=[-1.0, 1.0])
+
+
+def test_lssa_sidak_peak_fap_controls_fwer_on_oversampled_grid() -> None:
+    """BLK-04: lssa(peak_fap='sidak') must control FWER on 5x oversampled grids."""
+    rng = np.random.default_rng(31200)
+    t = np.linspace(0.0, 10.0, 100)
+    om = np.linspace(0.2, 4.2, 200)  # 5x Rayleigh oversampling
+    R = 300
+    fp = sum(lssa(t, rng.standard_normal(100), omega=om, peak_fap="sidak").peak_fap < 0.05 for _ in range(R))
+    assert fp / R <= 0.08
+
+
+def test_allssa_search_grid_union_covers_edges_without_gap_bloat() -> None:
+    """MAJ-07: _allssa_search_grid covers [0.5, 4.5] for JUST and excludes empty gaps."""
+    from tspec.spectral import _allssa_search_grid
+
+    t0 = np.linspace(0.0, 3.0, 36)
+    g_just, _ = _allssa_search_grid(t0, np.arange(0.8, 3.81, 0.2), decimal=1)
+    assert g_just[0] <= 0.5 + 1e-9
+    assert g_just[-1] >= 4.5 - 1e-9
+
+    g_sparse, k_sparse = _allssa_search_grid(t0, np.array([1.0, 10.0]), decimal=1)
+    assert not np.any((g_sparse > 1.6) & (g_sparse < 9.4))
+    assert k_sparse <= 25.0
+
+
+def test_lssa_2d_ar1_weights_whitened_red_noise_diagnostic() -> None:
+    """MIN-04: supplying exact 2D AR(1) inverse covariance suppresses spurious STRONG_AUTOCORRELATION."""
+    rng = np.random.default_rng(77)
+    n = 120
+    t = np.linspace(0.0, 10.0, n)
+    idx = np.arange(n)
+    C = 0.75 ** np.abs(idx[:, None] - idx[None, :])
+    y = 1.0 + 0.2 * t + np.linalg.cholesky(C) @ rng.standard_normal(n)
+    res = lssa(t, y, weights=np.linalg.inv(C), omega=[1.0, 2.0])
+    codes = {w.code for w in res.diagnostics.warnings}
+    assert "STRONG_AUTOCORRELATION" not in codes
+

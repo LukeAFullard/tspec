@@ -32,6 +32,7 @@ from ._linalg import (
     orthonormal_design_basis,
     prepare_weights,
     solve_weighted_ols,
+    whiten_vector,
 )
 from ._robust import RobustMethod, solve_robust_irls, validate_robust_args
 from ._time import prepare_numeric_series
@@ -166,7 +167,7 @@ def build_design_matrix(
 
 
 def _default_allssa_omega(t0: FloatArray) -> FloatArray:
-    """Default coarse cyclic-frequency search grid ``1 .. ceil(M/2) - 1_{M/2 in Z}``."""
+    """Default coarse cyclic-frequency search grid ``1 .. max(1, ceil(rate/2) - 1)``."""
     n = int(t0.size)
     span = float(t0[-1] - t0[0])
     if span <= 0.0:
@@ -182,9 +183,13 @@ def _default_allssa_omega(t0: FloatArray) -> FloatArray:
 def _allssa_search_grid(t0: FloatArray, omega: FloatArray, decimal: int) -> tuple[FloatArray, float]:
     """Dense grid covering every frequency ALLSSA can select, and its effective size.
 
+    Constructs the exact union of fine-search intervals ``[max(step, c - 0.5), c + 0.5]``
+    around the unique rounded integer centers ``c = round_half_up(omega, 0)``, avoiding
+    both upper-edge truncation and gap over-coverage on sparse grids.
+
     Returns ``(grid, k_eff)`` where ``k_eff`` approximates the number of independent
-    frequencies searched (three times the Rayleigh count ``T x bandwidth``, capped by the
-    grid size), used for the analytical Sidak family-wise threshold.
+    frequencies searched (three times the Rayleigh count ``T x total_bandwidth``, capped
+    by the grid size), used for the analytical Sidak family-wise threshold.
     """
     span = float(t0[-1] - t0[0]) if t0.size > 1 else 1.0
     span = span if span > 0.0 else 1.0
@@ -194,13 +199,27 @@ def _allssa_search_grid(t0: FloatArray, omega: FloatArray, decimal: int) -> tupl
         grid = np.unique(np.maximum(1.0, np.floor(omega + 0.5)))
         return grid.astype(np.float64), float(max(1, grid.size))
     step = 10.0 ** (-decimal)
-    f_lo = max(step, float(np.min(omega)) - 0.5)
-    f_hi = float(np.max(omega)) + 0.5
+    centers = sorted({_round_half_up(float(f), 0) for f in omega})
     d_step = max(step, 1.0 / (20.0 * span))
-    grid = np.arange(f_lo, f_hi + 0.5 * d_step, d_step, dtype=np.float64)
-    # The maximum over a continuous (refined) band behaves like ~2-3x the Rayleigh count
-    # T * bandwidth of independent frequencies (calibrated by simulation, audit/post_sidak_null.py).
-    k_eff = float(min(grid.size, int(np.ceil(3.0 * span * (f_hi - f_lo)))))
+    # Merge overlapping [max(step, c - 0.5), c + 0.5] intervals
+    intervals: list[list[float]] = []
+    for c in centers:
+        lo = max(step, c - 0.5)
+        hi = c + 0.5
+        if hi < lo:
+            continue
+        if intervals and lo <= intervals[-1][1] + 1e-12:
+            intervals[-1][1] = max(intervals[-1][1], hi)
+        else:
+            intervals.append([lo, hi])
+    if not intervals:
+        return np.array([step], dtype=np.float64), 1.0
+    chunks = [np.arange(lo, hi + 0.5 * d_step, d_step, dtype=np.float64) for lo, hi in intervals]
+    grid = np.unique(np.concatenate(chunks))
+    total_bw = sum(hi - lo for lo, hi in intervals)
+    # The maximum over a continuous (refined) band behaves like ~3x the Rayleigh count
+    # T * bandwidth of independent frequencies.
+    k_eff = float(min(grid.size, int(np.ceil(3.0 * span * total_bw))))
     return grid, max(1.0, k_eff)
 
 
@@ -639,7 +658,7 @@ class LssaResult(BaseResult):
             f"(known_freqs={self.known_freqs.tolist()})",
             f"Weighted RSS       : {self.norm_res:.6g}",
             f"Spectrum grid      : {self.frequencies.size} frequencies, "
-            f"critical value = {self.critical_value:.4f} ({n_sig} significant)",
+            f"per-frequency critical value = {self.critical_value:.4f} ({n_sig} above threshold)",
         ]
         if self.frequencies.size > 0:
             peak_idx = int(np.argmax(self.spectrum))
@@ -921,16 +940,19 @@ def lssa(
     else:
         j_valid = np.empty(0, dtype=np.intp)
 
-    om_arr = (
-        np.sort(np.asarray(omega, dtype=np.float64).ravel())
-        if omega is not None and len(omega) > 0
-        else np.empty(0, dtype=np.float64)
-    )
-    kf_arr = (
-        np.asarray(known_freqs, dtype=np.float64).ravel()
-        if known_freqs is not None and len(known_freqs) > 0
-        else np.empty(0, dtype=np.float64)
-    )
+    if omega is not None and len(omega) > 0:
+        om_arr = np.asarray(omega, dtype=np.float64).ravel()
+        if not np.all(np.isfinite(om_arr)) or np.any(om_arr <= 0.0):
+            raise ValueError("`omega` must contain finite, strictly positive frequencies.")
+    else:
+        om_arr = np.empty(0, dtype=np.float64)
+
+    if known_freqs is not None and len(known_freqs) > 0:
+        kf_arr = np.asarray(known_freqs, dtype=np.float64).ravel()
+        if not np.all(np.isfinite(kf_arr)) or np.any(kf_arr <= 0.0):
+            raise ValueError("`known_freqs` must contain finite, strictly positive frequencies.")
+    else:
+        kf_arr = np.empty(0, dtype=np.float64)
 
     t0 = series.times_numeric - series.times_numeric[0]
     core = _lssa_core(
@@ -955,8 +977,10 @@ def lssa(
         k_peak = int(np.argmax(core.spectrum))
         if peak_fap == "sidak":
             span_t = float(t0[-1]) if t0[-1] > 0 else 1.0
-            band = float(om_arr[-1] - om_arr[0])
-            k_eff = float(min(om_arr.size, max(1, int(np.ceil(span_t * band)) + 1)))
+            band = float(np.max(om_arr) - np.min(om_arr))
+            # Oversampled periodogram maxima behave like ~3x the Rayleigh count T * band
+            # of independent trials (Horne & Baliunas 1986; Baluev 2008), capped by grid size.
+            k_eff = float(min(om_arr.size, max(1, int(np.ceil(3.0 * span_t * band)))))
             p_min = float(core.pvalues[k_peak])
             fap = float(-np.expm1(k_eff * np.log1p(-min(p_min, 1.0 - 1e-16))))
         else:
@@ -967,7 +991,8 @@ def lssa(
             )
             fap = float((1.0 + np.sum(draws >= core.spectrum[k_peak])) / (int(n_mc) + 1.0))
 
-    rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, core.residuals)
+    rn_resid = whiten_vector(core.residuals, pw) if pw.kind == "matrix" else core.residuals
+    rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, rn_resid)
     extra_warns = list(rn_warns)
     if not core.robust_converged:
         extra_warns.append(
@@ -1068,11 +1093,11 @@ def allssa(
         See :func:`lssa`.
     omega:
         Initial coarse cyclic-frequency search grid. Defaults to integer
-        frequencies ``1 .. floor(M/2)``.
+        frequencies ``1 .. max(1, ceil(rate/2) - 1)``.
     decimal:
         Decimal precision for frequency refinement (integer in ``0..4``).
     max_iter:
-        Maximum iterations (defaults to ``max(20, 2 * len(omega))``).
+        Maximum iterations (defaults to ``max(25, 2 * len(omega))``).
     parity_mode:
         If ``True``, disables robust reweighting and uses un-clamped fine grids
         around rounded integer centers to match legacy upstream behavior.
@@ -1123,7 +1148,10 @@ def allssa(
     if omega is None or len(omega) == 0:
         om_arr = _default_allssa_omega(t0)
     else:
-        om_arr = np.sort(np.asarray(omega, dtype=np.float64).ravel())
+        om_raw = np.asarray(omega, dtype=np.float64).ravel()
+        if not np.all(np.isfinite(om_raw)) or np.any(om_raw <= 0.0):
+            raise ValueError("`omega` must contain finite, strictly positive frequencies.")
+        om_arr = np.sort(om_raw)
 
     iter_cap = max_iter if max_iter is not None else max(25, 2 * int(om_arr.size))
     core = _allssa_core(
@@ -1145,7 +1173,8 @@ def allssa(
     )
     amps, phases = _amplitudes_and_phases(core.cos_sin_coeffs)
 
-    rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, core.residuals)
+    rn_resid = whiten_vector(core.residuals, pw) if pw.kind == "matrix" else core.residuals
+    rn, rn_warns = compute_red_noise_diagnostics(series.times_numeric, rn_resid)
     extra_warns = list(rn_warns)
     if omega is None:
         extra_warns.extend(time_unit_warning(series.times_numeric, series.is_datetime))

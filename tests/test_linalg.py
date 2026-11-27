@@ -120,3 +120,20 @@ def test_1d_weights_memory_is_linear_in_n() -> None:
     assert spec.size == 30
     # Dense 10k x 10k matrix would exceed 800 MB; O(n) path stays well below 50 MB
     assert peak < 50 * 1024 * 1024
+
+
+def test_kahan_matrix_exact_svd_conditioning() -> None:
+    """MAJ-01: solve_weighted_ols uses exact svdvals(R), not diagonal ratio of R."""
+    p = 15
+    c, s = 0.6, 0.8
+    R_k = np.eye(p)
+    for i in range(p):
+        R_k[i, i:] = s**i * np.r_[1.0, np.full(p - i - 1, -c)]
+    D = np.vstack([R_k, np.zeros((15, p))])
+    y = np.arange(30, dtype=np.float64)
+    pw = prepare_weights(None, 30)
+    ols = solve_weighted_ols(D, y, pw)
+    true_cond = float(np.linalg.cond(D))
+    assert np.isclose(ols.condition_number, true_cond, rtol=1e-6)
+    assert ols.condition_number > 1e4
+
