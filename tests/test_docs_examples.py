@@ -36,7 +36,7 @@ def test_doc_python_blocks_execute_cleanly(md_path: Path) -> None:
     for block in blocks:
         exec(compile(block, f"{md_path.name}", "exec"), ns)
 
-    # Flagship README example must recover both its advertised jump (~2018.5) and turning point (~2021.8)
+    # Flagship examples must recover their advertised jump and turning-point locations
     if md_path.name == "README.md":
         res = ns["result"]
         assert isinstance(res, tspec.PipelineResult)
@@ -44,6 +44,20 @@ def test_doc_python_blocks_execute_cleanly(md_path: Path) -> None:
         assert abs(res.jumps.jumps[0].time_year - 2018.5) <= 0.4
         assert res.turning_points is not None and len(res.turning_points.turning_points) == 1
         assert abs(res.turning_points.turning_points[0].time_year - 2021.8) <= 0.6
+    elif md_path.name == "index.md":
+        res = ns["result"]
+        assert isinstance(res, tspec.PipelineResult)
+        assert res.jumps is not None and len(res.jumps.jumps) == 1
+        assert abs(res.jumps.jumps[0].time_year - 2019.5) <= 0.4
+        assert res.turning_points is not None and len(res.turning_points.turning_points) == 1
+        assert abs(res.turning_points.turning_points[0].time_year - 2022.0) <= 0.6
+    elif md_path.name == "combined-workflow.md":
+        res = ns["res"]
+        assert isinstance(res, tspec.PipelineResult)
+        assert res.jumps is not None and len(res.jumps.jumps) == 1
+        assert abs(res.jumps.jumps[0].time_year - 2017.5) <= 0.4
+        assert res.turning_points is not None and len(res.turning_points.turning_points) == 1
+        assert abs(res.turning_points.turning_points[0].time_year - 2021.0) <= 0.6
 
 
 def test_all_public_symbols_documented_in_api_md() -> None:

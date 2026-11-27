@@ -209,3 +209,18 @@ def test_just_jumps_holm_before_mag_th_and_parity_n_mc() -> None:
     rp = just_jumps(t, y, season="none", parity_mode=True, n_mc=10)
     assert rp is not None
 
+
+def test_just_jumps_allssa_step_pvalue_ignores_continuous_turning_point() -> None:
+    """step_pvalue under season='allssa' must use break-adjusted harmonics so strong bends
+    do not corrupt 1-piece null frequencies and trigger spurious step detections."""
+    rng = np.random.default_rng(2026)
+    t = np.sort(rng.uniform(2014.0, 2024.0, size=200))
+    t = t[~((t > 2016.2) & (t < 2016.45))]
+    trend = np.where(t < 2017.5, 4.0, 6.5) + np.where(t > 2021.0, -1.5 * (t - 2021.0), 0.0)
+    seasonal = 0.8 * np.cos(2 * np.pi * t) + 0.35 * np.sin(2 * np.pi * 2.0 * t)
+    y = trend + seasonal + rng.normal(0.0, 0.15, size=t.size)
+
+    res = just_jumps(t, y, season="allssa", jump_alpha=0.01, step_alpha=0.01, n_mc=199)
+    assert len(res.jumps) == 1
+    assert abs(res.jumps[0].time_year - 2017.5) <= 0.3
+

@@ -167,7 +167,7 @@ def build_design_matrix(
 
 
 def _default_allssa_omega(t0: FloatArray) -> FloatArray:
-    """Default coarse cyclic-frequency search grid ``1 .. max(1, ceil(rate/2) - 1)``."""
+    """Default coarse cyclic-frequency search grid ``1 .. max(1, ceil(rate/2) - 1)`` with ``rate = (n - 1) / span``."""
     n = int(t0.size)
     span = float(t0[-1] - t0[0])
     if span <= 0.0:
@@ -1108,7 +1108,8 @@ def allssa(
         See :func:`lssa`.
     omega:
         Initial coarse cyclic-frequency search grid. Defaults to integer
-        frequencies ``1 .. max(1, ceil(rate/2) - 1)``.
+        frequencies ``1 .. max(1, ceil(rate/2) - 1)``, where
+        ``rate = (n - 1) / (t[-1] - t[0])`` is the mean sampling rate.
     decimal:
         Decimal precision for frequency refinement (integer in ``0..4``).
     max_iter:

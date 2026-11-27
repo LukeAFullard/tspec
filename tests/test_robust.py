@@ -425,14 +425,22 @@ class TestRobustPipelineAndSen:
     def test_fit_l1_piecewise_weighted(self) -> None:
         t = np.linspace(0.0, 6.0, 60)
         y = 1.0 + 0.8 * t - 1.6 * np.maximum(0.0, t - t[30])
-        y[10] += 50.0
+        # Corrupt >50% of the left segment so unweighted L1 is pulled off the true slope
+        corrupt = np.arange(1, 19)
+        y[corrupt] += 4.0 * t[corrupt] + 5.0
         w = np.ones(60, dtype=np.float64)
-        w[10] = 0.01
+        w[corrupt] = 1e-4
+
+        slopes_unw, _, _, _ = fit_l1_piecewise(
+            t, y, np.array([30], dtype=np.intp), w=None
+        )
+        assert abs(slopes_unw[0] - 0.8) > 0.5
+
         fb: list[bool] = []
         slopes, intercepts, y_fit, cond = fit_l1_piecewise(
             t, y, np.array([30], dtype=np.intp), w=w, fallback_flag=fb
         )
-        np.testing.assert_allclose(slopes, [0.8, -0.8], atol=1e-6)
+        np.testing.assert_allclose(slopes, [0.8, -0.8], atol=1e-4)
         assert np.isfinite(cond)
         assert y_fit.shape == (60,)
         assert fb == []

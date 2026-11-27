@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import numpy as np
@@ -1020,14 +1020,28 @@ def _nested_jump_ftests(
             min_freq=min_null_freq,
         )
         test_freqs = null_allssa.frequencies
+        # For step_pvalue (discontinuous 2-piece vs continuous 2-piece hinge), the null
+        # model is a continuous turning point rather than a 1-piece straight line.
+        # Fitting ALLSSA under a 1-piece linear trend across a strong bend shifts the
+        # selected harmonics (e.g. 1.0 -> 0.9 cy/yr), causing spurious step rejections.
+        # Using the window's break-adjusted harmonic basis avoids that distortion while
+        # jump_pvalue remains strictly conditioned on the 1-piece null subspace.
+        step_freqs = freqs if (4 + 2 * int(freqs.size) < n_win) else test_freqs
     else:
         test_freqs = freqs
+        step_freqs = freqs
 
     n_f = int(test_freqs.size)
     nc_full = 4 + 2 * n_f
     dof2 = n_win - nc_full
     if dof2 <= 0:
         return float("nan"), float("nan")
+
+    n_f_step = int(step_freqs.size)
+    dof2_step = n_win - (4 + 2 * n_f_step)
+    same_step_freqs = bool(
+        n_f_step == n_f and (n_f == 0 or np.array_equal(step_freqs, test_freqs))
+    )
 
     min_seg = (
         min(max(6, min(n_win // 5, 8)), max(3, (n_win - 1) // 2))
@@ -1044,15 +1058,15 @@ def _nested_jump_ftests(
     if float(np.ptp(y_win)) <= 1e-13 * abs(float(np.mean(y_win))):
         return 1.0, 1.0
 
-    # Continuous hinge basis [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(test_freqs)]
+    # Continuous hinge basis [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(step_freqs)]
     s_t = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
-    D_hinge = np.empty((n_win, 3 + 2 * n_f), dtype=np.float64)
+    D_hinge = np.empty((n_win, 3 + 2 * n_f_step), dtype=np.float64)
     D_hinge[:, 0] = 1.0
     D_hinge[:, 1] = t0 / s_t
-    if n_f > 0:
-        phases = np.outer((2.0 * np.pi) * t0, test_freqs)
-        D_hinge[:, 3::2] = np.cos(phases)
-        D_hinge[:, 4::2] = np.sin(phases)
+    if n_f_step > 0:
+        phases_step = np.outer((2.0 * np.pi) * t0, step_freqs)
+        D_hinge[:, 3::2] = np.cos(phases_step)
+        D_hinge[:, 4::2] = np.sin(phases_step)
 
     if eff_robust != "none":
         D_full, cs_full = build_design_matrix(
@@ -1073,8 +1087,23 @@ def _nested_jump_ftests(
         )
         if np.isnan(p_jump_raw):
             return float("nan"), float("nan")
+        if same_step_freqs:
+            res_full_step = res_full
+        else:
+            D_full_s, cs_full_s = build_design_matrix(
+                t0, "linear", np.array([local_jump_idx], dtype=np.intp), False, step_freqs
+            )
+            res_full_step = solve_robust_irls(
+                D_full_s,
+                y_win,
+                pw_win,
+                method=eff_robust,
+                k=huber_k,
+                col_scales=cs_full_s,
+                compute_cov=False,
+            )
         knot_stop = n_win - min_seg + 1
-        if res_full.scale <= 0.0 or res_full.lambda_scale <= 0.0:
+        if res_full_step.scale <= 0.0 or res_full_step.lambda_scale <= 0.0:
             # Noiseless jump regime
             rss_h = np.inf
             for k_knot in range(min_seg, knot_stop):
@@ -1082,7 +1111,9 @@ def _nested_jump_ftests(
                 rss_k = solve_weighted_ols(D_hinge, y_win, pw_win, compute_cov=False).norm_res
                 if rss_k < rss_h:
                     rss_h = rss_k
-            tol_r = 1e-26 * max(rss_h, res_full.ols.y_w_norm_sq, float(np.finfo(np.float64).tiny))
+            tol_r = 1e-26 * max(
+                rss_h, res_full_step.ols.y_w_norm_sq, float(np.finfo(np.float64).tiny)
+            )
             p_step_raw = 0.0 if rss_h > tol_r else 1.0
         else:
             loss_hinge = np.inf
@@ -1094,13 +1125,16 @@ def _nested_jump_ftests(
                     pw_win,
                     method=eff_robust,
                     k=huber_k,
-                    fixed_scale=res_full.scale,
+                    fixed_scale=res_full_step.scale,
                     compute_cov=False,
                 )
                 if h_k.loss < loss_hinge:
                     loss_hinge = h_k.loss
-            f_step = max(0.0, 2.0 * (loss_hinge - res_full.loss)) / res_full.lambda_scale
-            p_step_raw = float(f_dist.sf(f_step, 1, dof2))
+            f_step = (
+                max(0.0, 2.0 * (loss_hinge - res_full_step.loss))
+                / res_full_step.lambda_scale
+            )
+            p_step_raw = float(f_dist.sf(f_step, 1, dof2_step))
         return float(min(1.0, mult * p_jump_raw)), float(min(1.0, mult * p_step_raw))
 
     res_full_ols = _lssa_core(
@@ -1127,6 +1161,22 @@ def _nested_jump_ftests(
         test_freqs,
         compute_cov=False,
     )
+    res_full_step_ols = (
+        res_full_ols
+        if same_step_freqs
+        else _lssa_core(
+            t0,
+            y_win,
+            pw_win,
+            np.empty(0, dtype=np.float64),
+            np.array([local_jump_idx], dtype=np.intp),
+            0.05,
+            "linear",
+            False,
+            step_freqs,
+            compute_cov=False,
+        )
+    )
 
     rss_hinge = np.inf
     for k_knot in range(3, n_win - 2):
@@ -1137,29 +1187,38 @@ def _nested_jump_ftests(
 
     rss1 = res_full_ols.norm_res
     rss0 = res_null_ols.norm_res
+    rss1_step = res_full_step_ols.norm_res
 
     # Scale-invariant noiseless guard (handles scaled noiseless jumps down to 1e-13 cleanly).
-    tol = 1e-26 * max(rss0, rss_hinge, float(np.finfo(np.float64).tiny))
+    tol = 1e-26 * max(rss0, float(np.finfo(np.float64).tiny))
+    tol_step = 1e-26 * max(rss_hinge, float(np.finfo(np.float64).tiny))
     if rss1 <= tol:
         p_jump = 0.0 if rss0 > tol else 1.0
-        p_step = 0.0 if rss_hinge > tol else 1.0
-        return p_jump, p_step
+    else:
+        den = rss1 / dof2
+        f_jump = max(0.0, (rss0 - rss1) / 2.0) / den
+        if calib == "montecarlo":
+            p_jump = float(
+                _mc_maxf_pvalue(
+                    t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed, cache=mc_cache
+                )
+            )
+        else:
+            p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
 
-    den = rss1 / dof2
-    f_jump = max(0.0, (rss0 - rss1) / 2.0) / den
-    f_step = max(0.0, rss_hinge - rss1) / den
-    if calib == "montecarlo":
-        p_jump = _mc_maxf_pvalue(
-            t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed, cache=mc_cache
-        )
-        # The step test (jump vs best continuous hinge) is also evaluated at the
-        # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
-        # analytical Bonferroni correction over the scanned splits.
-        step_mult = 1.0 if raw_step else float(n_cands)
-        p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step, 1, dof2))))
-        return float(p_jump), p_step
-    p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
-    p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2))))
+    if rss1_step <= tol_step:
+        p_step = 0.0 if rss_hinge > tol_step else 1.0
+    else:
+        den_step = rss1_step / dof2_step
+        f_step = max(0.0, rss_hinge - rss1_step) / den_step
+        if calib == "montecarlo":
+            # The step test (jump vs best continuous hinge) is also evaluated at the
+            # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
+            # analytical Bonferroni correction over the scanned splits.
+            step_mult = 1.0 if raw_step else float(n_cands)
+            p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step, 1, dof2_step))))
+        else:
+            p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2_step))))
     return p_jump, p_step
 
 
@@ -1801,6 +1860,8 @@ def just_jumps(
         )
 
     if win_fb > 0:
+        if prov is not None:
+            prov = replace(prov, window_fallback_count=prov.window_fallback_count + win_fb)
         warnings_list.append(
             WarningItem(
                 code="WINDOW_IMPUTATION_FALLBACK",
@@ -2864,6 +2925,8 @@ def just_decompose(
             )
         )
     if win_censor_fb > 0:
+        if prov is not None:
+            prov = replace(prov, window_fallback_count=prov.window_fallback_count + win_censor_fb)
         warnings_list.append(
             WarningItem(
                 code="WINDOW_IMPUTATION_FALLBACK",

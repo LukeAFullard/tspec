@@ -1,4 +1,4 @@
-"""Near-Real-Time (NRT) disturbance monitoring via JUSTmonitor (v1.1).
+"""Near-Real-Time (NRT) disturbance monitoring via JUSTmonitor.
 
 Clean-room implementation of least-squares spectral near-real-time disturbance
 detection (Ghaderpour & Vujadinovic, 2020b), enhanced with explicit
@@ -84,7 +84,10 @@ class MonitorStep:
     max_spec : float
         Overall maximum normalized LSS across ``monitor_omega``.
     peak_freq : float
-        Frequency (cycles/year) attaining ``max_spec``.
+        Frequency (cycles/year) attaining the band maximum used for
+        classification (the low-frequency peak when
+        ``candidate_type == "abrupt"``, or the overall peak across
+        ``monitor_omega`` otherwise).
     critical_value : float
         Applied Beta critical threshold at this step after any frequency
         and sequential multiplicity adjustments.
@@ -178,8 +181,11 @@ class MonitorResult(BaseResult):
     sequential_control : {"pocock", "obrien_fleming", "consecutive_k", "none"}
         Across-time repeated-testing control applied across monitoring steps.
     horizon : int
-        Monitoring horizon ``D_max`` used for alpha-spending rules (``0`` = open-ended
-        spending because no horizon was supplied).
+        Monitoring horizon ``D_max`` recorded for the run: the caller-supplied
+        ``horizon`` when given; ``0`` (open-ended alpha spending) when omitted for
+        ``"pocock"`` or ``"obrien_fleming"`` outside ``parity_mode``; or ``n_mon``
+        (the number of monitoring observations) when omitted for
+        ``"consecutive_k"``, ``"none"``, or ``parity_mode=True``.
     diagnostics : DiagnosticReport
         Structured diagnostics and warnings.
     censoring : CensoringProvenance | None

@@ -431,3 +431,48 @@ def test_censoring_attribution_and_diagnostics() -> None:
     )
     assert any(w.code == "MI_DETECTION_FALLBACK" for w in res_j.diagnostics.warnings)
 
+
+def test_windowed_censoring_increments_window_fallback_count() -> None:
+    """MIN-04: scope='windowed' must populate CensoringProvenance.window_fallback_count."""
+    from tspec.stpd import detect_turning_points
+
+    rng = np.random.default_rng(909)
+    t = np.linspace(2014.0, 2024.0, 120)
+    y = 5.0 + 0.1 * (t - 2014.0) + rng.normal(0.0, 0.2, size=120)
+    # Heavily censor the first 35 observations so early sliding windows have <3 uncensored
+    # points and must fall back to the global imputation.
+    is_c = np.zeros(120, dtype=bool)
+    is_c[:35] = True
+    vals = y.copy()
+    vals[:35] = 4.5
+    cfg = CensoredConfig(
+        scope="windowed",
+        method="ros",
+        imputation_model="marginal",
+        allow_heavy_censoring=True,
+        random_state=0,
+    )
+
+    res_j = just_jumps(t, vals, censor_status=is_c, season="none", censoring=cfg, n_mc=99)
+    assert res_j.censoring is not None
+    assert res_j.censoring.window_fallback_count > 0
+
+    from tspec.just import just_decompose
+
+    res_d = just_decompose(t, vals, censor_status=is_c, season="none", censoring=cfg)
+    assert res_d.censoring is not None
+    assert res_d.censoring.window_fallback_count > 0
+
+    res_tp = detect_turning_points(
+        t,
+        vals,
+        size=36,
+        step=12,
+        censor_status=is_c,
+        censoring=cfg,
+        n_mc=99,
+        band_method="conditional",
+    )
+    assert res_tp.censoring is not None
+    assert res_tp.censoring.window_fallback_count > 0
+

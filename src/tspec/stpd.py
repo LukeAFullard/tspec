@@ -2075,7 +2075,7 @@ def detect_turning_points(
 
     Fits connected two-piece linear trends forward and backward within sliding
     windows, testing slope-change significance (Student t-test, or
-    Schrader–Hettmansperger robust F-test when ``robust='huber'``),
+    Schrader–Hettmansperger robust F-test when ``robust != 'none'``),
     forward/backward agreement, signal-to-noise ratio (SNR), and the
     Normalized Difference Residual Index (NDRI) to separate genuine continuous
     turning points (``NDRI ≈ 0``) from abrupt datum jumps (``NDRI -> 1``).
@@ -2125,8 +2125,8 @@ def detect_turning_points(
     refit_mode:
         Global piecewise trend refit mode: ``'sequential'`` (TPTR), ``'joint'``,
         ``'l1'`` (continuous LAD hinge-spline), or ``'huber'`` (continuous Huber
-        hinge-spline). Defaults to ``'huber'`` when ``robust='huber'`` and
-        ``'sequential'`` otherwise.
+        hinge-spline). Defaults to ``'huber'`` when ``robust != 'none'``
+        (``'huber'`` or ``'mm'``) and ``'sequential'`` otherwise.
     ci_level:
         Nominal pointwise confidence level in ``(0, 1)`` for the global
         piecewise trend fit (default ``0.95``).
@@ -2409,6 +2409,8 @@ def detect_turning_points(
             )
         )
     if win_fb > 0:
+        if prov is not None:
+            prov = replace(prov, window_fallback_count=prov.window_fallback_count + win_fb)
         warnings_list.append(
             WarningItem(
                 code="WINDOW_IMPUTATION_FALLBACK",
