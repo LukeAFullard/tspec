@@ -412,13 +412,18 @@ class JustDecomposeResult(BaseResult):
     trend_ci_method: str = "model"
     trend_bc: FloatArray | None = None
     trend_reg_bc: FloatArray | None = None
+    seasonal_bc: FloatArray | None = None
+    seasonal_reg_bc: FloatArray | None = None
     window_bounds: tuple[tuple[int, int], ...] = ()
     window_dilation: float = float("nan")
 
     def summary(self) -> str:
-        t_range = float(np.ptp(self.trend)) if self.trend.size else 0.0
-        s_amp = 0.5 * float(np.ptp(self.seasonal)) if self.seasonal.size else 0.0
-        r_rms = float(np.sqrt(np.mean(self.remainder**2))) if self.remainder.size else 0.0
+        fin_t = self.trend[np.isfinite(self.trend)]
+        fin_s = self.seasonal[np.isfinite(self.seasonal)]
+        fin_r = self.remainder[np.isfinite(self.remainder)]
+        t_range = float(np.max(fin_t) - np.min(fin_t)) if fin_t.size else 0.0
+        s_amp = 0.5 * float(np.max(fin_s) - np.min(fin_s)) if fin_s.size else 0.0
+        r_rms = float(np.sqrt(np.mean(fin_r**2))) if fin_r.size else 0.0
         lines = [
             f"JUST Decomposition Result (season={self.season!r}, window_mode={self.window_mode!r})",
             f"Jump indices : {self.jump_indices.tolist()}",
@@ -431,8 +436,10 @@ class JustDecomposeResult(BaseResult):
         return "\n".join(lines)
 
     def explain(self) -> str:
-        s_amp = 0.5 * float(np.ptp(self.seasonal)) if self.seasonal.size else 0.0
-        r_std = float(np.std(self.remainder)) if self.remainder.size else 0.0
+        fin_s = self.seasonal[np.isfinite(self.seasonal)]
+        fin_r = self.remainder[np.isfinite(self.remainder)]
+        s_amp = 0.5 * float(np.max(fin_s) - np.min(fin_s)) if fin_s.size else 0.0
+        r_std = float(np.std(fin_r)) if fin_r.size else 0.0
         lines = [
             f"Decomposed {self.diagnostics.n_valid} unevenly spaced observations into trend, "
             f"seasonal, and remainder components using {self.season.upper()} without "
@@ -965,7 +972,14 @@ def _nested_jump_ftests(
 
     # For adaptive ALLSSA, select harmonics under the no-jump null model so the
     # nested F-test conditions on a null-selected subspace without harmonic mining.
+    # Floor the null search grid to prevent sub-annual half-wave step proxies (< 0.85 cy/yr)
+    # from absorbing genuine large step jumps (BLK-02).
     if season == "allssa" and omega is not None and omega.size > 0 and n_win >= 5:
+        min_null_freq: float | None = None
+        if not parity_mode:
+            om_min = float(np.min(omega))
+            om_max = float(np.max(omega))
+            min_null_freq = max(om_min, 0.85) if om_max >= 1.0 else om_min
         null_allssa = _allssa_core(
             t0,
             y_win,
@@ -982,6 +996,8 @@ def _nested_jump_ftests(
             robust=eff_robust,
             huber_k=huber_k,
             significance=season_significance,
+            n_mc=int(n_mc),
+            min_freq=min_null_freq,
         )
         test_freqs = null_allssa.frequencies
     else:
@@ -1278,7 +1294,10 @@ def _run_just_jumps_array(
         else:
             r += 1
 
-    # Compute nested partial F-test p-values & apply magnitude/direction/statistical filters
+    # Compute nested partial F-test p-values across distinct candidate locations.
+    # When calibrated (calib != "none"), evaluate and Holm-adjust ALL merged candidates
+    # BEFORE applying mag_th/dir_th filters so post-selection filtering cannot shrink the
+    # Holm denominator (Goeman & Solari, 2014; MAJ-12).
     calib: JumpCalibration = jump_calibration if jump_calibration is not None else (
         "bonferroni" if bonferroni_window else "none"
     )
@@ -1286,7 +1305,7 @@ def _run_just_jumps_array(
     mc_cache: dict[Any, Any] = {}
     for item in grouped:
         j_idx, occ, mag_val, dir_val, _bucket, dis_raw, best_c = item
-        if abs(mag_val) < mag_th and abs(dir_val) < dir_th:
+        if calib == "none" and abs(mag_val) < mag_th and abs(dir_val) < dir_th:
             continue
         t_w = t_valid[best_c.window_start : best_c.window_stop]
         y_w = window_y_cache.get(
@@ -1390,14 +1409,16 @@ def _run_just_jumps_array(
                 p_step = float(min(1.0, n_sp * pool_pvalues(np.asarray(ps, dtype=np.float64))))
         tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
 
-    # Family-wise control across the distinct candidate locations (Holm step-down) when
+    # Family-wise control across all distinct candidate locations (Holm step-down) when
     # a calibrated jump test is requested.
     if calib != "none" and tested:
         tested = _holm_adjust_candidates(tested)
 
     accepted: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
     for cand in tested:
-        p_jump, p_step = cand[5], cand[6]
+        mag_c, dir_c, p_jump, p_step = cand[2], cand[3], cand[5], cand[6]
+        if abs(mag_c) < mag_th and abs(dir_c) < dir_th:
+            continue
         if jump_alpha is not None and (np.isnan(p_jump) or p_jump >= jump_alpha):
             continue
         if step_alpha is not None and (np.isnan(p_step) or p_step >= step_alpha):
@@ -1547,7 +1568,7 @@ def just_jumps(
         raise ValueError(
             f"Unknown `jump_calibration` {jump_calibration!r}. Options: 'montecarlo', 'bonferroni', 'none'."
         )
-    if int(n_mc) < 99:
+    if not parity_mode and int(n_mc) < 99:
         raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
     eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
@@ -1613,7 +1634,7 @@ def just_jumps(
             )
         )
 
-    # Scale-mismatch diagnostic for default NDVI-tuned mag_th
+    # Scale-mismatch diagnostic for NDVI-tuned mag_th=0.05 when statistical gating is disabled
     iqr = float(np.percentile(series.values, 75) - np.percentile(series.values, 25))
     if (
         not parity_mode
@@ -1623,19 +1644,19 @@ def just_jumps(
         and (0.01 * iqr > 0.05 or 2.0 * iqr < 0.05)
     ):
         warnings_list.append(
-                WarningItem(
-                    code="THRESHOLD_SCALE_MISMATCH",
-                    severity="caution",
-                    message=(
-                        f"Default mag_th=0.05 may be poorly scaled for this series "
-                        f"(interquartile range ≈ {iqr:.4g})."
-                    ),
-                    suggestion=(
-                        f"Consider setting mag_th≈{0.25 * iqr:.3g} (domain-meaningful jump size) "
-                        "or using the calibrated default `jump_alpha=0.05`."
-                    ),
-                )
+            WarningItem(
+                code="THRESHOLD_SCALE_MISMATCH",
+                severity="caution",
+                message=(
+                    f"`mag_th=0.05` may be poorly scaled for this series "
+                    f"(interquartile range ≈ {iqr:.4g})."
+                ),
+                suggestion=(
+                    f"Consider setting mag_th≈{0.25 * iqr:.3g} (domain-meaningful jump size) "
+                    "or using the calibrated default `jump_alpha=0.05`."
+                ),
             )
+        )
 
     if window_mode == "count":
         windows, win_size, _win_step, _rate = _build_count_windows(
@@ -2229,6 +2250,82 @@ def _window_bias_corrected_trend(
     return out
 
 
+def _window_bias_corrected_seasonal(
+    t_obs: FloatArray,
+    y_obs: FloatArray,
+    pw_w: PreparedWeights,
+    local_jumps: IntArray,
+    freqs_selected: FloatArray,
+    omega_cand: FloatArray,
+    t_targets: list[FloatArray],
+    ci_level: float,
+    *,
+    robust: RobustMethod,
+    huber_k: float,
+) -> list[tuple[FloatArray, FloatArray]] | None:
+    """Post-selection-safe window seasonal estimate and pointwise t half-widths for ALLSSA.
+
+    Refits the window on the union of ALLSSA-selected frequencies and candidate
+    seasonal harmonics from ``omega_cand`` (subject to degrees-of-freedom guardrails)
+    so omitted borderline harmonics (e.g. a weak semi-annual component) do not cause
+    post-selection seasonal confidence band under-coverage (BLK-07).
+    """
+    n_obs = int(t_obs.size)
+    n_tr = 2 * (int(local_jumps.size) + 1)
+    cand_pool = (
+        omega_cand[omega_cand >= 1.0]
+        if (omega_cand.size > 0 and float(np.max(omega_cand)) >= 1.0)
+        else omega_cand
+    )
+    freqs_list: list[float] = [float(f) for f in freqs_selected]
+    for f_c in cand_pool:
+        fc = float(f_c)
+        if all(abs(fc - fs) >= 0.25 for fs in freqs_list):
+            if n_obs <= n_tr + 2 * (len(freqs_list) + 1) + 2:
+                break
+            freqs_list.append(fc)
+    if not freqs_list:
+        return None
+    freqs_ci = np.sort(np.asarray(freqs_list, dtype=np.float64))
+    n_f = int(freqs_ci.size)
+    nc_tot = n_tr + 2 * n_f
+    if n_obs <= nc_tot + 1:
+        return None
+    try:
+        res_s = _lssa_core(
+            t_obs,
+            y_obs,
+            pw_w,
+            np.empty(0, dtype=np.float64),
+            local_jumps,
+            0.05,
+            "linear",
+            False,
+            freqs_ci,
+            compute_cov=True,
+            robust=robust,
+            huber_k=huber_k,
+        )
+    except InsufficientDataError:
+        return None
+    cov = res_s.cov
+    if cov.size == 0 or not np.all(np.isfinite(cov)) or res_s.rank_deficient:
+        return None
+    cs_coeff = res_s.coeff[n_tr:].reshape(n_f, 2)
+    cov_ss = cov[n_tr:, n_tr:]
+    t_crit = float(t_dist.ppf(0.5 + 0.5 * ci_level, df=max(1, n_obs - nc_tot)))
+    out: list[tuple[FloatArray, FloatArray]] = []
+    for tt in t_targets:
+        est = _eval_seasonal(tt, freqs_ci, cs_coeff)
+        phases = np.outer((2.0 * np.pi) * tt, freqs_ci)
+        D_s = np.empty((int(tt.size), 2 * n_f), dtype=np.float64)
+        D_s[:, 0::2] = np.cos(phases)
+        D_s[:, 1::2] = np.sin(phases)
+        var = np.maximum(0.0, np.sum((D_s @ cov_ss) * D_s, axis=1))
+        out.append((np.asarray(est, dtype=np.float64), t_crit * np.sqrt(var)))
+    return out
+
+
 def just_decompose(
     t: TimeLike,
     y: ValueLike,
@@ -2491,6 +2588,14 @@ def just_decompose(
     sum_w_bc_reg = np.zeros(n_tt, dtype=np.float64)
     bc_fallbacks = 0
 
+    seas_bc_on = season_l == "allssa" and not parity_mode
+    seas_bc0 = np.zeros(n, dtype=np.float64)
+    hw_sbc0 = np.zeros(n, dtype=np.float64)
+    sum_w_sbc0 = np.zeros(n, dtype=np.float64)
+    seas_bc_reg = np.zeros(n_tt, dtype=np.float64)
+    hw_sbc_reg = np.zeros(n_tt, dtype=np.float64)
+    sum_w_sbc_reg = np.zeros(n_tt, dtype=np.float64)
+
     win_freqs_list: list[FloatArray] = []
     win_bounds_list: list[tuple[int, int]] = []
     cond_max = 1.0
@@ -2502,6 +2607,14 @@ def just_decompose(
             ub0 = min(n, int(np.searchsorted(t0, tt0[ub - 1], side="left")) + 1)
         else:
             lb0, ub0 = lb, ub
+
+        # Trim 1-point dangling jump at window edges so a discontinuity at lb0+1 or ub0-1
+        # never leaks across the window fit (MAJ-04).
+        if not parity_mode and j_valid.size > 0 and ub0 - lb0 > 5:
+            if any(int(j) == lb0 + 1 for j in j_valid):
+                lb0 += 1
+            if any(int(j) == ub0 - 1 for j in j_valid) and ub0 - lb0 > 4:
+                ub0 -= 1
 
         size0 = ub0 - lb0
         local_j = np.array(
@@ -2654,6 +2767,19 @@ def just_decompose(
             hw_bc0[lb0:ub0] += np.where(fin_bc, bc_obs[1] * gauss_w, 0.0)
             sum_w_bc0[lb0:ub0] += np.where(fin_bc, gauss_w, 0.0)
 
+        sbc_win: list[tuple[FloatArray, FloatArray]] | None = None
+        if seas_bc_on:
+            targets_s = [ty_loc, tty_loc] if has_eval else [ty_loc]
+            sbc_win = _window_bias_corrected_seasonal(
+                ty_loc, yy, pw_w, local_j, freqs_w, om_arr, targets_s,
+                ci_level, robust=eff_robust, huber_k=huber_k,
+            )
+            sbc_obs = sbc_win[0] if sbc_win is not None else (season_t, hw_s_w)
+            fin_sbc = np.isfinite(sbc_obs[1])
+            seas_bc0[lb0:ub0] += np.where(fin_sbc, sbc_obs[0] * gauss_w, 0.0)
+            hw_sbc0[lb0:ub0] += np.where(fin_sbc, sbc_obs[1] * gauss_w, 0.0)
+            sum_w_sbc0[lb0:ub0] += np.where(fin_sbc, gauss_w, 0.0)
+
         if has_eval:
             trend_tt = _eval_piecewise_trend(
                 ty_loc, tty_loc, local_j, tr_coeff, parity_mode=parity_mode
@@ -2699,6 +2825,12 @@ def just_decompose(
                 trend_bc_reg[lb:ub] += np.where(fin_bcr, bc_reg[0] * gw_tt, 0.0)
                 hw_bc_reg[lb:ub] += np.where(fin_bcr, bc_reg[1] * gw_tt, 0.0)
                 sum_w_bc_reg[lb:ub] += np.where(fin_bcr, gw_tt, 0.0)
+            if seas_bc_on:
+                sbc_reg = sbc_win[1] if sbc_win is not None else (season_tt, hw_s_tt)
+                fin_sbcr = np.isfinite(sbc_reg[1])
+                seas_bc_reg[lb:ub] += np.where(fin_sbcr, sbc_reg[0] * gw_tt, 0.0)
+                hw_sbc_reg[lb:ub] += np.where(fin_sbcr, sbc_reg[1] * gw_tt, 0.0)
+                sum_w_sbc_reg[lb:ub] += np.where(fin_sbcr, gw_tt, 0.0)
 
     if eval_gap_skipped > 0:
         warnings_list.append(
@@ -2738,8 +2870,15 @@ def just_decompose(
         else:
             trend_ci_low = trend - tr_hw
             trend_ci_high = trend + tr_hw
-        seasonal_ci_low = seasonal - s_hw
-        seasonal_ci_high = seasonal + s_hw
+        seasonal_bc_arr: FloatArray | None = None
+        if seas_bc_on:
+            seasonal_bc_arr = np.where(sum_w_sbc0 > 0, seas_bc0 / sum_w_sbc0, np.nan)
+            hw_sbc = np.where(sum_w_sbc0 > 0, hw_sbc0 / sum_w_sbc0, np.nan)
+            seasonal_ci_low = seasonal_bc_arr - hw_sbc
+            seasonal_ci_high = seasonal_bc_arr + hw_sbc
+        else:
+            seasonal_ci_low = seasonal - s_hw
+            seasonal_ci_high = seasonal + s_hw
 
         if has_eval:
             trend_reg: FloatArray | None = np.where(
@@ -2759,12 +2898,20 @@ def just_decompose(
             else:
                 trend_reg_ci_low = trend_reg - tr_reg_hw
                 trend_reg_ci_high = trend_reg + tr_reg_hw
-            seasonal_reg_ci_low: FloatArray | None = seasonal_reg - s_reg_hw
-            seasonal_reg_ci_high: FloatArray | None = seasonal_reg + s_reg_hw
+            seasonal_reg_bc: FloatArray | None = None
+            if seas_bc_on:
+                seasonal_reg_bc = np.where(sum_w_sbc_reg > 0, seas_bc_reg / sum_w_sbc_reg, np.nan)
+                hw_sbcr = np.where(sum_w_sbc_reg > 0, hw_sbc_reg / sum_w_sbc_reg, np.nan)
+                seasonal_reg_ci_low: FloatArray | None = seasonal_reg_bc - hw_sbcr
+                seasonal_reg_ci_high: FloatArray | None = seasonal_reg_bc + hw_sbcr
+            else:
+                seasonal_reg_ci_low = seasonal_reg - s_reg_hw
+                seasonal_reg_ci_high = seasonal_reg + s_reg_hw
         else:
             trend_reg = None
             seasonal_reg = None
             trend_reg_bc = None
+            seasonal_reg_bc = None
             trend_reg_ci_low = None
             trend_reg_ci_high = None
             seasonal_reg_ci_low = None
@@ -2829,4 +2976,6 @@ def just_decompose(
         trend_ci_method=eff_ci_method,
         trend_bc=trend_bc_arr,
         trend_reg_bc=trend_reg_bc,
+        seasonal_bc=seasonal_bc_arr,
+        seasonal_reg_bc=seasonal_reg_bc,
     )

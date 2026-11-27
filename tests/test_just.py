@@ -141,3 +141,71 @@ def test_just_datetime_input_and_dataframe_export(rng: np.random.Generator) -> N
     df = res.to_dataframe()
     assert len(df) == 1
     assert "jump_pvalue" in df.columns
+
+
+def test_just_jumps_allssa_detects_large_15sigma_and_30sigma_jumps() -> None:
+    """BLK-02: null_allssa must not absorb large step jumps into sub-annual 0.5 cy/yr waves."""
+    rng = np.random.default_rng(41750)
+    t = np.linspace(2015.0, 2025.0, 120)
+    t_j = 2020.0
+    sigma = 0.2
+    for js in (10.0, 15.0, 30.0):
+        y = np.where(t < t_j, 1.0, 1.0 + js * sigma) + 0.8 * np.cos(2.0 * np.pi * t) + rng.normal(0.0, sigma, 120)
+        res = just_jumps(t, y, season="allssa", n_mc=199)
+        assert any(abs(j.time_year - t_j) <= 0.5 for j in res.jumps), f"Missed {js}sigma jump!"
+
+
+def test_just_decompose_allssa_seasonal_ci_edge_jump_and_nan_safe_summary() -> None:
+    """BLK-07, MAJ-02, MAJ-04: ALLSSA seasonal CI covers 2-harmonic wave, edge jumps don't leak, summary is NaN-safe."""
+    rng = np.random.default_rng(42002)
+    n = 120
+    t = np.linspace(2010.0, 2020.0, n)
+    t0 = t - t[0]
+    tr_true = 2.0 + 0.25 * t0
+    seas_true = 1.0 * np.cos(2.0 * np.pi * t0) + 0.4 * np.sin(4.0 * np.pi * t0)
+    y = tr_true + seas_true + rng.normal(0.0, 0.3, size=n)
+
+    dec = just_decompose(t, y, season="allssa", size=36, step=12)
+    assert dec.seasonal_bc is not None
+    assert dec.seasonal_ci_low is not None and dec.seasonal_ci_high is not None
+    cov_s = float(np.mean((dec.seasonal_ci_low <= seas_true) & (seas_true <= dec.seasonal_ci_high)))
+    assert cov_s >= 0.85
+
+    # Edge jump at idx=35 with size=36 must not bleed across the discontinuity
+    tr_edge = np.where(np.arange(n) < 35, 2.0 + 0.1 * t0, 12.0 + 0.1 * t0)
+    y_edge = tr_edge + seas_true + rng.normal(0.0, 0.3, size=n)
+    dec_edge = just_decompose(t, y_edge, jump_indices=[35], season="ols", size=36, step=12)
+    assert abs(float(dec_edge.trend[34] - tr_edge[34])) < 1.0
+    assert abs(float(dec_edge.trend[35] - tr_edge[35])) < 1.0
+
+    # NaN-safe summary() and explain() when trend/seasonal/remainder contain NaN entries
+    y_gap = y.copy()
+    y_gap[45:75] = np.nan
+    dec_gap = just_decompose(t, y_gap, season="ols", size=30, step=15, eval_times=t)
+    from dataclasses import replace
+
+    t_with_nan = dec_gap.trend.copy()
+    t_with_nan[0] = np.nan
+    dec_nan = replace(dec_gap, trend=t_with_nan, seasonal=t_with_nan, remainder=t_with_nan)
+    summ = dec_nan.summary()
+    expl = dec_nan.explain()
+    assert "Trend range  : nan" not in summ
+    assert "Seasonal half-range: nan" not in summ
+    assert "Remainder RMS: nan" not in summ
+    assert "~nan" not in expl
+
+
+def test_just_jumps_holm_before_mag_th_and_parity_n_mc() -> None:
+    """MAJ-12 & MIN-05: mag_th must not shrink Holm denominator; parity_mode ignores n_mc."""
+    rng = np.random.default_rng(912)
+    t = np.linspace(2015.0, 2025.0, 120)
+    y = np.where(t < 2020.0, 1.0, 2.2) + rng.normal(0.0, 0.25, size=120)
+    r0 = just_jumps(t, y, season="none", mag_th=0.0, dir_th=0.0, n_mc=199)
+    r1 = just_jumps(t, y, season="none", mag_th=0.8, dir_th=0.0, n_mc=199)
+    assert len(r0.jumps) == 1 and len(r1.jumps) == 1
+    np.testing.assert_allclose(r1.jumps[0].jump_pvalue, r0.jumps[0].jump_pvalue, rtol=1e-12)
+
+    # parity_mode=True must not reject small n_mc
+    rp = just_jumps(t, y, season="none", parity_mode=True, n_mc=10)
+    assert rp is not None
+

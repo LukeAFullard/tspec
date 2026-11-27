@@ -192,3 +192,34 @@ def test_just_monitor_thresholds_do_not_depend_on_future_data() -> None:
         assert r.horizon == 0
         assert "OPEN_ENDED_SPENDING" in {w.code for w in r.diagnostics.warnings}
     np.testing.assert_allclose(crit[0], crit[1], rtol=0, atol=1e-12)
+
+
+def test_monitor_explain_and_warnings_for_unadjusted_and_exceeded_horizon() -> None:
+    """CRT-03 & MIN-05: honest FWER warnings/explain and parity_mode n_mc guard."""
+    rng = np.random.default_rng(51106)
+    t = np.linspace(2015.0, 2021.0, 144)
+    y = 2.0 + 0.1 * (t - 2015.0) + 0.6 * np.cos(2.0 * np.pi * t) + rng.normal(0.0, 0.2, size=144)
+
+    # seq='none' + freq='sidak' must emit UNADJUSTED_REPEATED_TESTING and NOT claim FWER control
+    r_unadj = just_monitor(
+        t, y, start=72, season="ols", alpha=0.05, sequential_control="none", freq_correction="sidak"
+    )
+    assert "UNADJUSTED_REPEATED_TESTING" in {w.code for w in r_unadj.diagnostics.warnings}
+    exp_u = r_unadj.explain()
+    assert "bound the familywise" not in exp_u
+    assert "does not adjust across repeated monitoring steps" in exp_u
+
+    # Exceeding planned horizon must NOT claim unconditional FWER control in explain()
+    r_exc = just_monitor(
+        t, y, start=72, season="ols", alpha=0.05, sequential_control="pocock", horizon=24
+    )
+    assert "HORIZON_EXCEEDED" in {w.code for w in r_exc.diagnostics.warnings}
+    exp_e = r_exc.explain()
+    assert "only guaranteed within the planned horizon" in exp_e
+
+    # parity_mode=True must not reject small n_mc even when sequential_control='consecutive_k'
+    r_par = just_monitor(
+        t, y, start=72, season="ols", sequential_control="consecutive_k", horizon=24, n_mc=10, parity_mode=True
+    )
+    assert r_par is not None
+

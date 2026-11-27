@@ -365,6 +365,7 @@ def _allssa_core(
     huber_k: float = 1.345,
     significance: str = "per_frequency",
     n_mc: int = 999,
+    min_freq: float | None = None,
 ) -> _AllssaCoreOutput:
     """Fast internal ALLSSA iterative anti-leakage kernel.
 
@@ -377,7 +378,9 @@ def _allssa_core(
     eff_robust: RobustMethod = "none" if parity_mode else robust
     inc = 10**decimal
     step = 1.0 / inc
-    min_positive_freq = step
+    min_positive_freq = (
+        max(step, float(min_freq)) if (min_freq is not None and not parity_mode) else step
+    )
 
     selected: list[float] = []
     visited: set[tuple[float, ...]] = set()
@@ -389,15 +392,27 @@ def _allssa_core(
     n = int(t0.size)
     base_nc = _count_constituents(trend, int(jump_indices.size), shared_slope, 0)
     fw_method = "per_frequency" if parity_mode else significance
+    omega_search = (
+        omega[omega >= min_positive_freq]
+        if (min_freq is not None and not parity_mode and np.any(omega >= min_positive_freq))
+        else omega
+    )
     if fw_method != "per_frequency":
-        search_grid, k_eff = _allssa_search_grid(t0, omega, decimal)
+        search_grid, k_eff = _allssa_search_grid(t0, omega_search, decimal)
+        if min_freq is not None and not parity_mode:
+            sg_filt = search_grid[search_grid >= min_positive_freq]
+            if sg_filt.size > 0:
+                search_grid = sg_filt
+                span_t = float(t0[-1] - t0[0]) if t0.size > 1 else 0.0
+                band = float(search_grid[-1] - search_grid[0]) if search_grid.size > 1 else 0.0
+                k_eff = min(int(search_grid.size), max(1, int(np.ceil(3.0 * span_t * band))))
         alpha_sidak = float(1.0 - (1.0 - alpha) ** (1.0 / k_eff))
 
     res = _lssa_core(
         t0,
         y,
         pw,
-        omega,
+        omega_search,
         jump_indices,
         alpha,
         trend,
@@ -420,7 +435,7 @@ def _allssa_core(
             break
 
         max_idx = int(np.argmax(res.spectrum))
-        om_center = _round_half_up(float(omega[max_idx]), 0)
+        om_center = _round_half_up(float(omega_search[max_idx]), 0)
 
         # Temporarily remove the highest previously selected frequency rounding to om_center
         matching = [idx for idx, fr in enumerate(selected) if _round_half_up(fr, 0) == om_center]
@@ -531,7 +546,7 @@ def _allssa_core(
             t0,
             y,
             pw,
-            omega,
+            omega_search,
             jump_indices,
             alpha,
             trend,

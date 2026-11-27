@@ -296,26 +296,55 @@ class MonitorResult(BaseResult):
                 f"monitoring observation(s) starting at {self.start_time}."
             )
 
+        warn_codes = {w.code for w in self.diagnostics.warnings}
+        horizon_exceeded = "HORIZON_EXCEEDED" in warn_codes
+        calib_fallback = "CALIBRATION_FALLBACK" in warn_codes
+
         if self.freq_correction == "none" and self.sequential_control == "none":
             parts.append(
                 "Note: repeated-testing multiplicity controls are disabled (parity/unadjusted mode). "
                 "Over long monitoring horizons, unadjusted per-step testing increases cumulative "
                 "false-alarm probability."
             )
-        elif self.sequential_control == "consecutive_k" and self.consecutive_k_calibrated:
-            a_step = self.steps[0].alpha_step if self.steps else float("nan")
+        elif self.sequential_control == "none":
             parts.append(
-                f"Repeated-testing protection active: an alarm needs {self.consecutive_k} consecutive "
-                f"exceedances at a Monte Carlo-calibrated per-step level {a_step:.3g}, which bounds "
-                f"the familywise false-alarm rate at alpha={self.alpha:g} over the planned horizon of "
-                f"{self.horizon} steps (assuming Gaussian errors and history-like sampling)."
+                f"Note: freq_correction='{self.freq_correction}' adjusts across frequencies at each "
+                "step, but sequential_control='none' does not adjust across repeated monitoring steps; "
+                f"cumulative false-alarm probability exceeds alpha={self.alpha:g} over multiple steps."
             )
+        elif self.freq_correction == "none":
+            parts.append(
+                f"Note: sequential_control='{self.sequential_control}' adjusts across steps, but "
+                "freq_correction='none' does not adjust across searched monitoring frequencies; "
+                f"familywise false-alarm rate is not bounded at alpha={self.alpha:g}."
+            )
+        elif self.sequential_control == "consecutive_k" and self.consecutive_k_calibrated and not calib_fallback:
+            a_step = self.steps[0].alpha_step if self.steps else float("nan")
+            if horizon_exceeded:
+                parts.append(
+                    f"Note: consecutive_k={self.consecutive_k} was calibrated at per-step level "
+                    f"{a_step:.3g} for a planned horizon of {self.horizon} steps, but monitoring "
+                    "exceeded that horizon; familywise false-alarm rate is not bounded beyond "
+                    f"step {self.horizon}."
+                )
+            else:
+                parts.append(
+                    f"Repeated-testing protection active: an alarm needs {self.consecutive_k} consecutive "
+                    f"exceedances at a Monte Carlo-calibrated per-step level {a_step:.3g}, which bounds "
+                    f"the familywise false-alarm rate at alpha={self.alpha:g} over the planned horizon of "
+                    f"{self.horizon} steps (assuming Gaussian errors and history-like sampling)."
+                )
         elif self.sequential_control == "consecutive_k":
             parts.append(
-                f"Note: sequential_control='consecutive_k' without `horizon` requires repeated "
-                f"exceedances but does not bound the familywise false-alarm rate at "
-                f"alpha={self.alpha:g}; it grows with the monitoring length (about 10% over 96 steps "
-                "at alpha=0.05 in simulations)."
+                f"Note: sequential_control='consecutive_k' without active horizon calibration "
+                f"requires repeated exceedances but does not bound the familywise false-alarm rate "
+                f"at alpha={self.alpha:g}; it grows with the monitoring length."
+            )
+        elif horizon_exceeded:
+            parts.append(
+                f"Note: monitoring exceeded the planned horizon of {self.horizon} steps for "
+                f"sequential_control='{self.sequential_control}'; familywise false-alarm rate is "
+                f"only guaranteed within the planned horizon of {self.horizon} steps."
             )
         else:
             parts.append(
@@ -467,6 +496,39 @@ def _step_pvalues_from_spectrum(
     return np.asarray(-np.expm1(k * np.log1p(-np.minimum(p_min, 1.0 - 1e-16))), dtype=np.float64)
 
 
+def _augment_allssa_freq_tangent(
+    t_arr: FloatArray,
+    t_his_span: float,
+    D_base: FloatArray,
+    his_freqs: FloatArray,
+    cs_coeff: FloatArray | None,
+) -> FloatArray:
+    """Append Gauss-Newton frequency-derivative tangent columns for ALLSSA harmonics.
+
+    When historical frequencies are data-estimated (``season='allssa'``) rather than
+    known constants, frequency estimation errors ``df_j`` induce an out-of-sample
+    phase-drift error proportional to ``t * (-a_j sin(2 pi f_j t) + b_j cos(2 pi f_j t))``.
+    Appending the normalized tangent columns into the predictive covariance Jacobian
+    propagates nonlinear frequency-estimation uncertainty into ``v_out_all`` (CRT-03).
+    """
+    if cs_coeff is None or his_freqs.size == 0 or cs_coeff.shape[0] != his_freqs.size:
+        return D_base
+    span = t_his_span if t_his_span > 0.0 else 1.0
+    u = (t_arr - t_arr[0]) / span
+    extra: list[FloatArray] = []
+    for j_idx, f_j in enumerate(his_freqs):
+        a_j = float(cs_coeff[j_idx, 0])
+        b_j = float(cs_coeff[j_idx, 1])
+        amp = float(np.hypot(a_j, b_j))
+        if amp <= 0.0:
+            continue
+        ph = (2.0 * np.pi * float(f_j)) * t_arr
+        extra.append(u * ((-a_j * np.sin(ph) + b_j * np.cos(ph)) / amp))
+    if not extra:
+        return D_base
+    return np.column_stack([D_base, *extra])
+
+
 def _calibrate_consecutive_k(
     t_his: FloatArray,
     pw_his: PreparedWeights,
@@ -483,16 +545,19 @@ def _calibrate_consecutive_k(
     n_mc: int,
     forecast_cov: bool,
     seed: int = 0,
+    allssa_cs_coeff: FloatArray | None = None,
 ) -> float | None:
     """Monte Carlo per-step level for ``consecutive_k`` with family-wise control.
 
     Simulates the monitoring residual process under the fitted history model with
-    Gaussian errors (the history design is refitted in every replicate; selected
-    harmonics are held fixed). Future sampling times start at the first monitoring
-    time and follow gaps resampled from the history (a separate grid for each of up to
-    25 groups of replicates; a regular history gives a regular grid), with the
-    history's median weight, so the level depends only on the history, the first
-    monitoring time and the planned ``horizon``.
+    Gaussian errors (the history design is refitted in every replicate; when
+    ``allssa_cs_coeff`` is provided, the Gauss-Newton frequency-derivative tangent
+    columns are included in both the simulated projection and predictive covariance
+    so nonlinear frequency-estimation uncertainty is propagated). Future sampling
+    times start at the first monitoring time and follow gaps resampled from the
+    history (a separate grid for each of up to 25 groups of replicates; a regular
+    history gives a regular grid), with the history's median weight, so the level
+    depends only on the history, the first monitoring time and the planned ``horizon``.
     For each replicate the smallest per-step level at which ``k`` consecutive steps
     would all exceed is recorded; the returned level is a lower Monte Carlo quantile
     of these, so ``P(alarm within horizon) <= alpha`` under the simulated null.
@@ -522,6 +587,7 @@ def _calibrate_consecutive_k(
     rng = np.random.default_rng(seed)
     n_mc = int(n_mc)
     pvals = np.empty((horizon, n_mc), dtype=np.float64)
+    his_span = float(t_his[-1] - t_his[0]) if n_his > 1 else 1.0
     # Future sampling times are unknown when monitoring starts: each group of replicates
     # uses its own grid built from gaps resampled from the history (a regular history
     # gives a regular grid).
@@ -535,6 +601,12 @@ def _calibrate_consecutive_k(
         )
         t_c = np.concatenate([t_his, float(t_first) + offs])
         d_c, _ = build_design_matrix(t_c, "linear", np.empty(0, dtype=np.intp), False, his_freqs)
+        if (
+            allssa_cs_coeff is not None
+            and his_freqs.size > 0
+            and n_his > d_c.shape[1] + int(his_freqs.size) + 2
+        ):
+            d_c = _augment_allssa_freq_tangent(t_c, his_span, d_c, his_freqs, allssa_cs_coeff)
         wd_his = sw_c[:n_his, None] * d_c[:n_his]
         u_h, s_h, vt_h = linalg.svd(wd_his, full_matrices=False)
         if s_h.size == 0 or s_h[0] <= 0.0:
@@ -687,6 +759,12 @@ def just_monitor(
     ``parity_mode=True`` for exact numerical parity with Ghaderpour &
     Vujadinovic (2020b).
 
+    Alarm detection is strictly causal: each monitoring step ``d`` uses only
+    observations up to ``t[start + d - 1]``. Once an abrupt disturbance alarm
+    triggers, the optional post-alarm ``magnitude`` and ``direction`` summary
+    estimates fit the available active series (including any observations after
+    ``disturbance_index``, matching Ghaderpour & Vujadinovic, 2020b).
+
     Parameters
     ----------
     t : array-like
@@ -811,7 +889,7 @@ def just_monitor(
         raise ValueError(f"ci_level must be in (0, 1), got {ci_level}.")
     if consecutive_k < 1:
         raise ValueError(f"consecutive_k must be >= 1, got {consecutive_k}.")
-    if sequential_control == "consecutive_k" and horizon is not None and (int(n_mc) + 1) * alpha < 5:
+    if not parity_mode and sequential_control == "consecutive_k" and horizon is not None and (int(n_mc) + 1) * alpha < 5:
         raise ValueError(
             f"`n_mc` too small for alpha={alpha}: need (n_mc + 1) * alpha >= 5, got n_mc={n_mc}."
         )
@@ -927,6 +1005,7 @@ def just_monitor(
 
     pw_act_base = pw_act
     pw_his_base = pw_his
+    allssa_cs_coeff: FloatArray | None = None
 
     # Fit stable historical linear trend + seasonal model (Ghaderpour & Vujadinovic, 2020b)
     if season_norm == "allssa":
@@ -939,16 +1018,18 @@ def just_monitor(
             alpha,
             "linear",
             False,
-            decimal=1,
+            decimal=(1 if parity_mode else 2),
             max_iter=200,
             parity_mode=parity_mode,
             compute_cov=True,
             robust=eff_robust,
             huber_k=huber_k,
             significance=season_sig,
+            n_mc=int(n_mc),
         )
         his_freqs = his_allssa.frequencies
         his_trend_coeff = his_allssa.trend_coeff
+        allssa_cs_coeff = his_allssa.cos_sin_coeffs
         his_coeff = np.concatenate([his_trend_coeff, his_allssa.cos_sin_coeffs.ravel()])
         his_residuals = his_allssa.residuals
         his_cov = his_allssa.cov
@@ -1066,16 +1147,29 @@ def just_monitor(
         forecast_pi_low = forecast - hw_pi
         forecast_pi_high = forecast + hw_pi
 
-    # Precompute out-of-sample predictive covariance factor V_all = D_out (D_his^T P_his D_his)^{-1/2}
+    # Precompute out-of-sample predictive covariance factor V_all = D_out (D_his^T P_his D_his)^{-1/2}.
+    # For data-estimated ALLSSA frequencies, append the Gauss-Newton frequency-derivative tangent
+    # columns so out-of-sample phase-drift uncertainty is propagated (CRT-03).
     v_out_all: FloatArray | None = None
+    his_span_val = float(t_his[-1] - t_his[0]) if n_his > 1 else 1.0
     if eff_forecast_cov:
-        d_his_s = D_act[:n_his]
+        D_cov_act = D_act
+        if (
+            season_norm == "allssa"
+            and allssa_cs_coeff is not None
+            and his_freqs.size > 0
+            and n_his > D_act.shape[1] + int(his_freqs.size) + 2
+        ):
+            D_cov_act = _augment_allssa_freq_tangent(
+                t_act, his_span_val, D_act, his_freqs, allssa_cs_coeff
+            )
+        d_his_s = D_cov_act[:n_his]
         w_his_mat = whiten_matrix(d_his_s, pw_his)
         _, s_h, vt_h = linalg.svd(w_his_mat, full_matrices=False)
         if s_h.size > 0 and s_h[0] > 0.0:
             inv_s = np.where(s_h > 1e-12 * s_h[0], 1.0 / s_h, 0.0)
             f_his = vt_h.T * inv_s[None, :]
-            v_out_all = np.asarray(D_act[n_his:] @ f_his, dtype=np.float64)
+            v_out_all = np.asarray(D_cov_act[n_his:] @ f_his, dtype=np.float64)
 
     # Historical residual red-noise diagnostics
     rn, rn_warns = compute_red_noise_diagnostics(t_his, his_residuals)
@@ -1149,15 +1243,16 @@ def just_monitor(
             )
         )
 
-    if (not parity_mode) and eff_freq_corr == "none" and eff_seq_ctrl == "none" and n_mon > 1:
+    if (not parity_mode) and (eff_freq_corr == "none" or eff_seq_ctrl == "none") and n_mon > 1:
         warnings_list.append(
             WarningItem(
                 code="UNADJUSTED_REPEATED_TESTING",
                 severity="warning",
                 message=(
-                    f"Monitoring {n_mon} observations across {om_mon.size} frequencies without "
-                    "multiplicity control (freq_correction='none', sequential_control='none'). "
-                    "Cumulative false-alarm probability can greatly exceed nominal alpha."
+                    f"Monitoring {n_mon} observations across {om_mon.size} frequencies with "
+                    f"unadjusted multiplicity control (freq_correction={eff_freq_corr!r}, "
+                    f"sequential_control={eff_seq_ctrl!r}). Cumulative false-alarm probability "
+                    "can exceed nominal alpha."
                 ),
             )
         )
@@ -1194,6 +1289,7 @@ def just_monitor(
                 alpha,
                 int(n_mc),
                 v_out_all is not None,
+                allssa_cs_coeff=allssa_cs_coeff if season_norm == "allssa" else None,
             )
             if consec_alpha is None:
                 warnings_list.append(
@@ -1370,13 +1466,14 @@ def just_monitor(
                 alpha,
                 trend_norm,
                 False,
-                decimal=1,
+                decimal=(1 if parity_mode else 2),
                 max_iter=200,
                 parity_mode=parity_mode,
                 compute_cov=False,
                 robust=eff_robust,
                 huber_k=huber_k,
                 significance=season_sig,
+                n_mc=int(n_mc),
             )
             tr_c = j_res.trend_coeff
             cond_max = max(cond_max, j_res.condition_number_max)

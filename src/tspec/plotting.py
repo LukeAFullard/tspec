@@ -271,6 +271,16 @@ def plot_just_decompose(
     axes[0].legend(frameon=False, loc="best", ncol=3)
 
     if result.trend_reg is not None and result.eval_times_raw is not None:
+        tr_reg_line = (
+            result.trend_reg_bc
+            if (show_ci and result.trend_reg_bc is not None)
+            else result.trend_reg
+        )
+        tr_reg_lbl = (
+            "Trend (bias-corrected, reg)"
+            if (show_ci and result.trend_reg_bc is not None)
+            else "Trend (reg)"
+        )
         if show_ci:
             _plot_ci_band(
                 axes[1],
@@ -282,9 +292,19 @@ def plot_just_decompose(
                 label=f"{pct} CI",
             )
         axes[1].plot(
-            result.eval_times_raw, result.trend_reg, color=_BLUE, lw=1.6, label="Trend (reg)"
+            result.eval_times_raw, tr_reg_line, color=_BLUE, lw=1.6, label=tr_reg_lbl
         )
     else:
+        tr_line = (
+            result.trend_bc
+            if (show_ci and result.trend_bc is not None)
+            else result.trend
+        )
+        tr_lbl = (
+            "Trend (bias-corrected)"
+            if (show_ci and result.trend_bc is not None)
+            else "Trend"
+        )
         if show_ci:
             _plot_ci_band(
                 axes[1],
@@ -295,11 +315,16 @@ def plot_just_decompose(
                 alpha=0.22,
                 label=f"{pct} CI",
             )
-        axes[1].plot(result.times_raw, result.trend, color=_BLUE, lw=1.6, label="Trend")
+        axes[1].plot(result.times_raw, tr_line, color=_BLUE, lw=1.6, label=tr_lbl)
     axes[1].set_ylabel("Trend")
     axes[1].legend(frameon=False, loc="best")
 
     if result.seasonal_reg is not None and result.eval_times_raw is not None:
+        s_reg_line = (
+            result.seasonal_reg_bc
+            if (show_ci and result.seasonal_reg_bc is not None)
+            else result.seasonal_reg
+        )
         if show_ci:
             _plot_ci_band(
                 axes[2],
@@ -311,9 +336,14 @@ def plot_just_decompose(
                 label=f"{pct} CI",
             )
         axes[2].plot(
-            result.eval_times_raw, result.seasonal_reg, color=_GREEN, lw=1.3, label="Seasonal (reg)"
+            result.eval_times_raw, s_reg_line, color=_GREEN, lw=1.3, label="Seasonal (reg)"
         )
     else:
+        s_line = (
+            result.seasonal_bc
+            if (show_ci and result.seasonal_bc is not None)
+            else result.seasonal
+        )
         if show_ci:
             _plot_ci_band(
                 axes[2],
@@ -324,7 +354,7 @@ def plot_just_decompose(
                 alpha=0.22,
                 label=f"{pct} CI",
             )
-        axes[2].plot(result.times_raw, result.seasonal, color=_GREEN, lw=1.3, label="Seasonal")
+        axes[2].plot(result.times_raw, s_line, color=_GREEN, lw=1.3, label="Seasonal")
     axes[2].axhline(0.0, color=_GRAY, lw=0.7, ls=":")
     axes[2].set_ylabel("Seasonal")
     axes[2].legend(frameon=False, loc="best")
