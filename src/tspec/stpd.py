@@ -115,7 +115,25 @@ class TurningPointEvent:
 
 @dataclass(frozen=True)
 class FlaggedJumpCandidate:
-    """High-NDRI window candidate rejected as a turning point (likely a datum jump)."""
+    """High-NDRI window candidate rejected as a turning point (likely a datum jump).
+
+    Attributes
+    ----------
+    index, valid_index : int
+        0-based candidate index on the input / valid axis.
+    time : Any
+        Candidate timestamp in the original time representation.
+    time_year : float
+        Candidate timestamp in continuous decimal years.
+    direction : float
+        Estimated slope change (post minus pre, per time unit).
+    pvalue : float
+        Screening or calibrated slope-change p-value.
+    ndri_l2, ndri_rmse : float
+        Normalized difference residual index (L2 norm and RMSE variants).
+    fb_diff : int
+        Forward-minus-backward sequential knot index discrepancy.
+    """
 
     index: int
     valid_index: int

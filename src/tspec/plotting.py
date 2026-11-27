@@ -129,7 +129,7 @@ def plot_lssa(result: LssaResult, ax: Any = None, **kwargs: Any) -> tuple[Any, A
             color=_ORANGE,
             ls="--",
             lw=1.2,
-            label=f"Critical ({100 * (1 - result.alpha):.1f}%)",
+            label=f"Per-frequency critical ({100 * (1 - result.alpha):.1f}%)",
         )
     ax.set_xlabel("Cyclic Frequency")
     ax.set_ylabel("Percentage Variance (%)")
@@ -151,7 +151,7 @@ def plot_allssa(result: AllssaResult, ax: Any = None, **kwargs: Any) -> tuple[An
         ax.stem(result.frequencies, result.amplitudes, basefmt=" ")
     ax.set_xlabel("Cyclic Frequency")
     ax.set_ylabel("Amplitude")
-    ax.set_title("ALLSSA Significant Harmonics")
+    ax.set_title("ALLSSA Selected Harmonics")
     ax.grid(True, alpha=0.3)
     return fig, ax
 

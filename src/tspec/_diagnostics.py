@@ -16,7 +16,19 @@ AutocorrSeverity = Literal["none", "moderate", "strong"]
 
 @dataclass(frozen=True)
 class WarningItem:
-    """Structured diagnostic notice attached to result objects."""
+    """Structured diagnostic notice attached to result objects.
+
+    Attributes
+    ----------
+    code : str
+        Machine-readable warning identifier (e.g. ``'STRONG_AUTOCORRELATION'``).
+    severity : {"info", "caution", "warning"}
+        Severity level of the diagnostic notice.
+    message : str
+        Human-readable description of the detected condition.
+    suggestion : str
+        Optional actionable guidance for mitigating the condition.
+    """
 
     code: str
     severity: WarningSeverity
@@ -26,7 +38,20 @@ class WarningItem:
 
 @dataclass(frozen=True)
 class RedNoiseDiagnostics:
-    """Residual autocorrelation (red-noise) diagnostics for uneven series."""
+    """Residual autocorrelation (red-noise) diagnostics for uneven series.
+
+    Attributes
+    ----------
+    lag1_autocorr : float
+        Sequential lag-1 sample autocorrelation of residuals (``NaN`` if ``n < 5``).
+    ou_decay_corr : float
+        Equivalent lag-1 correlation at median time step under continuous-time
+        Ornstein-Uhlenbeck decay ``exp(-dt / tau)``.
+    effective_sample_size : float
+        Autocorrelation-adjusted effective sample size ``n_eff``.
+    severity : {"none", "moderate", "strong"}
+        Qualitative red-noise classification.
+    """
 
     lag1_autocorr: float
     ou_decay_corr: float
@@ -36,7 +61,25 @@ class RedNoiseDiagnostics:
 
 @dataclass(frozen=True)
 class DiagnosticReport:
-    """Consolidated numerical, sampling, and statistical diagnostics."""
+    """Consolidated numerical, sampling, and statistical diagnostics.
+
+    Attributes
+    ----------
+    red_noise : RedNoiseDiagnostics or None
+        Residual autocorrelation diagnostics, when available.
+    condition_number_max : float
+        Maximum design-matrix condition number encountered during fitting.
+    n_input : int
+        Total number of input observations before dropping ``NaN`` entries.
+    n_valid : int
+        Number of finite observations retained for analysis.
+    n_dropped_nan : int
+        Number of non-finite observations dropped transparently.
+    sampling_rate_ratio : float
+        Ratio of upper-to-lower sampling density across the record.
+    warnings : tuple of WarningItem
+        Structured warnings and cautions emitted during analysis.
+    """
 
     red_noise: RedNoiseDiagnostics | None
     condition_number_max: float

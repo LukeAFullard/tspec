@@ -150,6 +150,7 @@ def test_high03_monitor_forecast_uncertainty_and_long_horizon_warning() -> None:
     res = just_monitor(t, y, start=48, season="ols", alpha=0.05)
     codes = {w.code for w in res.diagnostics.warnings}
     assert "LONG_MONITORING_HORIZON" in codes
+    assert not res.detected
 
 
 def test_high04_mixed_constant_left_right_no_false_dl_shifts() -> None:
@@ -363,10 +364,12 @@ def test_med02_stpd_weighted_snr_and_ndri() -> None:
     st_eq = _tpd_window(t, y, margin=3, w=w_eq)
     st_dn = _tpd_window(t, y, margin=3, w=w_down)
     assert st_dn.snr_centered > st_eq.snr_centered * 5.0
+    assert st_dn.ndri_rmse < st_eq.ndri_rmse
 
     pw_eq = fit_piecewise_trend(t, y, [30], weights=w_eq)
     pw_dn = fit_piecewise_trend(t, y, [30], weights=w_down)
     assert pw_dn.local_snr_centered[0] > pw_eq.local_snr_centered[0] * 5.0
+    assert pw_dn.local_ndri_rmse[0] < pw_eq.local_ndri_rmse[0]
 
 
 def test_med03_just_decompose_eval_times_across_large_gap() -> None:
@@ -379,7 +382,10 @@ def test_med03_just_decompose_eval_times_across_large_gap() -> None:
     res = just_decompose(
         t, y, window_mode="duration", window_duration=2.5, step_duration=1.0, eval_times=eval_t, season="ols"
     )
-    assert res.trend.size == eval_t.size
+    assert res.trend.size == t.size
+    assert res.trend_reg is not None and res.trend_reg.size == eval_t.size
+    assert np.any(np.isnan(res.trend_reg))
+    assert np.all(np.isfinite(res.trend_reg[eval_t <= 2.5]))
     assert "SPARSE_WINDOW_SKIPPED" in {w.code for w in res.diagnostics.warnings}
 
 

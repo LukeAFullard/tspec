@@ -104,7 +104,25 @@ def _resolve_season_significance(value: str, parity_mode: bool) -> str:
 
 @dataclass(frozen=True)
 class WindowCandidate:
-    """Single-window jump candidate produced by sliding-window JUST search."""
+    """Single-window jump candidate produced by sliding-window JUST search.
+
+    Attributes
+    ----------
+    window_start, window_stop : int
+        Half-open valid-axis index slice ``[window_start, window_stop)`` of the window.
+    valid_index, index : int
+        Best split index on the valid / original input axis.
+    magnitude : float
+        Estimated vertical step at the candidate split (post minus pre).
+    direction : float
+        Estimated slope change at the candidate split (post minus pre, per time unit).
+    center_distance : float
+        Distance (observations) from the window center.
+    norm_res : float
+        Weighted residual norm of the winning two-piece fit.
+    selected_freqs : FloatArray
+        Seasonal frequencies active in the winning window model.
+    """
 
     window_start: int
     window_stop: int
@@ -139,7 +157,9 @@ class JumpEvent:
         p-value of the level-and-slope change (2 df), calibrated per
         ``JustJumpResult.jump_calibration``.
     step_pvalue : float
-        p-value of a vertical discontinuity beyond a continuous hinge (1 df).
+        p-value of a vertical discontinuity beyond a continuous hinge (1 df),
+        adjusted for split search (Bonferroni) and across candidates (Holm) when
+        ``jump_calibration != 'none'``.
     window_censored_fraction, coincides_with_dl_shift, dl_artifact_likely, stability_rate
         Censored-data diagnostics.
     """

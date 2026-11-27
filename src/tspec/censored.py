@@ -185,7 +185,23 @@ class CensoredConfig:
 
 @dataclass(frozen=True)
 class DlShiftEvent:
-    """Detected change in the active laboratory censoring / detection limit."""
+    """Detected change in the active laboratory censoring / detection limit.
+
+    Attributes
+    ----------
+    index, valid_index : int
+        0-based observation index of the limit transition on the input / valid axis.
+    time : Any
+        Timestamp of the transition in the original time representation.
+    time_year : float
+        Timestamp of the transition in continuous decimal years.
+    old_limit, new_limit : float
+        Previous and new censoring limit values.
+    relative_change : float
+        Relative magnitude ``|new_limit - old_limit| / max(|old_limit|, eps)``.
+    side : {"left", "right"}
+        Whether the shift occurred on left-censored or right-censored limits.
+    """
 
     index: int
     valid_index: int
@@ -199,7 +215,49 @@ class DlShiftEvent:
 
 @dataclass(frozen=True)
 class CensoringProvenance:
-    """Full provenance of censored inputs, imputation outputs, and diagnostics."""
+    """Full provenance of censored inputs, imputation outputs, and diagnostics.
+
+    Attributes
+    ----------
+    method : str
+        Imputation engine actually applied (``'censored_regression'``, ``'ros'``,
+        ``'parametric'``, or ``'substitution'``).
+    censoring_type : str
+        Resolved censoring type (``'left'``, ``'right'``, ``'mixed'``, or ``'interval'``).
+    dist : str
+        Resolved parametric distribution (``'lognormal'``, ``'normal'``, ``'weibull'``).
+    impute_type : str
+        Imputation draw strategy (``'stochastic'``, ``'mean'``, or ``'quantile'``).
+    scope : str
+        Imputation scope (``'global'``, ``'windowed'``, or ``'seasonal_stratified'``).
+    censor_fraction : float
+        Fraction of valid observations that are censored.
+    n_censored, n_observed : int
+        Counts of censored and uncensored valid observations.
+    is_censored : BoolArray
+        Boolean mask over valid observations indicating censored entries.
+    status_codes : IntArray
+        Per-observation censoring codes (``-1`` left, ``0`` detected, ``+1`` right,
+        ``2`` interval).
+    original_values : FloatArray
+        Raw numeric values / limits prior to imputation.
+    original_left, original_right : FloatArray or None
+        Lower and upper bounds for interval-censored observations, if present.
+    imputed_values : FloatArray
+        Completed numeric series after imputation.
+    dl_shifts : tuple of DlShiftEvent
+        Detected laboratory detection-limit transitions.
+    ndimpute_attrs : dict
+        Diagnostic metadata returned by the imputation backend.
+    imputed_weight_factor : float
+        Weight multiplier applied to imputed observations.
+    n_stability_draws : int
+        Number of stochastic stability replicates requested.
+    stability_mode : str
+        Stability resampling mode (``'stochastic'`` or ``'bootstrap'``).
+    window_fallback_count : int
+        Number of windows or strata that fell back to global imputation.
+    """
 
     method: str
     censoring_type: str

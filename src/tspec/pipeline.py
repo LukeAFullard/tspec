@@ -307,8 +307,14 @@ class PipelineResult(BaseResult):
                     msg += f", p={seg.pvalue:.2e}"
                 lines.append(msg + ".")
             if self.band_method == "bootstrap":
+                has_mi = any(s.estimator == "ols_mi" for s in self.segments)
+                mi_note = (
+                    " (censored 'ols_mi' segments retain Rubin-pooled multiple-imputation CIs)"
+                    if has_mi
+                    else ""
+                )
                 lines.append(
-                    "Segment CIs and the trend band are detect-then-fit bootstrap intervals: "
+                    f"Segment CIs and the trend band are detect-then-fit bootstrap intervals{mi_note}: "
                     "they include turning-point location, jump-step and seasonal-estimation "
                     "uncertainty, but are conditional on the number of breakpoints found."
                 )

@@ -318,7 +318,7 @@ def make_tutorial_water_quality_censored() -> None:
         markeredgewidth=1.4,
         ms=6.0,
         ls="none",
-        label=f"Imputed <DL via ndimpute ROS ({cen.censor_fraction:.0%})",
+        label=f"Imputed <DL via Tobit MLE ({cen.censor_fraction:.0%})",
     )
     ax.step(dates, dl, where="post", color=GRAY, ls=":", lw=1.5, label="Lab detection limit (0.65 → 0.35 mg/L)")
 
@@ -347,7 +347,7 @@ def make_tutorial_water_quality_censored() -> None:
 
     ax.set_ylabel("Nitrate-N (mg/L)", fontweight="bold", color=DARK)
     ax.set_xlabel("Date", fontweight="bold", color=DARK)
-    ax.set_title("Censored Water-Quality Change Detection (<DL Imputation via ndimpute + DL-Shift Defense)",
+    ax.set_title("Censored Water-Quality Change Detection (<DL Trend-Aware Tobit MLE + DL-Shift Defense)",
                  fontsize=11.0, fontweight="bold", color=DARK, pad=8)
     ax.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="upper left", ncol=2, fontsize=8.2)
     _style_ax(ax)
@@ -523,7 +523,7 @@ def make_tutorial_nrt_monitoring() -> None:
         ax_bot.axvline(res.disturbance_time_year, color=ORANGE, ls="--", lw=1.4)
 
     ax_top.set_ylabel("Vegetation Index (EVI)", fontweight="bold", color=DARK)
-    ax_top.set_title("v1.1 Near-Real-Time Monitoring: tspec.just_monitor() with Šidák + Pocock Multiplicity Control",
+    ax_top.set_title("Near-Real-Time Monitoring: tspec.just_monitor() with Šidák + Pocock Multiplicity Control",
                      fontsize=11.0, fontweight="bold", color=DARK, pad=8)
     ax_top.legend(frameon=True, facecolor="white", edgecolor="#E2E8F0", loc="lower left", ncol=2, fontsize=8.0)
     _style_ax(ax_top)
@@ -537,7 +537,7 @@ def make_tutorial_nrt_monitoring() -> None:
     ax_bot.plot(st_t, [s.critical_value for s in res.steps], "--", color=DARK, lw=1.8,
                 label="Šidák + Pocock boundary (FWER ≤ 0.01)")
     ax_bot.plot(st_t, [s.critical_value for s in res_parity.steps], ":", color=GRAY, lw=1.5,
-                label="Unadjusted parity threshold (72.5% null FPR over 25 steps)")
+                label="Unadjusted parity threshold (per-frequency α = 0.01)")
 
     ax_bot.set_ylabel("Max Residual LSS", fontweight="bold", color=DARK)
     ax_bot.set_xlabel("Year", fontweight="bold", color=DARK)

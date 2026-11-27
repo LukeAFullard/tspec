@@ -41,14 +41,16 @@ def test_stpd_centered_snr_handles_large_baseline_unlike_raw(rng: np.random.Gene
     # Pure white noise around large baseline 300.0 (no turning point!)
     y_noise = 300.0 + rng.normal(0.0, 0.5, size=t.size)
     res_raw = detect_turning_points(
-        t, y_noise, size=60, step=12, margin=8, snr_mode="raw", ndri_mode="l2"
+        t, y_noise, size=60, step=12, margin=8, snr_mode="raw", snr_th=1.0, ndri_mode="l2"
     )
     codes = {w.code for w in res_raw.diagnostics.warnings}
     assert "RAW_SNR_LARGE_BASELINE" in codes
 
     # Real turning point around large baseline 300.0 works cleanly with centered SNR
     y_tp = 300.0 + np.where(t <= 3.0, 0.5 * t, 1.5 - 3.0 * (t - 3.0)) + rng.normal(0.0, 0.2, size=t.size)
-    res_cent = detect_turning_points(t, y_tp, size=60, step=12, margin=8, snr_mode="centered")
+    res_cent = detect_turning_points(
+        t, y_tp, size=60, step=12, margin=8, snr_mode="centered", snr_th=1.0
+    )
     assert len(res_cent.turning_points) == 1
     assert abs(res_cent.turning_points[0].time_year - 3.0) < 0.25
 

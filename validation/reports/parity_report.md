@@ -1,5 +1,7 @@
 # Tier 1 Numerical Parity & Divergence Report
 
+> **Historical Snapshot Notice:** This report predates subsequent calibration and hardening updates to default (non-parity) modes; `parity_mode=True` numerical parity targets remain unchanged, while default behavior is documented in `docs/guide/limitations.md` and `docs/reference/validation-summary.md`.
+
 - **Upstream Oracle:** `Ghaderpour/LSWAVE-SignalProcessing` @ `bd15923b1d4880b799b14fe016de4c1252259013`
 - **Summary:** **41 / 41 checks PASSED** (0 failures)
 - **Tolerances:** `rtol=1e-6, atol=1e-8` on continuous arrays; exact `==` on discrete indices and frequencies.

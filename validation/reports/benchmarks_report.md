@@ -1,5 +1,7 @@
 # Tier 2 Synthetic Ground-Truth & Monte Carlo Benchmarks Report
 
+> **Historical Snapshot Notice:** This report predates subsequent Monte Carlo calibration, bootstrap band, and hardening updates (default procedures have since been re-calibrated). See `docs/reference/validation-summary.md` and `docs/guide/limitations.md` for current behavior.
+
 - **Summary:** **26 / 26 benchmark gates PASSED** in 368.4s
 
 | ID | Benchmark Scenario | Status | Measured Metrics |

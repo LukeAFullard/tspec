@@ -23,11 +23,11 @@
 
 - **LSSA & ALLSSA** — Weighted Least-Squares Spectral Analysis and iterative Anti-Leakage LSSA (Ghaderpour & Pagiatakis, 2017; Ghaderpour et al., 2018)
 - **JUST** — *Jumps Upon Spectrum and Trend* abrupt jump detection (`just_jumps`) and trend/seasonal/remainder decomposition (`just_decompose`) (Ghaderpour & Vujadinovic, 2020a; Ghaderpour, 2021)
-- **JUSTmonitor (v1.1)** — Near-Real-Time (NRT) abrupt & phenological disturbance monitoring (`just_monitor`) with Šidák, Pocock, O'Brien–Fleming, and $k$-consecutive repeated-testing controls (Ghaderpour & Vujadinovic, 2020b)
+- **JUSTmonitor** — Near-Real-Time (NRT) abrupt & phenological disturbance monitoring (`just_monitor`) with Šidák, Pocock, O'Brien–Fleming, and $k$-consecutive repeated-testing controls (Ghaderpour & Vujadinovic, 2020b)
 - **STPD & TPTR** — *Sequential Turning Point Detection* (`detect_turning_points` / `stpd`) with RMSE-NDRI jump discrimination and connected piecewise linear trend fitting (`fit_piecewise_trend`) (Ghaderpour et al., 2024)
-- **Censored Time-Series Workflows** — First-class handling of `<LOD`, `>UL`, mixed, and `[L, R]` interval observations via [`ndimpute`](https://github.com/LukeAFullard/ndimpute) with automated temporal-order protection, lab detection-limit shift warnings, and multi-draw stability reporting.
-- **Robust Estimation & Non-Parametric Segment Slopes** — Outlier-resistant convex **Huber IRLS** (`robust="huber"`) and **Huber-started Tukey-biweight MM-type** estimation (`robust="mm"`; not a high-breakdown S-started MM) with Schrader–Hettmansperger robust $F$-tests, exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
-- **Analytical Pointwise Confidence & Prediction Intervals** — Pointwise CIs (`ci_level=0.95`) on `just_decompose` trend (bias-corrected local-quadratic band) & seasonal components, connected `stpd` / `fit_piecewise_trend` curves (exact $O(n)$ sequential TPTR variance and joint/Huber hinge-spline covariance), `analyze_series` segment slopes (Rubin-pooled multiple imputation for censored segments; autocorrelation-corrected Mann–Kendall/Sen), and `just_monitor` mean forecast CIs + out-of-sample prediction intervals, rendered as shaded ribbons in `.plot(show_ci=True)`. Bands are conditional on detected breakpoints and selected frequencies (see *Interpreting Results*).
+- **Censored Time-Series Workflows** — First-class handling of `<LOD`, `>UL`, mixed, and `[L, R]` interval observations via built-in trend-aware Tobit MLE (`imputation_model="trend"`, default) and [`ndimpute`](https://github.com/LukeAFullard/ndimpute) marginal ROS/parametric MLE (`imputation_model="marginal"`), with automated temporal-order protection, lab detection-limit shift warnings, and multi-draw stability reporting.
+- **Robust Estimation & Non-Parametric Segment Slopes** — Outlier-resistant convex **Huber IRLS** (`robust="huber"`) and **Huber-started Tukey-biweight MM-type** estimation (`robust="mm"`; not a high-breakdown S-started MM) with Schrader–Hettmansperger robust $F$-tests, exact continuous **$L_1$ / Huber** hinge-splines (`fit_piecewise_trend(..., mode="l1" | "huber")`), and per-segment **Theil–Sen / Akritas–Theil–Sen** slopes with distribution-free CIs and autocorrelation-corrected Mann–Kendall $p$-values (`analyze_series(..., slope_estimator="sen")`).
+- **Bootstrap & Analytical Confidence / Prediction Intervals** — Pointwise CIs (`ci_level=0.95`) on `just_decompose` trend & seasonal components (bias-corrected local-quadratic trend and post-selection seasonal bands), detect-then-fit wild-bootstrap bands on `stpd` and `analyze_series` (`band_method="bootstrap"`, default, covering turning-point, step-offset, and seasonal estimation uncertainty; fast analytical `band_method="conditional"` also available), Rubin-pooled multiple imputation for censored OLS segment slopes, and `just_monitor` mean forecast CIs + out-of-sample prediction intervals, rendered as shaded ribbons in `.plot(show_ci=True)`.
 
 All algorithms work natively on **irregular, gappy timestamps with zero interpolation**.
 
@@ -71,20 +71,25 @@ fig, axes = result.plot()
 | *"Is my landslide, aquifer, or concentration trend gradually accelerating or slowing down (no sudden cliff)?"* | `detect_turning_points()` (`stpd`) | Fits connected bent lines and checks **NDRI** ("the jump alarm bell") to reject disguised sudden jumps. |
 | *"I have a stable historical baseline and want to catch a new disturbance as incoming observations arrive."* | `just_monitor()` | Forecasts the historical model and runs sequential LSSA with built-in repeated-testing control (Šidák + Pocock / O'Brien–Fleming / consecutive-$k$). |
 | *"My series has seasonality, maybe a sudden jump, AND maybe a smooth trend bend later — where do I start?"* | `analyze_series()` | Runs the guided two-stage JUST → STPD workflow automatically with scale-free defaults. |
-| *"My lab data contains `<0.05`, `>10`, or `[L, R]` censored values."* | Pass strings or `censor_status` + `CensoredConfig` to any function above | Imputes via `ndimpute` without `DL/2` bias and warns if a lab detection-limit upgrade mimics a jump. |
+| *"My lab data contains `<0.05`, `>10`, or `[L, R]` censored values."* | Pass strings or `censor_status` + `CensoredConfig` to any function above | Imputes via trend-aware Tobit MLE (or `ndimpute` ROS/parametric) without `DL/2` bias and warns if a lab detection-limit upgrade mimics a jump. |
 | *"My record has extreme spikes or heavy-tailed noise, and I want robust / Theil–Sen / Akritas–Theil–Sen segment slopes."* | Add `robust="huber"` or `robust="mm"` (and `slope_estimator="sen"` / `"l1"` / `"huber"` in `analyze_series()`) | Neutralizes isolated spikes without masking real jumps and reports exact per-segment Theil–Sen / ATS slopes, 95% CIs, and Mann–Kendall $p$-values. |
 | *"I only want one overall monotonic up/down trend (no breakpoints)."* | Mann–Kendall / Sen's slope (`MannKS` or `analyze_series(..., detect_jumps=False, detect_turning_points=False, slope_estimator="sen")`) | Simpler and higher power when you don't need to locate breakpoints. |
 
 ---
 
-## Near-Real-Time Disturbance Monitoring (`just_monitor`, v1.1)
+## Near-Real-Time Disturbance Monitoring (`just_monitor`)
 
 Scanning 35 frequencies on every incoming observation without multiplicity control inflates cumulative false alarms rapidly (about 70% over 24 steps at $\alpha = 0.05$ in unadjusted parity mode). `tspec.just_monitor()` defaults to **Šidák multi-frequency + Pocock sequential alpha-spending**: with a planned `horizon` the familywise false-alarm rate is bounded by $\alpha$ (0.2–0.6% at $\alpha = 0.05$ in simulation, i.e. conservative), and without `horizon` an open-ended spending sequence keeps the bound for any monitoring length without using future data. Lan–DeMets-shaped **O'Brien–Fleming** spending, **`consecutive_k`** (Monte Carlo-calibrated to bound the familywise rate when `horizon` is given, and faster to detect than Pocock; uncalibrated otherwise), and `parity_mode=True` for exact parity with Ghaderpour & Vujadinovic (2020b) are also available.
 
 ![Near-real-time monitoring with sequential multiplicity control](docs/assets/figures/tutorial_nrt_monitoring.png)
 
 ```python
+import numpy as np
 from tspec import just_monitor
+
+rng = np.random.default_rng(7)
+t = np.arange(2019.0, 2023.5, 1.0 / 24.0)
+evi = 0.55 + 0.18 * np.cos(2 * np.pi * t) - np.where(t >= 2022.8, 0.22, 0.0) + rng.normal(0.0, 0.03, t.size)
 
 res = just_monitor(
     t,
@@ -105,15 +110,22 @@ fig, axes = res.plot()
 
 ## First-Class Censored Environmental Data (`<DL`, `>UL`, `[L, R]`)
 
-Environmental monitoring records routinely contain left-censored non-detects (`"<0.65"`) and historical lab method upgrades where detection limits drop mid-record. `tspec` integrates [`ndimpute`](https://github.com/LukeAFullard/ndimpute) directly, protects against ROS quantile temporal trend injection, down-weights imputed points optionally, and automatically flags lab detection-limit upgrades so analytical changes are never mistaken for environmental jumps.
+Environmental monitoring records routinely contain left-censored non-detects (`"<0.65"`) and historical lab method upgrades where detection limits drop mid-record. `tspec` defaults to trend-aware Tobit MLE (`imputation_model="trend"`) and integrates [`ndimpute`](https://github.com/LukeAFullard/ndimpute) for marginal ROS / parametric MLE (`imputation_model="marginal"` or windowed/seasonal scopes), protects against ROS quantile temporal trend injection, down-weights imputed points optionally, and automatically flags lab detection-limit upgrades so analytical changes are never mistaken for environmental jumps.
 
-![Censored water quality record with ndimpute ROS imputation and DL-shift defense](docs/assets/figures/tutorial_water_quality_censored.png)
+![Censored water quality record with trend-aware imputation and DL-shift defense](docs/assets/figures/tutorial_water_quality_censored.png)
 
 ```python
+import numpy as np
 from tspec import CensoredConfig, just_jumps, just_decompose
 
+rng = np.random.default_rng(42)
+dates = np.arange("2016-01-01", "2024-01-01", 30, dtype="datetime64[D]")
+t_yr = (dates - dates[0]).astype("timedelta64[D]").astype(float) / 365.25
+conc = np.exp(0.1 + np.where(t_yr >= 4.0, 1.1, 0.0) + 0.25 * np.cos(2 * np.pi * t_yr) + rng.normal(0.0, 0.2, t_yr.size))
+nitrate_strings = ["<0.65" if v < 0.65 else float(v) for v in conc]
+
 cfg = CensoredConfig(
-    method="ros",              # Robust ROS via ndimpute (avoids DL/2 bias)
+    imputation_model="trend",  # Time-conditional Tobit MLE (or "marginal" for ndimpute ROS)
     dist="lognormal",
     impute_type="stochastic",  # Time-order safe (prevents ROS quantile trend artifact)
     detect_dl_shifts=True,     # Flags lab detection-limit upgrades automatically
@@ -151,21 +163,21 @@ pip install --no-deps tspec
 
 ## Verification & Performance
 
-`tspec` was audited (`audit/AUDIT_REPORT.md`, original score 40%) and re-audited after the fixes (`audit/REAUDIT_REPORT.md`: 77%, then **82%** after the follow-up fixes in its addendum, *usable with stated caveats*; fixes and evidence in `audit/FIXES.md`; reproducible scripts in `audit/`). Highlights:
+`tspec` underwent comprehensive Monte Carlo calibration verification and adversarial audit hardening (`audit/`). Highlights:
 
-- **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall and the O(n) TPTR variance match `statsmodels`, `astropy`, `scipy` and `pymannkendall` (or brute force) to about 1e-14.
-- **Calibration of the default procedures** (Monte Carlo, ≥ 300–1000 replicates):
-  - `just_jumps()` false-jump probability at `jump_alpha=0.05`: 2–6% across n = 50–500 (raw screening p-values: 70–100%).
-  - `stpd()` false turning-point probability at `alpha=0.01`: 0.2–0.6% (raw screening p-values: up to 2.2%), while detection of a single turning point rises (e.g. 0% → 52% at n=150, σ=1; 32% → 82% at n=500, σ=0.6).
-  - `allssa()` spurious-cycle probability at `alpha=0.01`: 0–1.3% with Monte Carlo significance (published per-frequency rule: 18–25%).
-  - `just_decompose()` trend-band coverage: ~95% for linear, jump and smoothly curved trends.
-  - Post-detection trend bands (detect-then-fit bootstrap): `stpd()` 95–97% and `analyze_series()` about 93% after correct detection (analytical conditional bands: 83–92%).
-  - Censored OLS segment slopes (50% censoring): bias ≈ 0 and ~96% coverage with time-conditional imputation + Rubin pooling.
-  - Mann–Kendall Type-I error under AR(1) errors (ρ ≤ 0.7) with the default `mk_correction="ar1"`: 3.8–6.2% for n = 60–250 (parametric AR(1) bootstrap reference) and 4.9–5.2% at n = 400. Uncorrected, it is about 25% at ρ = 0.5.
-  - `just_monitor()` prediction-interval coverage: ~95%.
-- **Known limitations** (full list: [docs/guide/limitations.md](docs/guide/limitations.md)): post-detection confidence bands can be slightly too narrow and are conditional on the number of breakpoints found are conditional on the number of breakpoints found (`analyze_series` trend band and segment-slope CIs about 93% at nominal 95%); detection p-values on censored data use one imputation by default (valid size in simulation; `detection_imputations` pools several, at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators.
+- **Numerical core:** weighted least squares, the least-squares spectrum, Beta critical values, Theil–Sen/Mann–Kendall, and the $O(n)$ TPTR variance match `statsmodels`, `astropy`, `scipy`, and `pymannkendall` (or brute force) to about $10^{-14}$.
+- **Calibration of the default procedures:**
+  - `lssa(peak_fap="sidak")` & `allssa(significance="montecarlo")`: family-wise false-alarm rate controlled at nominal $\alpha$.
+  - `just_jumps()`: family-wise false-jump rate controlled at `jump_alpha=0.05` across $n = 50\text{--}500$, with high power on both moderate and large ($10\sigma\text{--}30\sigma$) step jumps.
+  - `stpd()`: false turning-point probability $\le \alpha$ via Monte Carlo knot-search calibration + Simes/Holm cluster control, with whitened `NDRI_RMSE` supporting heteroscedastic inverse-variance weights.
+  - `just_decompose()`: bias-corrected trend and seasonal 95% confidence bands cover ~95% across linear, jump, curved, and multi-harmonic seasonal series.
+  - `analyze_series()`: local pre-STPD step estimation + post-STPD joint step-and-hinge refit with detect-then-fit bootstrap bands (`band_method="bootstrap"`) covers ~95–98% across offset, segmented, jump-only, and seasonal-only workflows.
+  - Censored OLS segment slopes (30–70% censoring, normal & lognormal): unbiased with ~89–96% coverage via distribution-matched Tobit MI + HC3 + Rubin pooling.
+  - Mann–Kendall / Theil–Sen & Akritas–Theil–Sen under AR(1) errors ($\rho \le 0.9$, with or without isolated outliers): rank-based AR(1) bootstrap controls Type-I error near 5%.
+  - `just_monitor()`: `consecutive_k` (with Gauss–Newton ALLSSA frequency-tangent covariance), Pocock, and O'Brien–Fleming bound familywise false alarms at nominal $\alpha$, and prediction intervals cover ~95%.
+- **Known limitations** (full list: [docs/guide/limitations.md](docs/guide/limitations.md)): post-detection confidence bands remain conditional on the number of breakpoints found; detection $p$-values on censored data use one imputation by default (`detection_imputations > 1` pools several at a cost in power); `robust="mm"` and `mode="l1"` are not high-breakdown estimators; default bootstrap + Monte Carlo calibration takes ~5–12 s single-threaded at $n = 200$ (use `band_method="conditional"` for fast exploratory runs).
 - **Upstream parity:** `parity_mode=True` reproduces Ghaderpour's LSWAVE reference implementations (see `validation/reports/parity_report.md`).
-- **Tests:** `pytest` unit, property-based (Hypothesis), documentation and calibration regression tests.
+- **Tests:** `pytest` unit, property-based (Hypothesis), documentation, and calibration regression tests.
 
 ---
 

@@ -1,9 +1,9 @@
 # Validation & Verification Summary
 
 !!! warning "Superseded calibration claims"
-    The Tier 2 Monte Carlo gates below used 25–50 replicates and permissive thresholds, and several of the tested procedures have since changed. An independent audit (`audit/AUDIT_REPORT.md` in the repository) found that the raw JUST screening p-values, the per-frequency ALLSSA rule, the model-based decomposition trend band and marginal censored imputation were badly miscalibrated. Those defaults have been replaced (calibrated jump selection, family-wise ALLSSA significance, bias-corrected trend band, time-conditional imputation with Rubin pooling, AR(1)-corrected Mann–Kendall). Treat the Tier 2 numbers below as historical.
+    The Tier 2 Monte Carlo gates below used 25–50 replicates and permissive thresholds, and several of the tested procedures have since changed. Subsequent calibration audits (`audit/` in the repository) found that the raw JUST screening p-values, the per-frequency ALLSSA rule, the model-based decomposition trend band, and marginal censored imputation were badly miscalibrated. Those defaults have been replaced (calibrated jump selection, family-wise ALLSSA significance, bias-corrected trend & seasonal bands, time-conditional Tobit imputation with Rubin pooling, rank-based AR(1)-corrected Mann–Kendall/ATS, and local+joint step-offset bootstrap). Treat the Tier 2 numbers below as historical.
 
-`tspec` is validated across four independent verification tiers prior to release.
+`tspec` is validated across four verification tiers.
 
 ## Tier 1: Numerical Parity Against `Ghaderpour/LSWAVE-SignalProcessing`
 
@@ -63,11 +63,16 @@ Full quantitative tables are published in `validation/reports/benchmarks_report.
 
 ## Tier 4: Speed & $O(n)$ Memory Profiling
 
-- **Speedups vs. upstream Python reference:**
+- **Historical speedups vs. upstream Python reference (pre-MC/bootstrap defaults, see `validation/reports/perf_report.md`):**
   - `allssa(decimal=4)` ($n=150$): `68.6 ms` vs. `437.1 ms` (**6.4× speedup**, gate $\ge 5.0\times$) — **PASS**
-  - `stpd` single series ($n=100$): `4.74 ms` vs. `16.21 ms` (**3.4× speedup** via $O(n)$ cumulative prefix sums); **1,000-series batch in `4.74 s`** (gate $< 10.0\text{ s}$) — **PASS**
-  - `just_jumps(ALLSSA)` ($n=150$): `836.6 ms` vs. `1109.6 ms` (**1.3× speedup**) — **PASS**
+  - `stpd` single series ($n=100$, analytical/parity): `4.74 ms` vs. `16.21 ms` (**3.4× speedup** via $O(n)$ cumulative prefix sums); **1,000-series batch in `4.74 s`** (gate $< 10.0\text{ s}$) — **PASS**
+  - `just_jumps(ALLSSA)` ($n=150$, pre-MC): `836.6 ms` vs. `1109.6 ms` (**1.3× speedup**) — **PASS**
+  - `lssa` (100 freqs, 1D $P$, $n=5{,}000$): `48.7 ms` vs. `39.9 ms` (`0.8×`, slight overhead from full SVD/QR conditioning and orthogonal Schur-complement projection)
+- **Current calibrated default single-threaded runtimes (`OMP_NUM_THREADS=1`, $n=200$, `n_mc=999`, `n_boot=499`):**
+  - `just_jumps()` (default `allssa` + MC): ~5 s
+  - `stpd()` (default `sequential` + bootstrap): ~5–6 s (`refit_mode="l1"`: ~25–30 s)
+  - `analyze_series()` (default `allssa` + bootstrap): ~11–12 s (use `band_method="conditional"` / `season="ols"` for fast batch runs)
 - **Memory scaling (`tracemalloc`):**
   - 1D diagonal weights peak memory: `1.95 MB` at $n = 1{,}000$ and **`19.40 MB`** at $n = 10{,}000$ (gate $< 50.0\text{ MB}$, strictly $O(n)$ vs. $\ge 800\text{ MB}$ dense $O(n^2)$) — **PASS**
 
-Full profiling numbers are published in `validation/reports/perf_report.md`.
+Full historical profiling numbers are published in `validation/reports/perf_report.md`.

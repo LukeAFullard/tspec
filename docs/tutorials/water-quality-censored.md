@@ -7,7 +7,7 @@ In this tutorial you will analyze an irregular 8-year river nitrate series conta
 - ~25% left-censored `<DL` lab reports
 - A true management-driven concentration drop in 2019
 
-![Censored water-quality change detection with ndimpute ROS and DL-shift defense](../assets/figures/tutorial_water_quality_censored.png)
+![Censored water-quality change detection with trend-aware imputation and DL-shift defense](../assets/figures/tutorial_water_quality_censored.png)
 
 ## Step 1: Simulate a Realistic Water-Quality Record
 
@@ -34,16 +34,16 @@ dl = 0.80
 lab_strings = [f"<{dl:.2f}" if v < dl else f"{v:.3f}" for v in nitrate_true]
 ```
 
-## Step 2: Run `analyze_series()` with `ndimpute` Safeguards
+## Step 2: Run `analyze_series()` with Censored-Data Safeguards
 
 ```python
 result = tspec.analyze_series(
     dates,
     lab_strings,
     censoring=CensoredConfig(
-        method="ros",              # Robust ROS (Helsel 2012)
+        imputation_model="trend",  # Time-conditional Tobit MLE (or "marginal" for ndimpute ROS)
         dist="lognormal",
-        impute_type="stochastic",  # Time-order safe (no ROS quantile trend artifact)
+        impute_type="stochastic",  # Time-order safe (no quantile trend artifact)
         n_stability_draws=20,      # Checks breakpoint stability across 20 tail draws
         detect_dl_shifts=True,     # Warns if a jump coincides with a lab DL upgrade
         random_state=0,
@@ -65,7 +65,7 @@ res_check = tspec.just_jumps(
     lab_strings,
     jump_alpha=0.05,  # family-wise calibrated by default (jump_calibration="montecarlo")
     censoring=CensoredConfig(
-        method="ros",
+        imputation_model="trend",
         dist="lognormal",
         detect_dl_shifts=True,
         recensor_check=True,

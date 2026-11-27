@@ -1,5 +1,7 @@
 # Tier 4 Performance & Memory Profiling Report
 
+> **Historical Snapshot Notice:** These timings predate the default Monte Carlo and detect-then-fit bootstrap calibration additions (`n_mc=999`, `n_boot=499`). See `docs/guide/limitations.md` and `docs/reference/validation-summary.md` for current single-threaded wallclock timings.
+
 ## Speed Comparison vs. Upstream Python Reference
 
 | Benchmark | $n$ | `tspec` | Upstream Python | Speedup |

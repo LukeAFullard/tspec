@@ -323,3 +323,74 @@ references:
       name: "John Wiley & Sons"
     year: 1987
     doi: "10.1002/9780470316696"
+  - type: article
+    title: "Tail behavior of regression estimators and their breakdown points"
+    authors:
+      - family-names: He
+        given-names: Xuming
+      - family-names: Jurečková
+        given-names: Jana
+      - family-names: Koenker
+        given-names: Roger
+      - family-names: Portnoy
+        given-names: Stephen
+    journal: "Econometrica"
+    volume: 58
+    issue: 5
+    pages: "1195-1214"
+    year: 1990
+    doi: "10.2307/2938306"
+  - type: article
+    title: "Bias in the estimation of autocorrelations"
+    authors:
+      - family-names: Marriott
+        given-names: F. H. C.
+      - family-names: Pope
+        given-names: J. A.
+    journal: "Biometrika"
+    volume: 41
+    issue: "3/4"
+    pages: "390-402"
+    year: 1954
+    doi: "10.1093/biomet/41.3-4.390"
+  - type: thesis
+    title: "New Methods for Generating Significance Levels from Multiply-Imputed Data"
+    authors:
+      - family-names: Licht
+        given-names: Christian
+    institution:
+      name: "University of Bamberg"
+    year: 2010
+  - type: book
+    title: "Flexible Imputation of Missing Data"
+    edition: "2nd"
+    authors:
+      - family-names: van Buuren
+        given-names: Stef
+    publisher:
+      name: "Chapman & Hall/CRC"
+    year: 2018
+    doi: "10.1201/9780429492259"
+  - type: article
+    title: "Multiple-imputation inferences with uncongenial sources of input"
+    authors:
+      - family-names: Meng
+        given-names: Xiao-Li
+    journal: "Statistical Science"
+    volume: 9
+    issue: 4
+    pages: "538-558"
+    year: 1994
+    doi: "10.1214/ss/1177010269"
+  - type: article
+    title: "The relation between measures of correlation in the universe of sample permutations"
+    authors:
+      - family-names: Daniels
+        given-names: H. E.
+    journal: "Biometrika"
+    volume: 33
+    issue: 2
+    pages: "129-135"
+    year: 1944
+    doi: "10.1093/biomet/33.2.129"
+

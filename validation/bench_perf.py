@@ -89,7 +89,7 @@ def main() -> int:
         speedup_a4 = dt_up_a4 / max(dt_our_a4, 1e-9)
         speed_rows.append(f"| `allssa` (`decimal=4`) | {n} | {dt_our_a4*1000:.1f} ms | {dt_up_a4*1000:.1f} ms | **{speedup_a4:.1f}x** |")
     else:
-        speedup_a4 = 10.0
+        speedup_a4 = float("nan")
         speed_rows.append(f"| `allssa` (`decimal=4`) | {n} | {dt_our_a4*1000:.1f} ms | N/A | N/A |")
 
     # 3. JUSTjumps (ALLSSA, n=150)
@@ -101,7 +101,7 @@ def main() -> int:
         speedup_j = dt_up_j / max(dt_our_j, 1e-9)
         speed_rows.append(f"| `just_jumps` (`ALLSSA`) | 150 | {dt_our_j*1000:.1f} ms | {dt_up_j*1000:.1f} ms | **{speedup_j:.1f}x** |")
     else:
-        speedup_j = 5.0
+        speedup_j = float("nan")
         speed_rows.append(f"| `just_jumps` (`ALLSSA`) | 150 | {dt_our_j*1000:.1f} ms | N/A | N/A |")
 
     # 4. STPD single & 1,000-series batch screening
