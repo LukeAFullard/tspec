@@ -72,6 +72,16 @@ Executed against the current hardened codebase (`validation/bench_literature_and
 | `SC2` | Compound interaction matrix (bend + ALLSSA `step_pvalue`, 4× variance shift + weighted NDRI, quadratic trend CI, 2D SPD robust monotonicity) | **PASS** | All 4 pairwise interaction gates passed (`quad_cov = 100%`) |
 | `SC3` | Exact invariance laws & strict online NRT causality | **PASS** | Time-origin shift, affine $y$-scaling, weight scaling, and bit-for-bit NRT causality verified |
 
+## Tier 2c: Real-World Public-Domain Datasets (`RW1–RW3`)
+
+Executed offline against classic public-domain scientific records stored in `validation/data/` (`validation/bench_public_datasets.py`, report in `validation/reports/public_datasets_report.md`): **3 / 3 gates PASSED** (`0.4 s` single-threaded).
+
+| Gate | Public-Domain Dataset | Status | Measured Result |
+| :--- | :--- | :---: | :--- |
+| `RW1` | Nile River annual flow at Aswan (1871–1970; Cobb, 1978) | **PASS** | `just_jumps` recovers classic **1899** Aswan drop ($\Delta = -283.9$, $p = 0.0009$, `step_pvalue = 0.0159`); `just_monitor(start=1895)` triggers `"abrupt"` alarm at **1902** |
+| `RW2` | NOAA Mauna Loa monthly $\text{CO}_2$ (1958–2026; 20% random missing months + 1964/1984 outages, zero interpolation) | **PASS** | `allssa` recovers exact `[1.0, 2.0]` cy/yr harmonics; `just_decompose(trend_ci_method="bias_corrected")` matches NOAA's official deseasonalized record to **RMSE = `0.327 ppm`** across 68 yr; STPD traces acceleration from **0.72 → 3.41 ppm/yr** |
+| `RW3` | Annual Sunspot Numbers (1700–2008; 30% missing years + 10-year 1820–1830 blackout, zero interpolation) | **PASS** | `lssa` recovers exact **10.99-year** Schwabe solar cycle ($f = 0.0910$ cy/yr, `peak_fap = 1.97e-11`) |
+
 ## Tier 3: Unit, Invariance, Edge-Case & Property-Based Tests
 
 - **181 automated `pytest` tests** (unit, property, robust, audit-regression, and end-to-end executable documentation smoke & recovery tests across all guides and tutorials) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), extreme baseline/scale numerical stability, Huber/MM-biweight/Theil–Sen/Akritas–Theil–Sen/$L_1$ robustness, causal NRT censoring, degenerate/constant/rank-deficient inputs, unpacked sdist verification, and headless plotting smoke tests.
