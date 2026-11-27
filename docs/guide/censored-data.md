@@ -2,9 +2,9 @@
 
 Environmental and analytical time series frequently contain **censored values** — measurements below a laboratory Limit of Detection (e.g., `"<0.05"` mg/L), above an upper reporting limit (`">100"`), or known only to lie within an interval (`[0.2, 0.5]`).
 
-`tspec` integrates [`ndimpute`](https://github.com/LukeAFullard/ndimpute) directly into `just_jumps()`, `just_decompose()`, `just_monitor()`, `detect_turning_points()`, and `analyze_series()` while adding time-series-specific safeguards.
+`tspec` combines built-in **trend-aware Tobit censored-regression MLE** (`imputation_model="trend"`, default) with [`ndimpute`](https://github.com/LukeAFullard/ndimpute) marginal ROS / parametric MLE (`imputation_model="marginal"` and windowed/seasonal scopes) directly inside `just_jumps()`, `just_decompose()`, `just_monitor()`, `detect_turning_points()`, and `analyze_series()`, adding time-series-specific safeguards.
 
-![Censored water-quality change detection with ndimpute ROS and DL-shift defense](../assets/figures/tutorial_water_quality_censored.png)
+![Censored water-quality change detection with trend-aware imputation and DL-shift defense](../assets/figures/tutorial_water_quality_censored.png)
 
 ---
 
@@ -36,7 +36,9 @@ y_strings = [f"<{0.8}" if v < 0.8 else float(v) for v in conc]
 res = analyze_series(dates, y_strings)
 
 # 2. Numeric array + boolean/signed-integer/LWPTrends status array
-#    status: boolean True = left-censored (default), or signed -1=left, 0=obs, +1=right, or 'lt'/'gt'/'not'
+#    status: boolean True = left-censored (<DL), OR signed int -1=left, 0=obs, +1=right, OR 'lt'/'gt'/'not'
+#    Note: integer {0, 1} without censoring_type treats +1 as RIGHT-censored (and emits
+#    INTEGER_STATUS_INTERPRETED_AS_RIGHT); pass bool or -1/0 for left-censored <DL data!
 is_left_censored = conc < 0.8
 values = np.where(is_left_censored, 0.8, conc)
 res = analyze_series(dates, values, censor_status=is_left_censored)
@@ -76,9 +78,9 @@ Use `n_stability_draws` to report how often each breakpoint recurs across imputa
 ### 3. Imputation Scopes for Non-Stationary Series
 Because `ndimpute` fits a single marginal distribution, a huge regime jump (e.g., 60% `<DL` before a factory opens, 5% `<DL` afterward) can distort global imputations. Choose from three explicit scopes:
 
-- `scope="global"` *(default)*: Lowest variance; best when censoring is $<30\%$ and regimes are comparable. Automatically emits `NONSTATIONARY_CENSORING_PATTERN` if censoring differs by $>30\%$ between halves of the record.
-- `scope="windowed"`: Re-fits `ndimpute` locally inside each sliding JUST/STPD window (falling back to global when a window has $<5$ detects or $>80\%$ censoring).
-- `scope="seasonal_stratified"`: Imputes separately by calendar quarter so summer baseflow non-detects aren't distorted by winter stormflow peaks.
+- `scope="global"` *(default)*: Lowest variance; uses trend-aware Tobit MLE (`imputation_model="trend"`) and automatically emits `NONSTATIONARY_CENSORING_PATTERN` if censoring differs by $>30\%$ between halves of the record.
+- `scope="windowed"`: Re-fits `ndimpute` locally inside each sliding JUST/STPD window (falling back to the global imputation when a window has too few detects or >80% censoring, incrementing `result.censoring.window_fallback_count` and emitting `WINDOW_IMPUTATION_FALLBACK`).
+- `scope="seasonal_stratified"`: Imputes separately by calendar quarter so summer baseflow non-detects aren't distorted by winter stormflow peaks (also tracked in `window_fallback_count`).
 
 ### 4. Laboratory Detection-Limit Shift Defense
 With `detect_dl_shifts=True` (default), `tspec` scans for both explicit step changes in active censoring limits AND implicit DL upgrades (where censoring at $L_{\text{old}}$ stops and uncensored detections appear below $L_{\text{old}}$):

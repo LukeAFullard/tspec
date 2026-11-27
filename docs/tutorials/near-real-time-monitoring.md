@@ -1,4 +1,4 @@
-# Tutorial: Near-Real-Time Disturbance Monitoring (`just_monitor`, v1.1)
+# Tutorial: Near-Real-Time Disturbance Monitoring (`just_monitor`)
 
 When new satellite images, water-quality samples, or sensor readings arrive continuously, you often want to **detect a disturbance as soon as it begins** rather than waiting years for a full retrospective record.
 
@@ -8,7 +8,7 @@ When new satellite images, water-quality samples, or sensor readings arrive cont
 
 ## Step 1: Detect an Abrupt Disturbance on an Irregular Seasonal Record
 
-You can pass either a 0-based integer index or a calendar timestamp / decimal year to `start` (and `history`):
+You can pass either a 0-based integer index or a calendar timestamp / decimal year to `start` (and `history`). Supplying a planned `horizon` (fixed in advance) gives substantially more power than omitting `horizon` (which falls back to conservative open-ended spending):
 
 ```python
 import numpy as np
@@ -30,6 +30,7 @@ res = just_monitor(
     alpha=0.01,
     freq_correction="sidak",       # Adjusts for scanning 35 frequencies per step
     sequential_control="pocock",   # Bounds familywise false alarms across all steps
+    horizon=40,                    # Planned monitoring horizon fixed in advance
 )
 print(res.summary())
 print(res.explain())
@@ -47,15 +48,16 @@ Under pure white noise over about 24 monitoring steps ($\alpha = 0.05$), **unadj
 | **Upstream Parity** | `parity_mode=True` | Reproducing Ghaderpour & Vujadinovic (2020b) exactly (unadjusted per-step testing). |
 
 ```python
-# Compare open-ended consecutive-2 confirmation vs. O'Brien-Fleming spending
+# Compare calibrated consecutive-2 confirmation vs. O'Brien-Fleming spending over a planned horizon
 res_obf = just_monitor(
     t, evi, start=2022.5, season="ols", alpha=0.01,
-    sequential_control="obrien_fleming", horizon=60,
+    sequential_control="obrien_fleming", horizon=40,
 )
 res_k2 = just_monitor(
     t, evi, start=2022.5, season="ols", alpha=0.01,
-    sequential_control="consecutive_k", consecutive_k=2,
+    sequential_control="consecutive_k", consecutive_k=2, horizon=40,
 )
+assert res_k2.consecutive_k_calibrated is True
 print("OBF alarm:", res_obf.disturbance_time_year, "type:", res_obf.disturbance_type)
 print("Consecutive-2 alarm:", res_k2.disturbance_time_year, "type:", res_k2.disturbance_type)
 ```

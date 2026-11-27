@@ -74,6 +74,8 @@ nav:
       - Ground Subsidence Turning Points (STPD): tutorials/subsidence-turning-point.md
       - Near-Real-Time Monitoring (JUSTmonitor): tutorials/near-real-time-monitoring.md
       - Combined JUST -> STPD Workflow: tutorials/combined-workflow.md
+      - Outliers, Heavy Tails & Red Noise: tutorials/robust-outliers-and-red-noise.md
+      - Irregular Spectral Analysis (LSSA & ALLSSA): tutorials/spectral-analysis-lssa-allssa.md
   - Reference:
       - API Reference: reference/api.md
       - Mathematical Reference: reference/math.md

@@ -18,7 +18,7 @@ Avoid these eight classic traps when analyzing irregular or environmental time s
 
 ## 4. Replacing `<DL` with `DL/2` (or Dropping Non-Detects)
 - **What goes wrong:** Deleting non-detects biases trend levels upward. Substituting `DL/2` or `0` destroys natural variance (artificially tightening $p$-values) and biases both means and slopes (Helsel, 2012).
-- **What to do instead:** Pass raw `"<0.05"` strings or `censor_status` directly to `tspec`, letting `ndimpute` perform unbiased Robust ROS or Parametric MLE imputation.
+- **What to do instead:** Pass raw `"<0.05"` strings or `censor_status` directly to `tspec`, letting `tspec`'s trend-aware Tobit MLE (default `imputation_model="trend"`, with Rubin-pooled multiple imputation for OLS segment slopes) or `ndimpute` Robust ROS / Parametric MLE handle censoring properly.
 
 ## 5. Thinking STPD "Missed" a Change When `flagged_jumps` Is Non-Empty
 - **What goes wrong:** A practitioner sees `len(result.turning_points) == 0` on a series with an obvious shift and assumes STPD failed.
@@ -34,4 +34,4 @@ Avoid these eight classic traps when analyzing irregular or environmental time s
 
 ## 8. Running Plain OLS on Records With Extreme Spikes or Heavy-Tailed Noise
 - **What goes wrong:** Isolated sensor glitches, stormflow turbidity spikes, or transcription errors carry quadratic leverage under OLS — biasing segment slopes, inflating seasonal errors, or triggering spurious jumps.
-- **What to do instead:** Pass `robust="huber"` (heavy-tailed noise) or `robust="mm"` (extreme isolated $>5\sigma$ spikes; Huber-started Tukey biweight, zero jump masking) to any core function, and use `slope_estimator="sen"` (exact Theil–Sen / auto Akritas–Theil–Sen when censored) or `fit_piecewise_trend(..., mode="l1")` for outlier-resistant trend slopes.
+- **What to do instead:** Pass `robust="huber"` (heavy-tailed noise) or `robust="mm"` (extreme isolated $>5\sigma$ spikes; Huber-started Tukey biweight — not a 50%-breakdown S-started MM — that avoids masking sustained jumps) to any core function, and use `slope_estimator="sen"` (exact Theil–Sen / auto Akritas–Theil–Sen when censored, with `mk_correction="ar1"` rank-bootstrap serial-correlation adjustment) or `fit_piecewise_trend(..., mode="l1")` for outlier-resistant trend slopes.

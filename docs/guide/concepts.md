@@ -38,9 +38,9 @@ Because STPD forces the two lines to stay connected, a vertical cliff forces one
 - **`NDRI → 1` (above 0.30):** One side's errors blow up compared to the other → **alarm bell!** STPD rejects the candidate as a turning point and records it in `result.flagged_jumps`, telling you in `.explain()` to run `just_jumps()` or `analyze_series()`.
 
 ??? note "Mathematical details: `ndri_mode='rmse'` vs. `ndri_mode='l2'`"
-    Ghaderpour et al. (2024) define $\text{NDRI}_{L_2} = \frac{|\|r_1\|_2 - \|r_2\|_2|}{\|r_1\|_2 + \|r_2\|_2}$. On unevenly sampled series where $n_1 \neq n_2$, the side with more points naturally accumulates a larger raw $L_2$ norm even under identical noise variance. `tspec` therefore defaults to the density-invariant RMSE form:
-    $$\text{NDRI}_{\text{RMSE}} = \frac{|\text{RMSE}_1 - \text{RMSE}_2|}{\text{RMSE}_1 + \text{RMSE}_2}, \qquad \text{RMSE}_k = \frac{\|r_k\|_2}{\sqrt{n_k}},$$
-    while storing both `ndri_rmse` and `ndri_l2` on every turning point (`parity_mode=True` selects `l2`).
+    Ghaderpour et al. (2024) define $\text{NDRI}_{L_2} = \frac{|\|r_1\|_P - \|r_2\|_P|}{\|r_1\|_P + \|r_2\|_P}$. On unevenly sampled series where $n_1 \neq n_2$, the side with more points naturally accumulates a larger raw $L_2$ norm even under identical noise variance. `tspec` therefore defaults to the whitened, density-invariant RMSE form:
+    $$\text{NDRI}_{\text{RMSE}} = \frac{|\text{RMSE}_1 - \text{RMSE}_2|}{\text{RMSE}_1 + \text{RMSE}_2}, \qquad \text{RMSE}_k = \frac{\|r_k\|_P}{\sqrt{n_k}},$$
+    while storing both `ndri_rmse` and `ndri_l2` on every turning point (`parity_mode=True` selects `l2`). When inverse-variance weights $w_i = 1/\sigma_i^2$ are supplied on heteroscedastic records, $\|r_k\|_P = \sqrt{\sum w_i r_i^2}$ prevents a variance shift from masquerading as a vertical jump.
 
 ---
 
@@ -116,7 +116,7 @@ Real environmental and geophysical records often contain isolated sensor glitche
    - **`robust="mm"`**: **MM-type Tukey-biweight estimation** (Huber-started, not Yohai's high-breakdown S-started MM; breakdown is design-dependent) — initializes from convex Huber IRLS (so genuine sustained jumps are never masked) and refines with Tukey's bisquare weight ($c = 4.685$, 95% Gaussian efficiency, **zero influence** for extreme $>4.685\sigma$ isolated spikes). Recommended when records contain extreme isolated spikes (e.g., $10\sigma$–$50\sigma$ sensor glitches) and discontinuous jump detection is enabled.
    - **No jump masking & NDRI preserved:** Both modes evaluate candidate splits on a shared window scale, keep incoming monitoring observations in `just_monitor` at full weight `1.0`, and preserve STPD's asymmetric forward/backward geometry so its NDRI jump-vs-turning-point alarm stays sharp.
 2. **Robust Phase 2 segment slopes & continuous piecewise fits:**
-   - `fit_piecewise_trend(..., mode="l1")` fits an exact globally optimal continuous **$L_1$ (LAD) hinge-spline** via sparse HiGHS linear programming (design-dependent breakdown (robust to isolated outliers; not 50%), strictly continuous at every turning point). `mode="huber"` fits a continuous Huber hinge-spline.
+   - `fit_piecewise_trend(..., mode="l1")` fits an exact globally optimal continuous **$L_1$ (LAD) hinge-spline** via sparse HiGHS linear programming (design-dependent breakdown — robust to isolated vertical outliers, not 50% — and strictly continuous at every turning point). `mode="huber"` fits a continuous Huber hinge-spline.
    - `analyze_series(..., robust="mm", slope_estimator="sen")` computes per-segment **Theil–Sen** slopes, intercepts, distribution-free 95% confidence intervals, and Mann–Kendall $p$-values on `result.segments` (and `result.segments_to_dataframe()`). When a segment contains left- or right-censored data (`<DL` / `>UL`), `tspec` automatically switches to **Akritas–Theil–Sen (ATS)**!
 
 ```python

@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <strong>Unevenly sampled time-series change detection, turning points, near-real-time monitoring, and spectral decomposition — with built-in censored-data support via <a href="https://github.com/LukeAFullard/ndimpute"><code>ndimpute</code></a>.</strong>
+  <strong>Unevenly sampled time-series change detection, turning points, near-real-time monitoring, and spectral decomposition — with built-in censored-data support via trend-aware Tobit MLE and <a href="https://github.com/LukeAFullard/ndimpute"><code>ndimpute</code></a>.</strong>
 </p>
 
 <p align="center">
@@ -183,7 +183,7 @@ pip install --no-deps tspec
 
 ## Documentation
 
-Full practitioner guides, zero-math concepts, parameter cheat sheet, domain tutorials (water quality, satellite NDVI wildfire, ground subsidence, near-real-time monitoring, combined workflow), and mathematical/API references live in [`docs/`](docs/) (built with MkDocs Material):
+Full practitioner guides, zero-math concepts, parameter cheat sheet, domain tutorials (water quality, satellite NDVI wildfire, ground subsidence, near-real-time monitoring, combined workflow, outliers/heavy tails & red noise, and irregular spectral analysis with `lssa`/`allssa`), and mathematical/API/validation references live in [`docs/`](docs/) (built with MkDocs Material):
 
 ```bash
 pip install -e ".[docs]"

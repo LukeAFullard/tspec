@@ -44,7 +44,7 @@ See `validation/reports/parity_report.md` in the repository for the full 41-row 
   - **Red noise & combined pipeline (`R1`, `P1`):**
     - AR(1) sweep (`R1`, $\alpha=0.05$): unweighted FPR climbs from `8%` ($\phi=0$) to `52%` ($\phi=0.6$) and `40%` ($\phi=0.8$); supplying $P = C_f^{-1}$ restores calibration to `8% / 10% / 5% / 5%`.
     - End-to-end `analyze_series()` (`P1`, seasonality + jump + TP + gaps + 20% censoring): **`100.0%` jump recovery** and **`100.0%` turning-point recovery**.
-  - **Near-Real-Time Monitoring (`M1–M3`, v1.1):**
+  - **Near-Real-Time Monitoring (`M1–M3`):**
     - Sequential-peeking null calibration (`M1`, 25 steps, $\alpha=0.05$): unadjusted `parity_mode=True` FPR = **`72.5%`** vs. Šidák+Pocock **`0.0%`**, Šidák+O'Brien–Fleming **`0.0%`**, and Šidák+Consecutive-2 **`2.5%`**.
     - Disturbance recovery (`M2`, default Šidák+Pocock + predictive covariance, $\alpha=0.01$): **`100.0%` abrupt recall** (median delay `0.160 yr`) and **`100.0%` phenological recall**.
     - Long-horizon forecast-drift null calibration (`M3`, $n_{\text{his}}=48$, $D=96$, $\alpha=0.05$): without forecast covariance **`25.0%`** vs. with predictive covariance **`0.0%`**.
@@ -54,11 +54,27 @@ See `validation/reports/parity_report.md` in the repository for the full 41-row 
     - Outlier-contaminated `analyze_series()` (`RB3`): segment slope MAE drops from `8.105` (OLS) to **`0.017`** (`MM+Sen`, **477× lower**) and **`0.024`** (`MM+Huber`), with `88.0%` 95% CI coverage.
     - 25% left-censored + outliers Akritas–Theil–Sen (`RB4`): slope MAE drops from `0.104` (OLS) to **`0.012`** (ATS, **8.7× lower**), with `25/25` automatic ATS selection.
 
-Full quantitative tables are published in `validation/reports/benchmarks_report.md`.
+Full historical quantitative tables are published in `validation/reports/benchmarks_report.md`.
+
+## Tier 2b: Post-Hardening Literature & Compositional Benchmarks (`L1–L6`, `SC1–SC3`)
+
+Executed against the current hardened codebase (`validation/bench_literature_and_components.py`, report in `validation/reports/literature_and_components_report.md`): **9 / 9 gates PASSED** (`17.8 s` single-threaded).
+
+| Gate | Benchmark / Scenario | Status | Measured Result |
+| :--- | :--- | :---: | :--- |
+| `L1` | Ghaderpour et al. (2018) non-integer multi-harmonic anti-leakage on gapped data + jump | **PASS** | `12/12` exact 3-frequency recovery (`[0.73, 1.85, 3.25]`), `0/12` pure-noise FP |
+| `L2` | Verbesselt (2010) / Ghaderpour & Vujadinovic (2020a) NDVI wildfire + regrowth | **PASS** | Exact jump (`|Δmag| = 0.042`), bias-corrected trend CI `89%`, seasonal CI `94%` |
+| `L3` | Ghaderpour et al. (2024) PS-InSAR multi-bend subsidence + disguised unwrapping jump | **PASS** | Both TPs recovered (`[2017.5, 2019.83]`), $L_1$ max `|Δslope| = 0.43`, unwrapping jump flagged via `NDRI_RMSE` |
+| `L4` | Helsel (2012) multi-DL lognormal water quality + lab-upgrade artifact defense | **PASS** | Rubin `ols_mi` MAE `0.005` vs. `DL/2` `0.019` (**3.8× lower**), ATS verified, DL artifact guarded |
+| `L5` | Yue et al. (2002) / Hamed & Rao (1998) AR(1) red-noise hydrology ($\rho=0.7$) + spikes | **PASS** | MK FPR `8/30` (raw) → `1/30` (`ar1`); LSSA FPR `14/30` (unweighted) → `1/30` (`weights=C⁻¹`) |
+| `L6` | Ghaderpour & Vujadinovic (2020b) NRT monitoring (null / abrupt / phenological) | **PASS** | Calibrated `consecutive_k=2` null FP `0/20`, abrupt & phenological alarms accurately classified |
+| `SC1` | Kitchen-sink compositional recovery (gaps + 2× rate shift + 2 harmonics + jump + TP + `<DL` + spikes) | **PASS** | Jump `2017.56`, TP `2020.99`, final Sen slope `-1.36/yr` recovered simultaneously |
+| `SC2` | Compound interaction matrix (bend + ALLSSA `step_pvalue`, 4× variance shift + weighted NDRI, quadratic trend CI, 2D SPD robust monotonicity) | **PASS** | All 4 pairwise interaction gates passed (`quad_cov = 100%`) |
+| `SC3` | Exact invariance laws & strict online NRT causality | **PASS** | Time-origin shift, affine $y$-scaling, weight scaling, and bit-for-bit NRT causality verified |
 
 ## Tier 3: Unit, Invariance, Edge-Case & Property-Based Tests
 
-- Automated `pytest` tests (unit, property, robust, audit-regression and end-to-end documentation smoke tests) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), extreme baseline/scale numerical stability, Huber/MM-biweight/Theil–Sen/Akritas–Theil–Sen/$L_1$ robustness, causal NRT censoring, degenerate/constant/rank-deficient inputs, unpacked sdist verification, and headless plotting smoke tests.
+- **181 automated `pytest` tests** (unit, property, robust, audit-regression, and end-to-end executable documentation smoke & recovery tests across all guides and tutorials) including Hypothesis property-based verification of time-origin shift invariance ($t \mapsto t + c$), amplitude scaling equivariance ($y \mapsto k y$), scalar weight invariance ($P \mapsto \lambda P$), extreme baseline/scale numerical stability, Huber/MM-biweight/Theil–Sen/Akritas–Theil–Sen/$L_1$ robustness, causal NRT censoring, degenerate/constant/rank-deficient inputs, unpacked sdist verification, and headless plotting smoke tests.
 - Dedicated lite-environment CI job verifying zero `ndimpute`/`pandas` imports for core numerical functions (`pip install --no-deps tspec` with `numpy` + `scipy` only).
 
 ## Tier 4: Speed & $O(n)$ Memory Profiling

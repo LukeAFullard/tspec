@@ -21,6 +21,9 @@ python validation/compare_upstream.py
 # 3. Tier 2: Synthetic ground-truth & Monte Carlo benchmarks (JUST, STPD, Censored, Red Noise, Pipeline)
 python validation/bench_mc.py
 
+# 3b. Tier 2b: Post-hardening literature-inspired (L1-L6) & compositional sub-component (SC1-SC3) benchmarks
+OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_literature_and_components.py
+
 # 4. Tier 3: Unit, invariance, edge-case & Hypothesis property tests
 pytest -v
 

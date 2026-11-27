@@ -63,5 +63,6 @@ print(result.explain())
 - **Not sure which method to pick?** Start with [Which Method Should I Use?](guide/which-method.md).
 - **Monitoring incoming observations in real time?** Read the [Near-Real-Time Monitoring Tutorial](tutorials/near-real-time-monitoring.md).
 - **Have `<0.05` lab non-detects?** Read [Censored Lab Data (`<DL` / `>UL`)](guide/censored-data.md).
-- **Want runnable examples with figures?** Explore the [Domain Tutorials](tutorials/water-quality-censored.md).
-- **Looking for exact equations?** See the [Mathematical Reference](reference/math.md).
+- **Dealing with extreme spikes, red noise, or non-integer cycles?** See [Outliers, Heavy Tails & Red Noise](tutorials/robust-outliers-and-red-noise.md) and [Irregular Spectral Analysis (`lssa` & `allssa`)](tutorials/spectral-analysis-lssa-allssa.md).
+- **Want runnable domain examples with figures?** Explore the [Domain Tutorials](tutorials/water-quality-censored.md).
+- **Looking for exact equations & validation benchmarks?** See the [Mathematical Reference](reference/math.md) and [Validation Summary](reference/validation-summary.md).

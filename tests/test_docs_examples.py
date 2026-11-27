@@ -22,6 +22,8 @@ TUTORIAL_FILES = [
     DOCS_DIR / "tutorials" / "subsidence-turning-point.md",
     DOCS_DIR / "tutorials" / "near-real-time-monitoring.md",
     DOCS_DIR / "tutorials" / "combined-workflow.md",
+    DOCS_DIR / "tutorials" / "robust-outliers-and-red-noise.md",
+    DOCS_DIR / "tutorials" / "spectral-analysis-lssa-allssa.md",
 ]
 
 
@@ -36,7 +38,7 @@ def test_doc_python_blocks_execute_cleanly(md_path: Path) -> None:
     for block in blocks:
         exec(compile(block, f"{md_path.name}", "exec"), ns)
 
-    # Flagship examples must recover their advertised jump and turning-point locations
+    # Flagship examples must recover their advertised jump, turning-point, and spectral targets
     if md_path.name == "README.md":
         res = ns["result"]
         assert isinstance(res, tspec.PipelineResult)
@@ -58,6 +60,29 @@ def test_doc_python_blocks_execute_cleanly(md_path: Path) -> None:
         assert abs(res.jumps.jumps[0].time_year - 2017.5) <= 0.4
         assert res.turning_points is not None and len(res.turning_points.turning_points) == 1
         assert abs(res.turning_points.turning_points[0].time_year - 2021.0) <= 0.6
+    elif md_path.name == "robust-outliers-and-red-noise.md":
+        res_rob = ns["res_rob"]
+        assert isinstance(res_rob, tspec.PipelineResult)
+        assert res_rob.jumps is not None and len(res_rob.jumps.jumps) == 1
+        assert abs(res_rob.jumps.jumps[0].time_year - 2019.0) <= 0.4
+        assert res_rob.turning_points is not None and len(res_rob.turning_points.turning_points) == 1
+        assert abs(res_rob.turning_points.turning_points[0].time_year - 2022.0) <= 0.6
+        tp_w = ns["tp_weighted"]
+        assert isinstance(tp_w, tspec.StpdResult)
+        assert len(tp_w.turning_points) == 1
+        assert abs(tp_w.turning_points[0].time_year - 2019.0) <= 0.5
+    elif md_path.name == "spectral-analysis-lssa-allssa.md":
+        import numpy as np
+
+        res_a = ns["res_allssa"]
+        assert isinstance(res_a, tspec.AllssaResult)
+        np.testing.assert_allclose(np.sort(res_a.frequencies), [0.73, 1.85, 3.25], atol=0.05)
+        res_j = ns["res_joint"]
+        assert isinstance(res_j, tspec.AllssaResult)
+        np.testing.assert_allclose(np.sort(res_j.frequencies), [0.73, 1.85, 3.25], atol=0.05)
+        res_n = ns["allssa_null"]
+        assert isinstance(res_n, tspec.AllssaResult)
+        assert res_n.frequencies.size == 0
 
 
 def test_all_public_symbols_documented_in_api_md() -> None:
