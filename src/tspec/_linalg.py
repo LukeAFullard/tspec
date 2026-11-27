@@ -87,6 +87,29 @@ class PreparedWeights:
         chol = _factor_spd(scaled)
         return PreparedWeights(kind="matrix", matrix=scaled, cholesky_lower=chol)
 
+    def scale_whitened(self, whitened_factors: FloatArray) -> PreparedWeights:
+        """Apply positive weights ``w`` in the whitened basis: ``P_eff = L diag(w) L^T``.
+
+        For ``none``, ``scalar``, and ``vector`` weights this is identical to
+        :meth:`scale_entries`. For 2D SPD matrices ``P = L L^T`` (whitening operator
+        ``W = L^T``), scaling the columns of ``L`` by ``sqrt(w)`` yields the exact
+        lower-triangular Cholesky factor ``L_eff = L diag(sqrt(w))`` of
+        ``L diag(w) L^T``, so ``whiten_vector(v, P_eff) == sqrt(w) * whiten_vector(v, P)``
+        without recomputing a Cholesky factorization.
+        """
+        if self.kind != "matrix":
+            return self.scale_entries(whitened_factors)
+        if np.allclose(whitened_factors, 1.0):
+            return self
+        if np.any(~np.isfinite(whitened_factors)) or np.any(whitened_factors <= 0):
+            raise ValueError("Whitened weight scaling factors must be strictly positive.")
+        assert self.cholesky_lower is not None
+        s = np.sqrt(whitened_factors)
+        chol_scaled = np.ascontiguousarray(self.cholesky_lower * s[None, :])
+        mat_scaled = chol_scaled @ chol_scaled.T
+        mat_scaled = np.ascontiguousarray(0.5 * (mat_scaled + mat_scaled.T))
+        return PreparedWeights(kind="matrix", matrix=mat_scaled, cholesky_lower=chol_scaled)
+
 
 def _factor_spd(mat: FloatArray) -> FloatArray:
     """Validate symmetry and positive definiteness via Cholesky factorization P = L L^T."""

@@ -271,7 +271,7 @@ def solve_huber_irls(
     # Final effective weight structure & WeightedOLSResult for downstream spectral/Q use
     u_final = np.abs(r_w) / scale
     w_h = np.where(u_final <= k, 1.0, k / np.maximum(u_final, k))
-    pw_eff = pw.scale_entries(w_h)
+    pw_eff = pw.scale_whitened(w_h)
     ols_final = solve_weighted_ols(
         D, y, pw_eff, col_scales=col_scales, rcond=rcond, compute_cov=compute_cov
     )
@@ -441,7 +441,7 @@ def solve_mm_biweight(
         w_final = hr_init.huber_weights
     # Floor tiny positive weight (1e-12) so PreparedWeights stays strictly positive
     w_eff_vec = np.maximum(w_final, 1e-12)
-    pw_eff = pw.scale_entries(w_eff_vec)
+    pw_eff = pw.scale_whitened(w_eff_vec)
     ols_final = solve_weighted_ols(
         D, y, pw_eff, col_scales=col_scales, rcond=rcond, compute_cov=compute_cov
     )
@@ -455,7 +455,7 @@ def solve_mm_biweight(
     m_inlier = max(0.1, float(np.mean(psi_prime)))
     dof = max(1, n - ols_final.rank)
     psi_sq_mean = float(np.sum(psi_vals * psi_vals)) / dof
-    k_corr = 1.0 + (ols_final.rank / max(1, n)) * max(0.0, 1.0 - m_inlier) / m_inlier
+    k_corr = 1.0 + (ols_final.rank / max(1, n)) * float(np.var(psi_prime)) / (m_inlier * m_inlier)
     lambda_scale = k_corr * psi_sq_mean / m_inlier
     tau_sq = (k_corr * scale) ** 2 * psi_sq_mean / (m_inlier * m_inlier)
 
@@ -602,6 +602,8 @@ def fit_l1_piecewise(
     y: FloatArray,
     tp_sorted: IntArray,
     w: FloatArray | None = None,
+    *,
+    fallback_flag: list[bool] | None = None,
 ) -> tuple[FloatArray, FloatArray, FloatArray, float]:
     """Fit a globally optimal continuous L1 (LAD) piecewise-linear hinge-spline.
 
@@ -638,6 +640,8 @@ def fit_l1_piecewise(
     lp = linprog(c_obj, A_eq=A_eq, b_eq=y_c, bounds=bounds, method="highs")
     if not lp.success or lp.x is None:
         # Fallback to Huber IRLS if LP fails on degenerate input
+        if fallback_flag is not None:
+            fallback_flag.append(True)
         pw = PreparedWeights(kind="vector", vector=w_vec, sqrt_vector=np.sqrt(w_vec)) if w is not None else PreparedWeights(kind="none")
         hr = solve_huber_irls(D, y_c, pw, compute_cov=False)
         coeff = hr.ols.coeff
@@ -721,26 +725,77 @@ def hamed_rao_factor(t: FloatArray, y: FloatArray, slope: float, alpha_acf: floa
     return factor if factor > 0.0 else 1.0
 
 
+def _rank_lag1_from_residuals(r_cols: FloatArray, *, exact_ties: bool = False) -> FloatArray:
+    """Spearman lag-1 autocorrelation mapped to Gaussian AR(1) correlation ``2 sin(pi r_S / 6)``.
+
+    Rank-based lag-1 autocorrelation is immune to isolated outliers and heavy-tailed
+    innovations (Kendall, 1975) while remaining consistent for Gaussian AR(1) series.
+    """
+    if exact_ties:
+        from scipy.stats import rankdata
+
+        rk = np.asarray(rankdata(r_cols, axis=0), dtype=np.float64)
+    else:
+        rk = np.argsort(np.argsort(r_cols, axis=0), axis=0).astype(np.float64)
+    r1 = rk[:-1] - np.mean(rk[:-1], axis=0, keepdims=True)
+    r2 = rk[1:] - np.mean(rk[1:], axis=0, keepdims=True)
+    den = np.sqrt(np.sum(r1 * r1, axis=0) * np.sum(r2 * r2, axis=0))
+    rs = np.where(den > 0.0, np.sum(r1 * r2, axis=0) / np.where(den > 0.0, den, 1.0), 0.0)
+    return np.asarray(2.0 * np.sin((np.pi / 6.0) * np.clip(rs, -1.0, 1.0)), dtype=np.float64)
+
+
+def _robust_rank_lag1(
+    y_cols: FloatArray, u: FloatArray, *, exact_ties: bool = False
+) -> FloatArray:
+    """Outlier-resistant lag-1 autocorrelation after robust linear detrending.
+
+    Detrends each column with a shift/scale-invariant three-group median slope
+    refined by one Huber WLS step, then computes the Gaussian-mapped Spearman
+    lag-1 autocorrelation.
+    """
+    n, b = y_cols.shape
+    m = max(1, n // 3)
+    du = float(np.median(u[-m:]) - np.median(u[:m]))
+    if du > 0.0:
+        slope = (np.median(y_cols[-m:], axis=0) - np.median(y_cols[:m], axis=0)) / du
+    else:
+        slope = np.zeros(b, dtype=np.float64)
+    r = y_cols - u[:, None] * slope[None, :]
+    r = r - np.median(r, axis=0, keepdims=True)
+    mad = 1.4826 * np.median(np.abs(r), axis=0)
+    scale = np.where(mad > 1e-12, mad, 1.0)
+    a = np.abs(r) / scale[None, :]
+    w = np.where(a <= 1.345, 1.0, 1.345 / np.maximum(a, 1.345))
+    sw = np.sum(w, axis=0)
+    uw = np.sum(w * u[:, None], axis=0) / np.where(sw > 0.0, sw, 1.0)
+    yw = np.sum(w * y_cols, axis=0) / np.where(sw > 0.0, sw, 1.0)
+    du_w = u[:, None] - uw[None, :]
+    den_s = np.sum(w * du_w * du_w, axis=0)
+    slope2 = np.where(
+        den_s > 0.0,
+        np.sum(w * du_w * (y_cols - yw[None, :]), axis=0) / np.where(den_s > 0.0, den_s, 1.0),
+        slope,
+    )
+    r_det = y_cols - u[:, None] * slope2[None, :]
+    return _rank_lag1_from_residuals(r_det, exact_ties=exact_ties)
+
+
 def ar1_rank_factor(t: FloatArray, y: FloatArray, slope: float) -> float:
     """AR(1) effective-sample-size inflation ``n / n*`` for the Mann-Kendall S.
 
-    Estimates the lag-1 autocorrelation of the Sen-detrended series with the
-    small-sample bias correction ``(n r + 1)/(n - 4)`` (Marriott & Pope, 1954),
-    truncated to ``[0, 0.95]`` (the variance is never deflated), maps the implied
-    Gaussian AR(1) correlations to rank (Spearman) correlations
-    ``(6/pi) arcsin(rho^k / 2)``, and applies the Hamed & Rao (1998) summation.
-    In simulations (``audit/``) this keeps Type-I error near 5% for AR(1) rho in
-    [0, 0.5], unlike the significant-lags-only Hamed-Rao estimate.
+    Estimates the lag-1 autocorrelation of the Sen-detrended series via the
+    outlier-resistant Gaussian-mapped Spearman rank autocorrelation
+    ``2 sin(pi r_S / 6)`` (Kendall, 1975), applies the Marriott & Pope (1954)
+    small-sample bias correction ``(n r + 1)/(n - 4)`` truncated to ``[0, 0.95]``
+    (the variance is never deflated), maps the implied Gaussian AR(1) correlations
+    to rank correlations ``(6/pi) arcsin(rho^k / 2)``, and applies the Hamed & Rao
+    (1998) summation.
     """
     n = int(y.size)
     if n < 6:
         return 1.0
     r = y - slope * t
-    r = r - float(np.mean(r))
-    den = float(np.dot(r, r))
-    if den <= 0.0:
-        return 1.0
-    rho = float(np.dot(r[:-1], r[1:]) / den)
+    rho = float(_rank_lag1_from_residuals(r[:, None], exact_ties=True)[0])
     rho = float(np.clip((n * rho + 1.0) / (n - 4.0), 0.0, 0.95))
     if rho <= 0.0:
         return 1.0
@@ -750,23 +805,32 @@ def ar1_rank_factor(t: FloatArray, y: FloatArray, slope: float) -> float:
 
 
 _AR1_BOOT_MAX_N = 300
+_AR1_BOOT_HIGH_RHO_MAX_N = 1000
+_AR1_BOOT_MIN_NEFF = 150.0
 _AR1_BOOT_B = 999
 # Spread of the autocorrelation draws in the bootstrap reference, in units of the
 # asymptotic standard error sqrt((1 - rho^2)/n). Widening it beyond 1 compensates the
 # plug-in error of the reference (tail probabilities are convex in rho).
 _AR1_BOOT_JITTER = 1.0
-# Upward shift of the reference autocorrelation, in standard errors (Berger-Boos-type:
-# the reference quantile increases with rho, so referring to an upper value of rho
-# guards against the plug-in error when rho is under-estimated).
-_AR1_BOOT_SHIFT = 0.0
 
 
-def _ols_lag1(y_cols: FloatArray, u: FloatArray) -> FloatArray:
-    """Lag-1 autocorrelation of each column after OLS removal of ``[1, u]``."""
-    q, _ = np.linalg.qr(np.column_stack([np.ones_like(u), u]))
-    r = y_cols - q @ (q.T @ y_cols)
-    den = np.sum(r * r, axis=0)
-    return np.where(den > 0.0, np.sum(r[:-1] * r[1:], axis=0) / np.where(den > 0.0, den, 1.0), 0.0)
+def _should_use_ar1_bootstrap(n: int, rho_obs: float) -> bool:
+    """Return True when finite-sample AR(1) bootstrap reference should be used.
+
+    Always enabled for ``6 <= n <= 300``, and smoothly extended up to ``n <= 1000``
+    whenever the implied effective sample size ``n_eff = n (1 - rho) / (1 + rho)``
+    falls below 150 (preventing a switchover discontinuity at ``n = 300 -> 301``
+    under strong autocorrelation).
+    """
+    if n < 6:
+        return False
+    if n <= _AR1_BOOT_MAX_N:
+        return True
+    if n > _AR1_BOOT_HIGH_RHO_MAX_N:
+        return False
+    rho_mp = float(np.clip((n * rho_obs + 1.0) / (n - 4.0), 0.0, 0.95))
+    n_eff = float(n) * (1.0 - rho_mp) / (1.0 + rho_mp)
+    return n_eff < _AR1_BOOT_MIN_NEFF
 
 
 def _ar1_factor_from_rho(rho_hat: FloatArray, n: int) -> FloatArray:
@@ -779,14 +843,20 @@ def _ar1_factor_from_rho(rho_hat: FloatArray, n: int) -> FloatArray:
     return np.asarray(1.0 + 2.0 * (rs @ w), dtype=np.float64)
 
 
-def _ar1_series(rng: np.random.Generator, n: int, rhos: FloatArray) -> FloatArray:
-    """Stationary Gaussian AR(1) columns with per-column coefficients ``rhos``."""
-    e = rng.standard_normal((n, rhos.size))
-    x = np.empty((n, rhos.size), dtype=np.float64)
+def _ar1_series_from_innov(e: FloatArray, rhos: FloatArray) -> FloatArray:
+    """Build stationary Gaussian AR(1) columns from pre-drawn innovations ``e``."""
+    n = e.shape[0]
+    x = np.empty_like(e)
     x[0] = e[0] / np.sqrt(1.0 - rhos**2)
     for i in range(1, n):
         x[i] = rhos * x[i - 1] + e[i]
     return x
+
+
+def _ar1_series(rng: np.random.Generator, n: int, rhos: FloatArray) -> FloatArray:
+    """Stationary Gaussian AR(1) columns with per-column coefficients ``rhos``."""
+    e = rng.standard_normal((n, rhos.size))
+    return _ar1_series_from_innov(e, rhos)
 
 
 def _mk_s_columns(y_cols: FloatArray) -> FloatArray:
@@ -802,35 +872,59 @@ def ar1_bootstrap_reference(
 ) -> tuple[float, FloatArray]:
     """Parametric AR(1) bootstrap reference for the autocorrelation-corrected MK z.
 
-    The lag-1 autocorrelation is estimated from OLS-detrended residuals and debiased
-    by simulation (the AR(1) coefficient whose simulated estimator mean matches the
-    observed estimate). Bootstrap series are simulated with coefficients drawn around
-    that value (normal, standard error ``sqrt((1 - rho^2)/n)``), so the uncertainty in
-    the estimated autocorrelation is propagated; each is studentized with its own
-    re-estimated variance factor exactly as the observed statistic is. Returns the
-    observed lag-1 estimate and the sorted bootstrap ``|z|`` values. Short, strongly
-    autocorrelated series are anti-conservative under the normal reference with a
-    plug-in factor (audit CRT-06); this reference restores nominal levels.
+    The lag-1 autocorrelation is estimated via the outlier-resistant rank lag-1
+    estimator on robustly detrended residuals and debiased by simulation using
+    common-random-number bisection (finding the AR(1) coefficient whose simulated
+    estimator mean matches the observed estimate). Bootstrap series are simulated
+    with coefficients drawn around that value (normal, standard error
+    ``sqrt((1 - rho^2)/n)``), so uncertainty in the estimated autocorrelation is
+    propagated; each is studentized with its own re-estimated variance factor
+    exactly as the observed statistic is. The RNG seed depends only on the ranks
+    of ``y`` and ``rho_obs``, guaranteeing exact invariance to shifts and positive
+    rescalings. Returns the observed lag-1 estimate and the sorted bootstrap ``|z|``
+    values.
     """
+    from scipy.stats import rankdata
+
     n = int(y.size)
     span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
     u = (t - t[0]) / span
-    rho_obs = float(_ols_lag1(y[:, None], u)[0])
-    # Deterministic per data set, but not shared across data sets: a seed depending only on
-    # n would refer every series of that length to the same bootstrap draws, so their
-    # Monte Carlo quantile error would not average out.
-    data_key = int(np.frombuffer(np.round(y, 12).tobytes(), dtype=np.uint8).astype(np.uint64).sum() % 2**31)
-    rng = np.random.default_rng((int(seed), n, data_key, int(round(rho_obs * 1e9)) % 2**31))
-    r_t = float(np.clip(rho_obs, 0.0, 0.95))
-    for _ in range(4):
-        m = float(np.mean(_ols_lag1(_ar1_series(rng, n, np.full(400, r_t)), u)))
-        r_t = float(np.clip(r_t + (rho_obs - m), 0.0, 0.95))
-    se = _AR1_BOOT_JITTER * float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
+    rho_obs = float(_robust_rank_lag1(y[:, None], u, exact_ties=True)[0])
+    # Rank-based deterministic key: unique per ordering (avoids shared MC error across
+    # independent series) while strictly invariant to shifts y + c and positive scales a * y.
+    rk_int = np.rint(2.0 * np.asarray(rankdata(y), dtype=np.float64)).astype(np.uint64)
+    data_key = int(
+        np.sum(rk_int * np.arange(1, n + 1, dtype=np.uint64)) % 2**31
+    )
+    rho_key = int(round(rho_obs * 1e6)) % 2**31
+    rng = np.random.default_rng((int(seed), n, data_key, rho_key))
+
+    # Debias rho_obs via common-random-number bisection on [0.0, 0.98]
+    e_deb = rng.standard_normal((n, 250))
+    m_lo = float(np.mean(_robust_rank_lag1(_ar1_series_from_innov(e_deb, np.zeros(250)), u)))
+    if rho_obs <= m_lo:
+        r_t = 0.0
+    else:
+        lo_r, hi_r = 0.0, 0.98
+        for _ in range(7):
+            mid_r = 0.5 * (lo_r + hi_r)
+            m_mid = float(
+                np.mean(_robust_rank_lag1(_ar1_series_from_innov(e_deb, np.full(250, mid_r)), u))
+            )
+            if m_mid < rho_obs:
+                lo_r = mid_r
+            else:
+                hi_r = mid_r
+        r_t = 0.5 * (lo_r + hi_r)
+
     se0 = float(np.sqrt(max(1.0 - r_t * r_t, 1e-3) / n))
-    rhos = np.clip(r_t + _AR1_BOOT_SHIFT * se0 + se * rng.standard_normal(int(n_boot)), 0.0, 0.95)
+    se = _AR1_BOOT_JITTER * se0
+    # Smooth small-sample Berger-Boos guard (0.40 SE at n=20, tapering to 0 at n>=50)
+    small_n_shift = 0.40 * max(0.0, (50.0 - float(n)) / 30.0)
+    rhos = np.clip(r_t + small_n_shift * se0 + se * rng.standard_normal(int(n_boot)), 0.0, 0.97)
     yb = _ar1_series(rng, n, rhos)
     sb = _mk_s_columns(yb)
-    vb = n * (n - 1) * (2 * n + 5) / 18.0 * _ar1_factor_from_rho(_ols_lag1(yb, u), n)
+    vb = n * (n - 1) * (2 * n + 5) / 18.0 * _ar1_factor_from_rho(_robust_rank_lag1(yb, u), n)
     zb = np.abs(sb - np.sign(sb)) / np.sqrt(vb)
     return rho_obs, np.sort(zb)
 
@@ -1005,10 +1099,34 @@ def fit_theil_sen_segment(
         # the ATS estimate for the confidence interval inversion.
         var_s0 = _censored_kendall_var(t, vals, codes, 0.0)
         var_s = _censored_kendall_var(t, vals, codes, slope)
+        boot_z_ats: FloatArray | None = None
         if var_s0 > 0.0 and var_s > 0.0:
+            if autocorr_correction == "hamed_rao":
+                fac = hamed_rao_factor(t, y, slope)
+                var_s0 *= fac
+                var_s *= fac
+            elif autocorr_correction == "ar1":
+                span_c = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+                u_c = (t - t[0]) / span_c
+                rho_c = float(_robust_rank_lag1(y[:, None], u_c, exact_ties=True)[0])
+                if _should_use_ar1_bootstrap(n, rho_c):
+                    rho_c, boot_z_ats = ar1_bootstrap_reference(t, y)
+                    fac = float(_ar1_factor_from_rho(np.array([rho_c]), n)[0])
+                else:
+                    fac = ar1_rank_factor(t, y, slope)
+                var_s0 *= fac
+                var_s *= fac
+
             z_mk = (s0 - np.sign(s0)) / np.sqrt(var_s0) if abs(s0) > 0.0 else 0.0
-            pval: float | None = float(2.0 * norm.sf(abs(z_mk)))
-            c_alpha = float(norm.isf(0.5 * alpha) * np.sqrt(var_s))
+            pval_ats = float(2.0 * norm.sf(abs(z_mk)))
+            z_crit = float(norm.isf(0.5 * alpha))
+            if boot_z_ats is not None:
+                exceed = int(np.sum(boot_z_ats >= abs(z_mk)))
+                p_mc = (1.0 + exceed) / (boot_z_ats.size + 1.0)
+                pval_ats = float(min(p_mc, pval_ats)) if exceed == 0 else float(p_mc)
+                z_crit = float(np.quantile(boot_z_ats, 1.0 - alpha))
+            pval: float | None = pval_ats
+            c_alpha = float(z_crit * np.sqrt(var_s))
             ci_lo_v = _invert_censored_score(t, vals, codes, c_alpha, s_lo, s_hi)
             ci_hi_v = _invert_censored_score(t, vals, codes, -c_alpha, s_lo, s_hi)
             if ci_lo_v > ci_hi_v:
@@ -1063,7 +1181,10 @@ def fit_theil_sen_segment(
     if autocorr_correction == "hamed_rao" and var_s > 0.0:
         var_s *= hamed_rao_factor(t, y, slope)
     elif autocorr_correction == "ar1" and var_s > 0.0:
-        if 6 <= n <= _AR1_BOOT_MAX_N:
+        span_u = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+        u_u = (t - t[0]) / span_u
+        rho_pre = float(_robust_rank_lag1(y[:, None], u_u, exact_ties=True)[0])
+        if _should_use_ar1_bootstrap(n, rho_pre):
             rho_obs, boot_z = ar1_bootstrap_reference(t, y)
             var_s *= float(_ar1_factor_from_rho(np.array([rho_obs]), n)[0])
         else:
@@ -1074,8 +1195,8 @@ def fit_theil_sen_segment(
         pval = float(2.0 * norm.sf(abs(z_mk)))
         z_crit = float(norm.isf(0.5 * alpha))
         if boot_z is not None:
-            # Short series: refer the studentized statistic to its AR(1) bootstrap
-            # distribution (Monte Carlo p-value; below resolution keep the normal value).
+            # Short / strongly autocorrelated series: refer the studentized statistic to its
+            # AR(1) bootstrap distribution (MC p-value; below resolution keep the normal value).
             exceed = int(np.sum(boot_z >= abs(z_mk)))
             p_mc = (1.0 + exceed) / (boot_z.size + 1.0)
             pval = float(min(p_mc, pval)) if exceed == 0 else float(p_mc)

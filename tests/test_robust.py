@@ -428,9 +428,131 @@ class TestRobustPipelineAndSen:
         y[10] += 50.0
         w = np.ones(60, dtype=np.float64)
         w[10] = 0.01
+        fb: list[bool] = []
         slopes, intercepts, y_fit, cond = fit_l1_piecewise(
-            t, y, np.array([30], dtype=np.intp), w=w
+            t, y, np.array([30], dtype=np.intp), w=w, fallback_flag=fb
         )
         np.testing.assert_allclose(slopes, [0.8, -0.8], atol=1e-6)
         assert np.isfinite(cond)
         assert y_fit.shape == (60,)
+        assert fb == []
+
+    def test_2d_spd_huber_and_mm_exact_whitened_objective(self) -> None:
+        """BLK-06: 2D SPD weights must optimize L diag(w) L^T, never diag(sqrt(w)) P diag(sqrt(w))."""
+        from tspec._linalg import whiten_matrix, whiten_vector
+        from tspec._robust import solve_mm_biweight
+
+        rng = np.random.default_rng(701)
+        n = 60
+        t = np.linspace(0.0, 6.0, n)
+        D_null = np.column_stack([np.ones(n), t])
+        D_full = np.column_stack([np.ones(n), t, np.maximum(0.0, t - 3.0)])
+        idx = np.arange(n)
+        Sigma = 0.7 ** np.abs(idx[:, None] - idx[None, :])
+        P = np.linalg.inv(Sigma)
+        pw = prepare_weights(P, n)
+
+        for _ in range(10):
+            y = 2.0 + 0.3 * t + rng.multivariate_normal(np.zeros(n), Sigma)
+            y[[8, 30, 50]] += np.array([10.0, -12.0, 9.0])
+            f_h, p_h, full_h, null_h = huber_nested_ftest(D_null, D_full, y, pw, k=1.345)
+            assert null_h.loss >= full_h.loss - 1e-9
+            assert f_h >= 0.0 and 0.0 <= p_h <= 1.0
+            # Exact Huber stationarity condition in whitened coordinates: D_w^T psi(r_w / s) == 0
+            rw = whiten_vector(full_h.ols.residuals, pw)
+            Dw = whiten_matrix(D_full, pw)
+            psi = np.clip(rw / full_h.scale, -1.345, 1.345)
+            assert float(np.max(np.abs(Dw.T @ psi))) / n < 1e-5
+
+            # MM-biweight whitened objective must also match scale_whitened exactly
+            mm = solve_mm_biweight(D_full, y, pw, compute_cov=True)
+            assert mm.ols.cov is not None and np.all(np.isfinite(mm.ols.cov))
+            rw_mm = whiten_vector(mm.ols.residuals, pw)
+            u_mm = rw_mm / mm.scale
+            t2 = (u_mm / 4.685) ** 2
+            psi_mm = np.where(np.abs(u_mm) < 4.685, u_mm * (1.0 - t2) ** 2, 0.0)
+            assert float(np.max(np.abs(Dw.T @ psi_mm))) / n < 1e-4
+
+    def test_mm_biweight_k_corr_uses_general_huber_variance(self) -> None:
+        """MIN-02: MM-biweight K_corr uses Var(psi') / E[psi']^2 (Huber 1981 Eq. 7.6.11)."""
+        from tspec._robust import TUKEY_BIWEIGHT_C, solve_mm_biweight, tukey_psi
+
+        rng = np.random.default_rng(702)
+        n = 80
+        t = np.linspace(0.0, 8.0, n)
+        D = np.column_stack([np.ones(n), t])
+        y = 1.5 + 0.5 * t + rng.normal(0.0, 0.25, n)
+        y[[10, 40, 70]] += np.array([8.0, -9.0, 7.0])
+        pw = prepare_weights(None, n)
+        mm = solve_mm_biweight(D, y, pw, compute_cov=True)
+        u = mm.ols.residuals / mm.scale
+        c = TUKEY_BIWEIGHT_C
+        t2 = (u / c) ** 2
+        psi_prime = np.where(np.abs(u) < c, (1.0 - t2) * (1.0 - 5.0 * t2), 0.0)
+        m_inlier = max(0.1, float(np.mean(psi_prime)))
+        psi_sq_mean = float(np.sum(tukey_psi(u, c) ** 2)) / (n - mm.ols.rank)
+        k_expected = 1.0 + (mm.ols.rank / n) * float(np.var(psi_prime)) / (m_inlier * m_inlier)
+        tau_sq_expected = (k_expected * mm.scale) ** 2 * psi_sq_mean / (m_inlier * m_inlier)
+        np.testing.assert_allclose(mm.tau_sq, tau_sq_expected, rtol=1e-12)
+
+    def test_ar1_theil_sen_invariance_and_spike_resistance(self) -> None:
+        """BLK-08 & CRT-08: rank lag-1 AR(1) is shift/scale-invariant and resists 20-sigma spikes."""
+        from tspec._robust import ar1_rank_factor
+
+        rng = np.random.default_rng(703)
+        n = 120
+        t = np.arange(float(n))
+        e = rng.normal(size=n)
+        x = np.empty(n)
+        x[0] = e[0] / np.sqrt(1.0 - 0.7**2)
+        for i in range(1, n):
+            x[i] = 0.7 * x[i - 1] + e[i]
+
+        # Shift & positive-scale invariance (bit-for-bit identical p-value & scaled CI)
+        f0 = fit_theil_sen_segment(t, x, autocorr_correction="ar1")
+        f_shift = fit_theil_sen_segment(t, x + 1e7, autocorr_correction="ar1")
+        f_scale = fit_theil_sen_segment(t, x * 1e-4, autocorr_correction="ar1")
+        assert f0.pvalue == f_shift.pvalue
+        assert f0.pvalue == f_scale.pvalue
+        assert f0.ci_low is not None and f_scale.ci_low is not None
+        np.testing.assert_allclose(f_scale.ci_low, f0.ci_low * 1e-4, rtol=1e-12)
+
+        # 20-sigma spikes must NOT collapse ar1_rank_factor toward 1.0
+        x_sp = x.copy()
+        x_sp[[30, 90]] += np.array([20.0, -20.0])
+        fac_clean = ar1_rank_factor(t, x, 0.0)
+        fac_spike = ar1_rank_factor(t, x_sp, 0.0)
+        assert fac_clean > 2.5
+        assert fac_spike > 0.7 * fac_clean
+
+    def test_ats_applies_autocorr_correction(self) -> None:
+        """BLK-08: censored Akritas-Theil-Sen must apply ar1 and hamed_rao corrections."""
+        rng = np.random.default_rng(704)
+        n = 120
+        t = np.linspace(0.0, 10.0, n)
+        e = rng.normal(size=n)
+        x = np.empty(n)
+        x[0] = e[0] / np.sqrt(1.0 - 0.6**2)
+        for i in range(1, n):
+            x[i] = 0.6 * x[i - 1] + e[i]
+        dl = float(np.quantile(x, 0.30))
+        codes = np.where(x < dl, -1, 0).astype(np.intp)
+        vals = np.where(codes == -1, dl, x)
+
+        f_none = fit_theil_sen_segment(
+            t, x, status_codes=codes, original_values=vals, autocorr_correction="none"
+        )
+        f_ar1 = fit_theil_sen_segment(
+            t, x, status_codes=codes, original_values=vals, autocorr_correction="ar1"
+        )
+        f_hr = fit_theil_sen_segment(
+            t, x, status_codes=codes, original_values=vals, autocorr_correction="hamed_rao"
+        )
+        assert f_none.estimator == "ats" and f_ar1.estimator == "ats" and f_hr.estimator == "ats"
+        assert f_none.ci_low is not None and f_none.ci_high is not None
+        assert f_ar1.ci_low is not None and f_ar1.ci_high is not None
+        assert f_hr.ci_low is not None and f_hr.ci_high is not None
+        # Autocorrelation inflation must widen the ATS CI
+        assert (f_ar1.ci_high - f_ar1.ci_low) > (f_none.ci_high - f_none.ci_low)
+        assert (f_hr.ci_high - f_hr.ci_low) > (f_none.ci_high - f_none.ci_low)
+
