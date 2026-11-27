@@ -53,6 +53,9 @@ def _bounds_z(
     return lo, hi
 
 
+_HALF_LOG_2PI = 0.5 * float(np.log(2.0 * np.pi))
+
+
 def _log_interval_prob(a: FloatArray, b: FloatArray) -> FloatArray:
     """Stable log(Phi(b) - Phi(a)) for a < b (possibly infinite)."""
     # Use upper tails when both bounds are positive for accuracy.
@@ -63,14 +66,65 @@ def _log_interval_prob(a: FloatArray, b: FloatArray) -> FloatArray:
     la = log_ndtr(a2)
     with np.errstate(divide="ignore", invalid="ignore"):
         diff = lb + np.log1p(-np.exp(np.minimum(la - lb, 0.0)))
+    # Narrow finite interval fallback (avoids cancellation when la == lb in float64)
+    narrow = np.isfinite(a2) & np.isfinite(b2) & ((b2 - a2) < 1e-6)
+    if np.any(narrow):
+        mid = 0.5 * (a2 + b2)
+        width = np.maximum(b2 - a2, 1e-300)
+        approx = np.log(width) - 0.5 * mid * mid - _HALF_LOG_2PI
+        diff = np.where(narrow, approx, diff)
     return np.where(np.isfinite(diff), diff, -745.0)
 
 
-def _phi(x: FloatArray) -> FloatArray:
-    out = np.zeros_like(x)
-    fin = np.isfinite(x)
-    out[fin] = np.exp(-0.5 * x[fin] ** 2) / np.sqrt(2.0 * np.pi)
-    return out
+def _interval_mills_terms(a: FloatArray, b: FloatArray) -> tuple[FloatArray, FloatArray]:
+    """Stable ``(r1, r2)`` for truncated standard normal on ``(a, b)``.
+
+    Returns:
+      - ``r1 = (phi(b) - phi(a)) / (Phi(b) - Phi(a))``
+      - ``r2 = (b * phi(b) - a * phi(a)) / (Phi(b) - Phi(a))``
+
+    Uses sign-flip symmetry into ``a' <= 0``, log-space subtraction against
+    ``_log_interval_prob``, exact narrow-interval Taylor limits, and Gordon's (1941)
+    asymptotic inverse Mills ratio ``-x - 1/x + 2/x^3 - 10/x^5`` in the deep tail
+    ``b' < -30`` so extreme tails never underflow to 0/0.
+    """
+    flip = a > 0
+    a2 = np.where(flip, -b, a)
+    b2 = np.where(flip, -a, b)
+    lp = _log_interval_prob(a2, b2)
+
+    fin_a = np.isfinite(a2)
+    fin_b = np.isfinite(b2)
+    a_safe = np.where(fin_a, a2, 0.0)
+    b_safe = np.where(fin_b, b2, 0.0)
+    lpa = np.where(fin_a, -0.5 * a_safe * a_safe - _HALF_LOG_2PI, -np.inf)
+    lpb = np.where(fin_b, -0.5 * b_safe * b_safe - _HALF_LOG_2PI, -np.inf)
+
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        rb = np.where(fin_b, np.exp(np.clip(lpb - lp, -700.0, 700.0)), 0.0)
+        ra = np.where(fin_a, np.exp(np.clip(lpa - lp, -700.0, 700.0)), 0.0)
+        r1 = rb - ra
+        r2 = b_safe * rb - a_safe * ra
+
+    # Deep left tail (b2 < -30 and lower bound negligible): asymptotic Mills ratio
+    deep_tail = fin_b & (b2 < -30.0) & ((~fin_a) | ((lpa - lpb) < -40.0))
+    if np.any(deep_tail):
+        x = np.where(deep_tail, b2, -30.0)
+        inv_x = 1.0 / x
+        inv_x2 = inv_x * inv_x
+        mills = -x - inv_x * (1.0 - 2.0 * inv_x2 + 10.0 * inv_x2 * inv_x2)
+        r1 = np.where(deep_tail, mills, r1)
+        r2 = np.where(deep_tail, x * mills, r2)
+
+    # Narrow finite intervals (b2 - a2 < 1e-6): exact midpoint Taylor limits
+    narrow = fin_a & fin_b & ((b2 - a2) < 1e-6)
+    if np.any(narrow):
+        mid = 0.5 * (a2 + b2)
+        r1 = np.where(narrow, -mid, r1)
+        r2 = np.where(narrow, 1.0 - mid * mid, r2)
+
+    r1_out = np.where(flip, -r1, r1)
+    return np.asarray(r1_out, dtype=np.float64), np.asarray(r2, dtype=np.float64)
 
 
 def _nll_grad(
@@ -83,8 +137,8 @@ def _nll_grad(
 ) -> tuple[float, FloatArray]:
     p = X.shape[1]
     beta = params[:p]
-    th = float(params[p])
-    sig = np.exp(th)
+    th = float(np.clip(params[p], -35.0, 35.0))
+    sig = float(np.exp(th))
     mu = X @ beta
     s_i = sig / sw  # per-observation sd
     nll = 0.0
@@ -102,14 +156,9 @@ def _nll_grad(
         b = (hi[cen] - mu[cen]) / s_i[cen]
         lp = _log_interval_prob(a, b)
         nll -= float(np.sum(lp))
-        pa = _phi(a)
-        pb = _phi(b)
-        P = np.exp(lp)
-        P = np.maximum(P, 1e-300)
-        g_mu[cen] = (pb - pa) / (s_i[cen] * P)
-        aa = np.where(np.isfinite(a), a, 0.0)
-        bb = np.where(np.isfinite(b), b, 0.0)
-        g_th += float(np.sum((pb * bb - pa * aa) / P))
+        r1, r2 = _interval_mills_terms(a, b)
+        g_mu[cen] = r1 / s_i[cen]
+        g_th += float(np.sum(r2))
     grad = np.concatenate([X.T @ g_mu, [g_th]])
     return nll, grad
 
@@ -124,7 +173,15 @@ def fit_censored_regression(
     weights: FloatArray | None = None,
     dist: str = "normal",
 ) -> CenRegFit:
-    """Maximum-likelihood censored linear regression (Tobit for left/right/interval)."""
+    """Maximum-likelihood censored linear regression (Tobit for left/right/interval).
+
+    Standardizes ``z`` internally before BFGS optimization and numerical Hessian
+    differentiation so MLE estimates, gradients, and covariances are strictly
+    scale-invariant across arbitrary response magnitudes, and projects the inverse
+    Hessian onto the strictly positive-definite cone.
+    """
+    from ._linalg import _detect_intercept_partition_cols
+
     lognormal = dist == "lognormal"
     lo, hi = _bounds_z(vals, codes, left, right, lognormal)
     if np.any(np.isnan(lo)) or np.any(np.isnan(hi)) or np.any(lo > hi):
@@ -133,37 +190,166 @@ def fit_censored_regression(
     if int(np.sum(exact)) < X.shape[1] + 1:
         raise ValueError("Too few exact observations for censored regression.")
     sw = np.sqrt(weights) if weights is not None else np.ones(vals.size)
-    # start: weighted OLS on midpoints / limits
-    z0 = np.where(exact, lo, np.where(np.isfinite(lo) & np.isfinite(hi), 0.5 * (lo + hi),
-                                      np.where(np.isfinite(hi), hi, lo)))
-    b0, *_ = np.linalg.lstsq(X * sw[:, None], z0 * sw, rcond=None)
-    r0 = (z0 - X @ b0) * sw
+
+    # Internal affine standardization in z-space for exact scale/shift invariance
+    k_int = _detect_intercept_partition_cols(X)
+    z0_raw = np.where(
+        exact,
+        lo,
+        np.where(
+            np.isfinite(lo) & np.isfinite(hi),
+            0.5 * (lo + hi),
+            np.where(np.isfinite(hi), hi, lo),
+        ),
+    )
+    z_center = float(np.median(lo[exact])) if k_int > 0 else 0.0
+    z_scale = float(np.std(lo[exact])) if int(np.sum(exact)) > 1 else 0.0
+    if not np.isfinite(z_scale) or z_scale <= 0.0:
+        z_scale = float(np.std(z0_raw))
+    if not np.isfinite(z_scale) or z_scale <= 0.0:
+        z_scale = max(float(np.max(np.abs(z0_raw))), 1.0)
+
+    lo_s = (lo - z_center) / z_scale
+    hi_s = (hi - z_center) / z_scale
+    z0_s = (z0_raw - z_center) / z_scale
+
+    # Start: weighted OLS on midpoints / limits in standardized coordinates
+    b0, *_ = np.linalg.lstsq(X * sw[:, None], z0_s * sw, rcond=None)
+    r0 = (z0_s - X @ b0) * sw
     s0 = float(np.std(r0[exact])) if np.sum(exact) > 1 else 1.0
-    x0 = np.concatenate([b0, [np.log(max(s0, 1e-8))]])
-    res = optimize.minimize(_nll_grad, x0, args=(X, lo, hi, sw, exact), jac=True, method="BFGS",
-                            options={"maxiter": 500, "gtol": 1e-7})
+    x0 = np.concatenate([b0, [np.log(max(s0, 1e-4))]])
+    res = optimize.minimize(
+        _nll_grad,
+        x0,
+        args=(X, lo_s, hi_s, sw, exact),
+        jac=True,
+        method="BFGS",
+        options={"maxiter": 500, "gtol": 1e-7},
+    )
     xp = res.x
-    # numerical Hessian from analytic gradient
+
+    # Numerical Hessian in standardized coordinates from analytic gradient
     k = xp.size
-    H = np.empty((k, k))
+    H = np.empty((k, k), dtype=np.float64)
     for i in range(k):
-        h = 1e-5 * max(1.0, abs(xp[i]))
-        e = np.zeros(k)
+        h = 1e-5 * max(1.0, abs(float(xp[i])))
+        e = np.zeros(k, dtype=np.float64)
         e[i] = h
-        gp = _nll_grad(xp + e, X, lo, hi, sw, exact)[1]
-        gm = _nll_grad(xp - e, X, lo, hi, sw, exact)[1]
+        gp = _nll_grad(xp + e, X, lo_s, hi_s, sw, exact)[1]
+        gm = _nll_grad(xp - e, X, lo_s, hi_s, sw, exact)[1]
         H[:, i] = (gp - gm) / (2.0 * h)
     H = 0.5 * (H + H.T)
-    try:
-        cov = np.linalg.inv(H)
-        if not np.all(np.isfinite(cov)) or np.any(np.diag(cov) <= 0):
-            raise np.linalg.LinAlgError
-    except np.linalg.LinAlgError:
-        cov = np.linalg.pinv(H)
-    g_final = _nll_grad(xp, X, lo, hi, sw, exact)[1]
+
+    # Guarantee strictly SPD covariance via eigendecomposition eigenvalue floor
+    if np.all(np.isfinite(H)):
+        evals, evecs = np.linalg.eigh(H)
+        max_ev = max(float(np.max(evals)), 1e-12)
+        evals_pos = np.maximum(evals, 1e-10 * max_ev)
+        cov_s = (evecs / evals_pos[None, :]) @ evecs.T
+        cov_s = 0.5 * (cov_s + cov_s.T)
+    else:
+        cov_s = np.eye(k, dtype=np.float64)
+
+    g_final = _nll_grad(xp, X, lo_s, hi_s, sw, exact)[1]
     converged = bool(res.success) or float(np.max(np.abs(g_final))) < 1e-4 * max(1.0, float(vals.size))
-    return CenRegFit(beta=xp[:-1].copy(), log_sigma=float(xp[-1]), cov=cov, lognormal=lognormal,
-                     converged=converged)
+
+    # Unscale parameters & covariance back to original z coordinates
+    beta_orig = xp[:-1] * z_scale
+    if k_int > 0 and z_center != 0.0:
+        beta_orig = beta_orig.copy()
+        beta_orig[:k_int] += z_center
+    log_sigma_orig = float(xp[-1]) + float(np.log(z_scale))
+    jac_diag = np.full(k, z_scale, dtype=np.float64)
+    jac_diag[-1] = 1.0
+    cov_orig = (jac_diag[:, None] * cov_s) * jac_diag[None, :]
+    cov_orig = np.asarray(0.5 * (cov_orig + cov_orig.T), dtype=np.float64)
+
+    return CenRegFit(
+        beta=np.asarray(beta_orig, dtype=np.float64),
+        log_sigma=log_sigma_orig,
+        cov=cov_orig,
+        lognormal=lognormal,
+        converged=converged,
+    )
+
+
+def _fit_nll_y(
+    fit: CenRegFit,
+    vals: FloatArray,
+    codes: IntArray,
+    X: FloatArray,
+    left: FloatArray | None,
+    right: FloatArray | None,
+    weights: FloatArray | None,
+) -> float:
+    """Observed-scale negative log-likelihood (including log-Jacobian for lognormal)."""
+    lo, hi = _bounds_z(vals, codes, left, right, fit.lognormal)
+    exact = (codes == 0) | (lo == hi)
+    sw = np.sqrt(weights) if weights is not None else np.ones(vals.size)
+    params = np.concatenate([fit.beta, [fit.log_sigma]])
+    nll_z, _ = _nll_grad(params, X, lo, hi, sw, exact)
+    if fit.lognormal:
+        # Jacobian of z = log(y) on exact observations: -log(1/y) = +log(y)
+        nll_z += float(np.sum(np.log(vals[exact])))
+    return float(nll_z)
+
+
+def fit_censored_regression_auto(
+    vals: FloatArray,
+    codes: IntArray,
+    X: FloatArray,
+    *,
+    left: FloatArray | None = None,
+    right: FloatArray | None = None,
+    weights: FloatArray | None = None,
+    dist: str = "auto",
+) -> tuple[CenRegFit, str]:
+    """Fit Tobit MLE with optional Jacobian-adjusted NLL selection for ``dist='auto'``."""
+    from .censored import _resolve_trend_dist
+
+    if dist in ("normal", "lognormal"):
+        return (
+            fit_censored_regression(
+                vals, codes, X, left=left, right=right, weights=weights, dist=dist
+            ),
+            dist,
+        )
+    cand_dist = _resolve_trend_dist(vals, codes, left, right, dist)
+    if cand_dist != "lognormal":
+        return (
+            fit_censored_regression(
+                vals, codes, X, left=left, right=right, weights=weights, dist="normal"
+            ),
+            "normal",
+        )
+    # Positive data with dist='auto': compare normal vs lognormal on exact observed-scale NLL
+    fit_norm: CenRegFit | None = None
+    fit_ln: CenRegFit | None = None
+    try:
+        fit_norm = fit_censored_regression(
+            vals, codes, X, left=left, right=right, weights=weights, dist="normal"
+        )
+    except (ValueError, np.linalg.LinAlgError):
+        fit_norm = None
+    try:
+        fit_ln = fit_censored_regression(
+            vals, codes, X, left=left, right=right, weights=weights, dist="lognormal"
+        )
+    except (ValueError, np.linalg.LinAlgError):
+        fit_ln = None
+
+    if fit_ln is not None and fit_ln.converged and (fit_norm is None or not fit_norm.converged):
+        return fit_ln, "lognormal"
+    if fit_norm is not None and fit_norm.converged and (fit_ln is None or not fit_ln.converged):
+        return fit_norm, "normal"
+    if fit_norm is None and fit_ln is None:
+        raise ValueError("Censored regression failed for both normal and lognormal families.")
+    assert fit_norm is not None and fit_ln is not None
+    nll_n = _fit_nll_y(fit_norm, vals, codes, X, left, right, weights)
+    nll_l = _fit_nll_y(fit_ln, vals, codes, X, left, right, weights)
+    if nll_l < nll_n:
+        return fit_ln, "lognormal"
+    return fit_norm, "normal"
 
 
 def impute_censored_regression(
@@ -188,10 +374,18 @@ def impute_censored_regression(
     beta = fit.beta
     th = fit.log_sigma
     if draw_params:
-        try:
-            theta = rng.multivariate_normal(np.concatenate([beta, [th]]), fit.cov, method="cholesky")
-        except (np.linalg.LinAlgError, ValueError):
-            theta = rng.multivariate_normal(np.concatenate([beta, [th]]), fit.cov, method="eigh")
+        mean_th = np.concatenate([beta, [th]])
+        d_sd = np.sqrt(np.maximum(np.diag(fit.cov), 0.0))
+        if np.all(d_sd > 0.0):
+            corr = fit.cov / np.outer(d_sd, d_sd)
+            corr = 0.5 * (corr + corr.T)
+            evals, evecs = np.linalg.eigh(corr)
+            max_ev = max(float(np.max(evals)), 1e-12)
+            evals_pos = np.maximum(evals, 1e-12 * max_ev)
+            z_std = rng.standard_normal(mean_th.size)
+            theta = mean_th + d_sd * (evecs @ (np.sqrt(evals_pos) * z_std))
+        else:
+            theta = mean_th
         beta, th = theta[:-1], float(theta[-1])
     lo, hi = _bounds_z(vals, codes, left, right, fit.lognormal)
     exact = (codes == 0) | (lo == hi)
@@ -213,12 +407,13 @@ def impute_censored_regression(
         z = np.clip(mu + s * ndtri(np.clip(pm, 1e-300, 1 - 1e-16)), lo[cen], hi[cen])
         y = np.exp(z) if fit.lognormal else z
     else:  # conditional mean
-        lp = _log_interval_prob(a, b)
         if fit.lognormal:
+            lp = _log_interval_prob(a, b)
             lp_s = _log_interval_prob(a - s, b - s)
             y = np.exp(mu + 0.5 * s * s + lp_s - lp)
         else:
-            y = mu + s * (_phi(a) - _phi(b)) / np.maximum(np.exp(lp), 1e-300)
+            r1, _ = _interval_mills_terms(a, b)
+            y = mu - s * r1
         lo_y = np.exp(lo[cen]) if fit.lognormal else lo[cen]
         hi_y = np.exp(hi[cen]) if fit.lognormal else hi[cen]
         y = np.clip(y, lo_y, hi_y)
@@ -265,9 +460,8 @@ def pool_pvalues(pvalues: FloatArray) -> float:
     pooled statistic ``mean(z) / sqrt(T)`` is referred to a t distribution with Rubin's
     (1987) degrees of freedom ``(M - 1) (1 + 1/r)^2``, ``r = (1 + 1/M) B``
     (Licht, 2010; van Buuren, 2018, Sec. 5.3). Non-finite p-values are ignored, and
-    p-values are capped at 0.999 so a degenerate ``p = 1`` (e.g. from a Monte Carlo
-    p-value with no smaller null draw) cannot dominate the between-imputation variance;
-    the cap can only make the pooled p-value larger.
+    p-values are clipped to ``[1e-300, 1 - 1e-12]`` so exact ``0`` or ``1`` values
+    (e.g. from Monte Carlo p-values) do not produce ``+-inf`` z-scores.
     """
     from scipy.stats import t as t_dist
 
@@ -277,7 +471,7 @@ def pool_pvalues(pvalues: FloatArray) -> float:
         return float("nan")
     if p.size == 1:
         return float(p[0])
-    z = -ndtri(np.clip(p, 1e-300, 0.999))
+    z = -ndtri(np.clip(p, 1e-300, 1.0 - 1e-12))
     m = int(z.size)
     b = float(np.var(z, ddof=1))
     r = (1.0 + 1.0 / m) * b

@@ -1686,7 +1686,7 @@ def just_jumps(
         rng = np.random.default_rng(cfg.random_state if cfg is not None else 0)
 
     # Multiple imputation of censored values: each candidate's p-values are pooled over
-    # `n_imputations` congenial imputations of its window (see _run_just_jumps_array).
+    # `detection_imputations` congenial imputations of its window (see _run_just_jumps_array).
     mi_spec: tuple[int, str] | None = None
     if (
         not parity_mode
@@ -1694,12 +1694,30 @@ def just_jumps(
         and prov is not None
         and prov.n_censored > 0
         and cfg.detection_imputations > 1
-        and cfg.scope != "windowed"
         and eff_calib != "none"
     ):
-        mi_dist = resolve_imputation_dist(prov, cfg)
-        if mi_dist is not None:
-            mi_spec = (int(cfg.detection_imputations), mi_dist)
+        mi_skip_reason: str | None = None
+        if cfg.scope == "windowed":
+            mi_skip_reason = "scope='windowed' uses local marginal imputation per window"
+        elif pw.kind == "matrix":
+            mi_skip_reason = "2D weight matrices are not supported by censored-regression MI"
+        else:
+            mi_dist = resolve_imputation_dist(prov, cfg)
+            if mi_dist is None:
+                mi_skip_reason = f"dist={cfg.dist!r} is not supported by censored-regression MI"
+            else:
+                mi_spec = (int(cfg.detection_imputations), mi_dist)
+        if mi_skip_reason is not None:
+            warnings_list.append(
+                WarningItem(
+                    code="MI_DETECTION_FALLBACK",
+                    severity="caution",
+                    message=(
+                        f"`detection_imputations={cfg.detection_imputations}` was skipped because "
+                        f"{mi_skip_reason}; jump p-values condition on the single primary imputation."
+                    ),
+                )
+            )
     mi_counter = [0, 0]
 
     accepted, all_cands_valid, win_fb = _run_just_jumps_array(
@@ -1893,9 +1911,13 @@ def just_jumps(
                     parity_mode=parity_mode,
                     robust=eff_robust,
                     huber_k=huber_k,
+                    calibration=eff_calib,
+                    n_mc=int(n_mc),
+                    mc_seed=(20261128, int(best_c.window_start), int(best_c.window_stop)),
                     season_significance=eff_season_sig,
                 )
-                vanished = (abs(mag_r) < mag_th and abs(dir_r) < dir_th) or (p_r >= 0.05)
+                recen_alpha = eff_jump_alpha if eff_jump_alpha is not None else 0.05
+                vanished = (abs(mag_r) < mag_th and abs(dir_r) < dir_th) or (p_r >= recen_alpha)
                 dl_artifact = bool(vanished)
                 if dl_artifact:
                     warnings_list.append(

@@ -35,8 +35,8 @@ conc = np.exp(0.3 * np.cos(2 * np.pi * np.arange(144) / 12) + rng.normal(0.0, 0.
 y_strings = [f"<{0.8}" if v < 0.8 else float(v) for v in conc]
 res = analyze_series(dates, y_strings)
 
-# 2. Numeric array + boolean/integer/LWPTrends status array
-#    status: True/1 = left-censored (default), or -1=left, 0=obs, 1=right, or 'lt'/'gt'/'not'
+# 2. Numeric array + boolean/signed-integer/LWPTrends status array
+#    status: boolean True = left-censored (default), or signed -1=left, 0=obs, +1=right, or 'lt'/'gt'/'not'
 is_left_censored = conc < 0.8
 values = np.where(is_left_censored, 0.8, conc)
 res = analyze_series(dates, values, censor_status=is_left_censored)

@@ -1162,9 +1162,18 @@ def _resolve_trend_dist(
     pos = bool(np.all(vals[codes == 0] > 0))
     if codes.size and np.any(codes == -1):
         pos = pos and bool(np.all(vals[codes == -1] > 0))
-    if left is not None:
-        fin = np.isfinite(left) & (codes == 2)
-        pos = pos and bool(np.all(left[fin] > 0))
+    if codes.size and np.any(codes == 1):
+        pos = pos and bool(np.all(vals[codes == 1] > 0))
+    if left is not None and right is not None and np.any(codes == 2):
+        iv = codes == 2
+        fin_l = iv & np.isfinite(left)
+        fin_r = iv & np.isfinite(right)
+        # [0.0, u] with u > 0 is valid lognormal (log(0) -> -inf left-censored bound);
+        # any negative lower bound or non-positive upper bound requires "normal".
+        pos = pos and bool(np.all(left[fin_l] >= 0)) and bool(np.all(right[fin_r] > 0))
+    elif left is not None and np.any(codes == 2):
+        fin_l = np.isfinite(left) & (codes == 2)
+        pos = pos and bool(np.all(left[fin_l] >= 0))
     return "lognormal" if pos else "normal"
 
 
@@ -1182,11 +1191,14 @@ def impute_trend_model(
     draw_params: bool = False,
 ) -> tuple[FloatArray, dict[str, Any]]:
     """Impute censored values conditionally on time via censored-regression MLE."""
-    from ._cenreg import fit_censored_regression, impute_censored_regression, trend_design
+    from ._cenreg import (
+        fit_censored_regression_auto,
+        impute_censored_regression,
+        trend_design,
+    )
 
-    d = _resolve_trend_dist(vals, codes, left, right, dist)
     X = trend_design(t_valid, harmonics)
-    fit = fit_censored_regression(vals, codes, X, left=left, right=right, dist=d)
+    fit, d = fit_censored_regression_auto(vals, codes, X, left=left, right=right, dist=dist)
     if not fit.converged:
         raise ValueError("Censored-regression MLE did not converge.")
     imp = impute_censored_regression(
@@ -1291,7 +1303,33 @@ def prepare_series_with_censoring(
     cen_frac_g = n_cen_g / max(1, int(g_cen.size))
     scope_txt = " in the historical period" if causal_split_fn is not None else ""
 
-    # Tiered guardrails BEFORE calling ndimpute
+    emit_applied_info = False
+    # Warn if a numeric integer array containing only {0, 1} was passed without censoring_type
+    if censor_status is not None and cfg.censoring_type is None:
+        st_chk = _to_obj_array(censor_status)
+        if (
+            st_chk.dtype != np.bool_
+            and st_chk.dtype.kind not in ("O", "U", "S")
+            and np.any(codes_valid == 1)
+            and not np.any(codes_valid == -1)
+        ):
+            warnings_list.append(
+                    WarningItem(
+                        code="INTEGER_STATUS_INTERPRETED_AS_RIGHT",
+                        severity="caution",
+                        message=(
+                            "Numeric integer `censor_status` with values in {0, 1} was interpreted "
+                            "using the canonical signed convention (+1 = right-censored, '>UL')."
+                        ),
+                        suggestion=(
+                            "For left-censored ('<DL') data, pass boolean flags (True = left-censored), "
+                            "signed integers (-1 = left, 0 = observed, +1 = right), or "
+                            "CensoredConfig(censoring_type='left')."
+                        ),
+                    )
+                )
+
+    # Tiered guardrails BEFORE calling imputation
     if n_cen > 0:
         n_obs, cen_frac = n_obs_g, cen_frac_g
         n_cen_report = n_cen_g
@@ -1343,17 +1381,7 @@ def prepare_series_with_censoring(
                 )
             )
         else:
-            warnings_list.append(
-                WarningItem(
-                    code="CENSORED_IMPUTATION_APPLIED",
-                    severity="info",
-                    message=(
-                        f"Imputed {n_cen} censored observation(s) ({cen_frac:.1%}) via "
-                        f"ndimpute (method={cfg.method!r}, impute_type={cfg.impute_type!r}, "
-                        f"scope={cfg.scope!r})."
-                    ),
-                )
-            )
+            emit_applied_info = True
 
         if cfg.impute_type == "mean":
             warnings_list.append(
@@ -1415,6 +1443,18 @@ def prepare_series_with_censoring(
 
     fallback_count = 0
     if causal_split_fn is not None and n_cen > 0:
+        if cfg.imputation_model == "trend":
+            warnings_list.append(
+                WarningItem(
+                    code="MONITOR_MARGINAL_IMPUTATION",
+                    severity="info",
+                    message=(
+                        "Causal monitoring fits marginal ndimpute imputation strictly on the "
+                        "historical period (overriding imputation_model='trend') to prevent "
+                        "look-ahead leakage from monitoring observations."
+                    ),
+                )
+            )
         imp_values, attrs = _impute_causal_history_and_monitoring(
             vals_valid,
             codes_valid,
@@ -1474,6 +1514,30 @@ def prepare_series_with_censoring(
             )
         else:
             imp_values = imp_global
+
+    if emit_applied_info and n_cen > 0:
+        actual_method = str(attrs.get("method", cfg.method))
+        actual_dist = str(attrs.get("dist", cfg.dist))
+        actual_imp_type = str(attrs.get("impute_type", cfg.impute_type))
+        if actual_method == "censored_regression":
+            engine_desc = (
+                f"tspec censored-regression MLE (dist={actual_dist!r}, "
+                f"impute_type={actual_imp_type!r}, scope={cfg.scope!r})"
+            )
+        else:
+            engine_desc = (
+                f"ndimpute (method={actual_method!r}, dist={actual_dist!r}, "
+                f"impute_type={actual_imp_type!r}, scope={cfg.scope!r})"
+            )
+        warnings_list.append(
+            WarningItem(
+                code="CENSORED_IMPUTATION_APPLIED",
+                severity="info",
+                message=(
+                    f"Imputed {n_cen} censored observation(s) ({cen_frac:.1%}) via {engine_desc}."
+                ),
+            )
+        )
 
     dl_shifts: tuple[DlShiftEvent, ...] = ()
     if cfg.detect_dl_shifts and n_cen > 0 and ctype != "interval":

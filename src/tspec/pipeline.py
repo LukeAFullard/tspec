@@ -188,8 +188,13 @@ class PipelineResult(BaseResult):
             f"Trend segments          : {len(self.segments)}",
         ]
         if self.censoring is not None:
+            cen_engine = (
+                "Tobit MLE"
+                if self.censoring.method == "censored_regression"
+                else "ndimpute"
+            )
             lines.append(
-                f"Censoring (ndimpute)    : {self.censoring.n_censored}/{self.diagnostics.n_valid} "
+                f"Censoring ({cen_engine:<9s})   : {self.censoring.n_censored}/{self.diagnostics.n_valid} "
                 f"({self.censoring.censor_fraction:.1%}, method={self.censoring.method!r}, "
                 f"dist={self.censoring.dist!r})"
             )
@@ -236,10 +241,14 @@ class PipelineResult(BaseResult):
             f"slope_estimator={self.slope_estimator!r}, zero gap interpolation)."
         ]
         if self.censoring is not None and self.censoring.n_censored > 0:
+            cen_desc = (
+                f"tspec censored-regression MLE ({self.censoring.dist}, {self.censoring.impute_type})"
+                if self.censoring.method == "censored_regression"
+                else f"ndimpute ({self.censoring.method}, {self.censoring.dist}, {self.censoring.impute_type})"
+            )
             lines.append(
                 f"Censored data: {self.censoring.n_censored} observation(s) "
-                f"({self.censoring.censor_fraction:.1%}) were imputed via ndimpute "
-                f"({self.censoring.method}, {self.censoring.dist}, {self.censoring.impute_type})."
+                f"({self.censoring.censor_fraction:.1%}) were imputed via {cen_desc}."
             )
         if self.jumps is not None:
             if self.jumps.jumps:
@@ -430,11 +439,17 @@ def _mi_segment_slope(
 ) -> tuple[float, float, float, float, float] | None:
     """Rubin-pooled OLS slope over proper multiple imputations of a censored segment.
 
-    Imputation model: normal censored linear regression in time on the deseasonalized
-    values and limits (congenial with the segment OLS analysis model).
+    Imputation model: censored linear regression in time on the deseasonalized
+    values and limits using the resolved censoring distribution (``"lognormal"``
+    when requested/resolved and strictly positive, else ``"normal"``).
     Returns ``(slope, intercept, ci_low, ci_high, pvalue)`` or ``None`` on failure.
     """
-    from ._cenreg import fit_censored_regression, impute_censored_regression, rubin_pool
+    from ._cenreg import (
+        fit_censored_regression_auto,
+        impute_censored_regression,
+        rubin_pool,
+    )
+    from .censored import _resolve_trend_dist
 
     codes = prov.status_codes[s0:s1]
     seas = seasonal_part[s0:s1]
@@ -443,8 +458,21 @@ def _mi_segment_slope(
     right = prov.original_right[s0:s1] - seas if prov.original_right is not None else None
     w = pw_s.vector if pw_s.kind == "vector" else None
     n_s = int(t_s.size)
+
+    # Honor resolved censoring distribution (BLK-03): use lognormal whenever requested
+    # or auto-resolved AND segment deseasonalized values/limits remain strictly positive.
+    req_dist = prov.dist if prov.dist in ("normal", "lognormal") else "auto"
+    if req_dist == "lognormal":
+        seg_dist = _resolve_trend_dist(vals, codes, left, right, "auto")
+    elif req_dist == "normal":
+        seg_dist = "normal"
+    else:
+        seg_dist = "auto"
+
     try:
-        fit = fit_censored_regression(vals, codes, D_s, left=left, right=right, weights=w, dist="normal")
+        fit, used_dist = fit_censored_regression_auto(
+            vals, codes, D_s, left=left, right=right, weights=w, dist=seg_dist
+        )
     except (ValueError, np.linalg.LinAlgError):
         return None
     if not fit.converged:
@@ -453,13 +481,26 @@ def _mi_segment_slope(
     slopes = np.empty(m)
     vars_ = np.empty(m)
     icpts = np.empty(m)
+    # Precompute weighted leverage/bread for HC3 sandwich variance under heteroscedastic lognormal Y
+    use_hc3 = used_dist == "lognormal" and pw_s.kind != "matrix" and n_s > 3
+    if use_hc3:
+        sw_hc = pw_s.sqrt_vector if pw_s.sqrt_vector is not None else np.ones(n_s, dtype=np.float64)
+        Dw_hc = D_s * sw_hc[:, None]
+        xtx_inv = np.linalg.pinv(Dw_hc.T @ Dw_hc)
+        h_diag = np.clip(np.sum((Dw_hc @ xtx_inv) * Dw_hc, axis=1), 0.0, 0.99)
+        bread_slope = xtx_inv[1, :] @ Dw_hc.T  # shape (n_s,)
     for i in range(m):
         y_i = impute_censored_regression(
             fit, vals, codes, D_s, rng, left=left, right=right, weights=w, draw_params=True
         )
         ols_i = solve_weighted_ols(D_s, y_i, pw_s, compute_cov=True)
         slopes[i] = float(ols_i.coeff[1]) / s_t
-        vars_[i] = float(ols_i.cov[1, 1]) / (s_t * s_t)
+        if use_hc3:
+            e_w = ols_i.residuals * sw_hc
+            u_hc3 = e_w / np.maximum(1.0 - h_diag, 0.05)
+            vars_[i] = float(np.sum((bread_slope * u_hc3) ** 2)) / (s_t * s_t)
+        else:
+            vars_[i] = float(ols_i.cov[1, 1]) / (s_t * s_t)
         icpts[i] = float(ols_i.coeff[0]) - slopes[i] * float(t_s[0])
     if not (np.all(np.isfinite(slopes)) and np.all(np.isfinite(vars_))):
         return None
