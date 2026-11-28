@@ -1,0 +1,5 @@
+(a) worst trend errors (no eval_times): [52.2 52.6 58.7] at [1989.477 1989.479 1989.534]
+trend RMSE at observations, no eval_times : 7.195608620784129
+trend RMSE at observations, with eval_times: nan
+(b) NaN trend values at observations with eval_times: 5 of 804
+trend_reg RMSE on the monthly grid         : 0.05424690235280796
