@@ -1,0 +1,11 @@
+pipe_null_line|new {'any_jump': 0.01, 'any_tp': 0.015, 'jump_hit': 0.0, 'tp_hit': 0.0, 'extra_jumps': 0.01, 'sec': 3.103, 'wall': 165.8}
+pipe_null_curved|new {'any_jump': 0.02, 'any_tp': 0.99, 'jump_hit': 0.0, 'tp_hit': 0.645, 'extra_jumps': 0.02, 'sec': 2.926, 'wall': 155.1}
+pipe_null_curved_strong|new {'any_jump': 0.01, 'any_tp': 1.0, 'jump_hit': 0.0, 'tp_hit': 0.625, 'extra_jumps': 0.01, 'sec': 2.514, 'wall': 134.7}
+pipe_null_ar0.5|new {'any_jump': 0.0, 'any_tp': 0.015, 'jump_hit': 0.0, 'tp_hit': 0.0, 'extra_jumps': 0.0, 'sec': 3.183, 'wall': 170.6}
+pipe_null_ar0.8|new {'any_jump': 0.0, 'any_tp': 0.045, 'jump_hit': 0.0, 'tp_hit': 0.01, 'extra_jumps': 0.0, 'sec': 3.464, 'wall': 186.1}
+pipe_step0.5_line|new {'any_jump': 0.075, 'any_tp': 0.015, 'jump_hit': 0.07, 'tp_hit': 0.005, 'extra_jumps': 0.005, 'sec': 3.08, 'wall': 164.8}
+pipe_step1.0_line|new {'any_jump': 0.57, 'any_tp': 0.055, 'jump_hit': 0.545, 'tp_hit': 0.025, 'extra_jumps': 0.03, 'sec': 2.844, 'wall': 152.9}
+pipe_step2.0_line|new {'any_jump': 1.0, 'any_tp': 0.025, 'jump_hit': 1.0, 'tp_hit': 0.005, 'extra_jumps': 0.0, 'sec': 2.726, 'wall': 146.4}
+pipe_step1.0_curved|new {'any_jump': 0.09, 'any_tp': 1.0, 'jump_hit': 0.08, 'tp_hit': 0.675, 'extra_jumps': 0.01, 'sec': 2.694, 'wall': 144.2}
+pipe_bend0.6_line|new {'any_jump': 0.05, 'any_tp': 0.055, 'jump_hit': 0.015, 'tp_hit': 0.04, 'extra_jumps': 0.035, 'sec': 2.99, 'wall': 159.8}
+pipe_null_line|old_single_scale {'any_jump': 0.005, 'any_tp': 0.01, 'jump_hit': 0.0, 'tp_hit': 0.0, 'extra_jumps': 0.005, 'sec': 0.859, 'wall': 46.2}
