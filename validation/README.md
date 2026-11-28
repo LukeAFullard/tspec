@@ -30,6 +30,10 @@ OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_public_datasets.py
 # 3d. Tier 2d: External library oracles (statsmodels/scipy), cross-domain signals & adversarial edge cases
 OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_cross_domain_and_edge_cases.py
 
+# 3e. Tier 2e: Independent known-solution & real-world head-to-head vs STL / MSTL / ruptures (with figures)
+#     (BENCH_NREP=60 default 40; figures -> reports/figures_stl/, report -> reports/stl_headtohead_report.md)
+OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_stl_headtohead.py
+
 # 4. Tier 3: Unit, invariance, edge-case & Hypothesis property tests
 pytest -v
 

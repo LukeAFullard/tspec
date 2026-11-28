@@ -1,0 +1,9 @@
+AUD-01 datetime M2 best normalized LSS = 0.250 (numeric-hours control = 1.000; expected ~1.0): BUG CONFIRMED
+       decimal-year step ratio across 2023/2024 boundary = 1.00274 (expected 1.0)
+AUD-05 allssa selected [1.37] for true {1.00, 1.37} at SNR~25: BUG CONFIRMED
+       default-grid allssa on 11.2-yr + annual cycle selected [1.0] (11.2-yr cycle missing, no warning: ['STRONG_AUTOCORRELATION']): BUG CONFIRMED
+AUD-06 hinge (slope +0.5 -> -0.5 at t=10), noise sd=0.0: turning points [], flagged as jumps [10.31]: BUG CONFIRMED
+AUD-06 hinge (slope +0.5 -> -0.5 at t=10), noise sd=0.001: turning points [], flagged as jumps [10.31]: BUG CONFIRMED
+AUD-09 noiseless line: jumps [(7, '-6.0e-17', '6.7e-10')], analyze_series segments = 2: BUG CONFIRMED
+AUD-10 just_monitor(start=5): detected=True at t=1.9340818786349123 (true break t=10); warnings ['OPEN_ENDED_SPENDING', 'LONG_MONITORING_HORIZON']: BUG CONFIRMED
+AUD-02 AR(1) rho=0.3 null: false-jump series 26/60 (nominal <= 5%), of which 5 carried an autocorrelation warning: BUG CONFIRMED

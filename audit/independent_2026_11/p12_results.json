@@ -1,0 +1,47 @@
+{
+ "allssa_2.37_found_rate": {
+  "default": 0.375,
+  "dense": 1.0
+ },
+ "lss_at_integer_grid_given_annual": [
+  0.0,
+  0.0003406149272841385,
+  0.0035808591359890777,
+  0.0005585755736885256,
+  0.001304141269222228
+ ],
+ "false_jumps_with_true_step": {
+  "n_false": 10,
+  "per_series": 0.16666666666666666,
+  "offsets_yr": [
+   -3.21,
+   -0.96,
+   -0.96,
+   -0.96,
+   -0.96,
+   -0.96,
+   0.96,
+   1.04,
+   1.12,
+   1.29
+  ]
+ },
+ "false_jumps_null_same_design_per_series": 0.05,
+ "co2_gap_variants": {
+  "allssa_default": {
+   "trend_gap": 0.3780544264553921,
+   "seas_gap": 0.4958449036750178,
+   "vs_stl_seas_complete": 0.17120014282076215
+  },
+  "ols_1234": {
+   "trend_gap": 0.03289846863531388,
+   "seas_gap": 0.26831444785287684,
+   "vs_stl_seas_complete": 0.1394583823173575
+  },
+  "ols_1234_duration4y": {
+   "trend_gap": 0.054319987474100453,
+   "seas_gap": 0.06585346218507405,
+   "vs_stl_seas_complete": 0.12941440412137475
+  }
+ }
+}

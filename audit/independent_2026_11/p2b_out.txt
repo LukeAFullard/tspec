@@ -1,0 +1,15 @@
+0.0 default_size36 {'just_recall_or_fwer': 0.0, 'global_supF_reject': 0.055}
+0.0 size72 {'just_recall_or_fwer': 0.005, 'global_supF_reject': 0.055}
+0.0 size120 {'just_recall_or_fwer': 0.01, 'global_supF_reject': 0.055}
+0.5 default_size36 {'just_recall_or_fwer': 0.005, 'global_supF_reject': 0.825}
+0.5 size72 {'just_recall_or_fwer': 0.035, 'global_supF_reject': 0.825}
+0.5 size120 {'just_recall_or_fwer': 0.19, 'global_supF_reject': 0.825}
+1.0 default_size36 {'just_recall_or_fwer': 0.06, 'global_supF_reject': 1.0}
+1.0 size72 {'just_recall_or_fwer': 0.455, 'global_supF_reject': 1.0}
+1.0 size120 {'just_recall_or_fwer': 0.885, 'global_supF_reject': 1.0}
+1.5 default_size36 {'just_recall_or_fwer': 0.25, 'global_supF_reject': 1.0}
+1.5 size72 {'just_recall_or_fwer': 0.92, 'global_supF_reject': 1.0}
+1.5 size120 {'just_recall_or_fwer': 0.995, 'global_supF_reject': 1.0}
+2.0 default_size36 {'just_recall_or_fwer': 0.5, 'global_supF_reject': 1.0}
+2.0 size72 {'just_recall_or_fwer': 1.0, 'global_supF_reject': 1.0}
+2.0 size120 {'just_recall_or_fwer': 1.0, 'global_supF_reject': 1.0}

@@ -20,3 +20,9 @@ All datasets in this directory are classic public-domain scientific records used
 6. **`elnino_sst_monthly.csv`** ($n = 732$, Jan 1950 – Dec 2010)
    - Monthly Pacific Niño 1+2 Sea Surface Temperature (°C).
    - Classic oceanography / climate oscillation benchmark combining annual seasonality with the 3–6 year irregular ENSO cycle. Public domain (NOAA CPC / `statsmodels.datasets.elnino`).
+7. **`psmsl_san_francisco_msl_monthly.csv`** ($n = 2058$, 1854–2025; 9 missing months left blank)
+   - Monthly Revised Local Reference (RLR) mean sea level (mm) at San Francisco (PSMSL station 10; NOAA 9414290). Longest continuous tide-gauge record in the Americas; used in `bench_stl_headtohead.py` for secular sea-level rise + seasonal cycle on a gappy record.
+   - Source: Permanent Service for Mean Sea Level (PSMSL), `https://psmsl.org/data/obtaining/rlr.monthly.data/10.rlrdata` (Holgate et al., 2013, *J. Coastal Res.* 29:493–504). Free to use with attribution.
+8. **`airpassengers_monthly.csv`** ($n = 144$, 1949–1960)
+   - Monthly international airline passengers (thousands); the classic multiplicative-seasonality benchmark (Box & Jenkins, 1976, Series G).
+   - Source: R `datasets::AirPassengers` via Rdatasets (`https://raw.githubusercontent.com/vincentarelbundock/Rdatasets/master/csv/datasets/AirPassengers.csv`). Public domain.

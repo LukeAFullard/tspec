@@ -1,0 +1,13 @@
+--- numpy+scipy only (no pandas/ndimpute/matplotlib/statsmodels):
+import ok; heavy modules loaded: []
+  lssa: ok
+  just_jumps: ok
+  just_decompose: ok
+  stpd: ok
+  analyze_series: ok
+  monitor: ok
+  summary/explain: ok
+  censored strings: ok
+  to_dataframe: ImportError: pandas is required for `.to_dataframe()`. Install it with `pip install pandas` or reinstall tspec normally (`p
+  plot: ImportError: matplotlib is required for `.plot()`. Install it with `pip install tspec[plot]`.
+heavy modules loaded after calls: []

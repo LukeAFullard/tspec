@@ -1,0 +1,11 @@
+{
+ "datetime_input_spectrum_at_M2_cpy_365.25": 0.19065292402612788,
+ "datetime_input_spectrum_at_M2_cpy_365": 0.23262625648664226,
+ "datetime_input_spectrum_at_M2_cpy_366": 0.23397603682740653,
+ "datetime_input_best_spectrum_fine_grid": 0.2499397406775025,
+ "numeric_hours_input_spectrum": 1.0,
+ "annual_cycle_daily_datetime": 0.9999863366308989,
+ "weekly_cycle_daily_datetime_best_spectrum": 0.9616786588190476,
+ "weekly_cycle_numeric_days": 1.0,
+ "decimal_year_step_ratio_max_min": 1.00273972610788
+}

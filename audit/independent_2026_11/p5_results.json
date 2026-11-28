@@ -1,0 +1,152 @@
+{
+ "NREP": 300,
+ "causality_max_abs_diff_past_steps": {
+  "default_pocock_h30": 0.0,
+  "allssa_obf_h30": 0.0,
+  "consecutive_k_h30": 0.0,
+  "open_ended_pocock": 0.0,
+  "ols_moving": 0.0,
+  "mm_robust": 0.0
+ },
+ "censoring_causality_max_abs_diff": 0.0,
+ "fwer_pocock_h24": {
+  "rate": 0.0033333333333333335,
+  "ci95": [
+   0.0005886577218511581,
+   0.018636693694531237
+  ],
+  "errors": 0,
+  "sec": 1.3,
+  "err": null
+ },
+ "fwer_pocock_open": {
+  "rate": 0.0033333333333333335,
+  "ci95": [
+   0.0005886577218511581,
+   0.018636693694531237
+  ],
+  "errors": 0,
+  "sec": 1.3,
+  "err": null
+ },
+ "fwer_obf_h24": {
+  "rate": 0.0033333333333333335,
+  "ci95": [
+   0.0005886577218511581,
+   0.018636693694531237
+  ],
+  "errors": 0,
+  "sec": 1.6,
+  "err": null
+ },
+ "fwer_consk_h24": {
+  "rate": 0.07333333333333333,
+  "ci95": [
+   0.04892399383922859,
+   0.10853134160571733
+  ],
+  "errors": 0,
+  "sec": 3.4,
+  "err": null
+ },
+ "fwer_consk_noH": {
+  "rate": 0.02666666666666667,
+  "ci95": [
+   0.01357306980864708,
+   0.05172894295058982
+  ],
+  "errors": 0,
+  "sec": 1.1,
+  "err": null
+ },
+ "fwer_none_h24": {
+  "rate": 0.06666666666666667,
+  "ci95": [
+   0.043567515545158274,
+   0.10072305951611496
+  ],
+  "errors": 0,
+  "sec": 1.2,
+  "err": null
+ },
+ "fwer_pocock_h120_long": {
+  "rate": 0.0,
+  "ci95": [
+   8.673617379884035e-19,
+   0.012642971224546034
+  ],
+  "errors": 0,
+  "sec": 8.1,
+  "err": null
+ },
+ "fwer_consk_h120_long": {
+  "rate": 0.056666666666666664,
+  "ci95": [
+   0.03567747646328951,
+   0.08886595802247463
+  ],
+  "errors": 0,
+  "sec": 49.5,
+  "err": null
+ },
+ "fwer_consk_h24_irregular": {
+  "rate": 0.043333333333333335,
+  "ci95": [
+   0.025496448084407246,
+   0.07271746563401146
+  ],
+  "errors": 0,
+  "sec": 31.2,
+  "err": null
+ },
+ "fwer_pocock_h24_hist_spikes": {
+  "rate": 0.15666666666666668,
+  "ci95": [
+   0.11990681678878562,
+   0.2021080234520693
+  ],
+  "errors": 0,
+  "sec": 2.0,
+  "err": null
+ },
+ "fwer_pocock_h24_hist_spikes_mm": {
+  "rate": 0.006666666666666667,
+  "ci95": [
+   0.0018301483579117855,
+   0.023977583250306973
+  ],
+  "errors": 0,
+  "sec": 3.9,
+  "err": null
+ },
+ "fwer_pocock_h24_mon_spike_mm": {
+  "rate": 0.0033333333333333335,
+  "ci95": [
+   0.0005886577218511581,
+   0.018636693694531237
+  ],
+  "errors": 0,
+  "sec": 3.7,
+  "err": null
+ },
+ "fwer_consk_h24_mon_spike_mm": {
+  "rate": 0.02,
+  "ci95": [
+   0.009197631557703617,
+   0.042939620817860576
+  ],
+  "errors": 0,
+  "sec": 7.9,
+  "err": null
+ },
+ "power_pocock_h24": {
+  "rate": 0.91,
+  "median_delay_steps": 6.0,
+  "frac_before_change": 0.003663003663003663
+ },
+ "power_consk_h24": {
+  "rate": 0.98,
+  "median_delay_steps": 4.0,
+  "frac_before_change": 0.04421768707482993
+ }
+}

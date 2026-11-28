@@ -1,0 +1,6 @@
+1.0 True {'jump_reported': 0.06, 'tp_reported_instead': 0.13}
+1.0 False {'jump_reported': 0.07, 'tp_reported_instead': 0.08}
+2.0 True {'jump_reported': 0.28, 'tp_reported_instead': 0.59}
+2.0 False {'jump_reported': 0.64, 'tp_reported_instead': 0.23}
+3.0 True {'jump_reported': 0.71, 'tp_reported_instead': 0.24}
+3.0 False {'jump_reported': 0.98, 'tp_reported_instead': 0.02}

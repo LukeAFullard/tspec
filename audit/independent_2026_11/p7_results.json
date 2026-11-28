@@ -1,0 +1,110 @@
+{
+ "base_jumps": [
+  10.090965
+ ],
+ "jumps_y_affine_1e9_offset": true,
+ "jumps_y_scale_1e-12": true,
+ "jumps_y_scale_1e12": true,
+ "jumps_t_offset_1e7(seasonal phase preserved since integer)": true,
+ "decompose_y_offset_1e9_trend_err": 3.029819186650684e-07,
+ "stpd_y_scale_1e-12_same_tps": [
+  93
+ ],
+ "unsorted_t": "RAISED ValueError: Time vector `t` must be sorted in monotonically ascending order.",
+ "duplicate_t": "RAISED ValueError: Time vector `t` contains duplicate timestamps. Aggregate or remove duplicates before analysis.",
+ "nan_burst_y_50pct": "RAISED InsufficientDataError: Series/window too short (n=12) for 12 known constituents (need at least 13 observations).",
+ "inf_in_y": "RAISED ValueError: Value vector `y` contains infinite entries.",
+ "nan_in_t": "RAISED ValueError: Time vector `t` contains NaN or infinite values.",
+ "tiny_n_5_lssa": [
+  0.5387430065395189
+ ],
+ "tiny_n_10_just": "RAISED InsufficientDataError: Default/requested window size (54) exceeds series length n=10. Pass a smaller `size` or collect a longer record.",
+ "tiny_n_10_stpd": "RAISED InsufficientDataError: STPD window `size` (90) must satisfy 5 <= size <= n (10).",
+ "tiny_n_10_analyze": "RAISED InsufficientDataError: Default/requested window size (54) exceeds series length n=10. Pass a smaller `size` or collect a longer record.",
+ "constant_y_just": 0,
+ "constant_y_stpd": 0,
+ "constant_y_lssa": [
+  1.0,
+  1.0
+ ],
+ "noiseless_linear_just_jumps": 1,
+ "noiseless_linear_stpd": 0,
+ "noiseless_linear_analyze_segments": 2,
+ "noiseless_hinge_stpd_tp_time": [],
+ "noiseless_step_just_mag": [
+  2.0
+ ],
+ "collinear_known_freqs": [
+  "STRONG_AUTOCORRELATION",
+  "HIGH_CONDITION_NUMBER"
+ ],
+ "clustered_timestamps_1e-9": [
+  0.20090795687278665,
+  0.08244344373172405
+ ],
+ "gap_70pct_missing_just": "RAISED InsufficientDataError: Series/window too short (n=9) for 12 known constituents (need at least 13 observations).",
+ "gap_70pct_decompose_ci_finite": "RAISED InsufficientDataError: Series/window too short (n=9) for 10 known constituents (need at least 11 observations).",
+ "integer_t": [
+  0.019794416572740385
+ ],
+ "python_list_inputs": [
+  0.5750543845116612
+ ],
+ "tz_aware_pandas_index": 0.9834417736591796,
+ "tz_aware_vs_naive_equal": 0.0,
+ "pandas_series_y_with_index": 0.9834417736591796,
+ "negative_weights": "RAISED ValueError: 1D `weights` must contain only finite, strictly positive values.",
+ "weights_wrong_len": "RAISED ValueError: 1D `weights` length (199) must match series length (200).",
+ "weights_with_nan_y_alignment": 0.5742393226913456,
+ "hetero_unweighted_jumps_null": 1,
+ "hetero_weighted_jumps_null": 0,
+ "hetero_unweighted_stpd_null": 0,
+ "hetero_weighted_stpd_null": 0,
+ "alpha_gt1": "RAISED ValueError: Significance level `alpha` must lie in (0, 1); got 1.5.",
+ "ci_level_95_not_frac": "RAISED ValueError: `ci_level` must lie in (0, 1); got 95.",
+ "negative_omega": "RAISED ValueError: `omega` must contain finite, strictly positive frequencies.",
+ "size_too_small": "RAISED ValueError: Window `size` (4) must lie between 6 and n=200.",
+ "size_gt_n": "RAISED ValueError: Window `size` (500) must lie between 6 and n=200.",
+ "unknown_kwarg_analyze_just_kwargs": "RAISED TypeError: just_jumps() got an unexpected keyword argument 'not_a_param'",
+ "horizon_zero": "RAISED ValueError: horizon must be >= 1, got 0.",
+ "start_at_end": true,
+ "monitor_start_before_enough_history": true,
+ "censor_90pct_guard": "RAISED CensoringError: 92.5% of observations are censored (exceeds max_censor_fraction=80%). Refusing to fit change-point model on mostly imputed data; pass `Censo",
+ "time_unit_days_warning_codes": "RAISED InsufficientDataError: Default window size is 3 x samples per unit time, but the series has only 0.0551 samples per unit time (window = 3). Defaults assume time in",
+ "repro_just_jumps_mc": true,
+ "repro_stpd_bootstrap": true,
+ "repro_analyze_bootstrap": true,
+ "repro_censored_mi": true,
+ "repro_censored_random_state_None_differs": true,
+ "repro_monitor_consk": true,
+ "repro_lssa_mc": true,
+ "global_rng_untouched": true,
+ "lssa_1d_weight_memory": {
+  "2000": {
+   "peak_MB": 27.7,
+   "sec": 0.04
+  },
+  "8000": {
+   "peak_MB": 110.8,
+   "sec": 0.11
+  },
+  "32000": {
+   "peak_MB": 443.2,
+   "sec": 0.49
+  }
+ },
+ "just_jumps_1d_weight_memory": {
+  "1000": {
+   "peak_MB": 1.1,
+   "sec": 2.13
+  },
+  "4000": {
+   "peak_MB": 2.5,
+   "sec": 9.63
+  },
+  "16000": {
+   "peak_MB": 9.7,
+   "sec": 40.35
+  }
+ }
+}
