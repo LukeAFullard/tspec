@@ -194,7 +194,7 @@ def real():
             ys = np.log(dsub["value"].to_numpy())
             cs = dsub["censored"].to_numpy().astype(bool)
             yss = np.where(cs, np.log(0.5 * dsub["value"].to_numpy()), ys)
-            errs = []
+            errs, errs_t = [], []
             for split in range(20):
                 rng = np.random.default_rng(seed0 + split)
                 test = rng.random(ts.size) < 0.20
@@ -202,30 +202,41 @@ def real():
                 score = test & ~cs & (ts >= ts[tr_][0]) & (ts <= ts[tr_][-1])
                 f = W.wrtds_surface(ts[tr_], yss[tr_], ts[score])
                 errs.append(B.rmse(f, ys[score]))
+                kw_t = {"season": "ols"}
+                if cs[tr_].any():
+                    kw_t["censor_status"] = np.where(cs[tr_], -1, 0)
+                dd_t = tspec.just_decompose(ts[tr_], ys[tr_], eval_times=ts[score], **kw_t)
+                errs_t.append(B.rmse(dd_t.trend_reg + dd_t.seasonal_reg, ys[score]))
             row = {m: res2[f"{key}_{sub}"][m] for m in res2[f"{key}_{sub}"]}
             row["wrtds"] = dict(mean=float(np.mean(errs)), sd=float(np.std(errs)))
+            row["tspec_ols_current"] = dict(mean=float(np.mean(errs_t)), sd=float(np.std(errs_t)))
             cv_rows[f"{name} — {sub} samples"] = row
     fig.tight_layout()
     fig.savefig(FIG / "real_records.png", dpi=150)
     plt.close(fig)
 
-    order = ["tspec_ols", "tspec_legacy_ols", "stl_bin", "wrtds", "harm_lowess"]
-    fig, axes = plt.subplots(1, len(cv_rows), figsize=(13, 3.4), sharey=False)
-    for ax, (name, row) in zip(axes, cv_rows.items(), strict=True):
+    order = ["tspec_ols_current", "tspec_legacy_ols", "stl_bin", "wrtds", "harm_lowess"]
+    LABEL["tspec_ols_current"] = "tspec (seasonal window, new)"
+    COLOR["tspec_ols_current"] = COLOR["tspec_ols"]
+    MARK["tspec_ols_current"] = MARK["tspec_ols"]
+    short = {"tspec_ols_current": "tspec new", "tspec_legacy_ols": "tspec old (single window)", "stl_bin": "STL",
+             "wrtds": "WRTDS-style", "harm_lowess": "harmonics+LOWESS"}
+    fig, axes = plt.subplots(2, 2, figsize=(11, 6.4), sharey=False)
+    for ax, (name, row) in zip(axes.ravel(), cv_rows.items(), strict=True):
         ms = [m for m in order if m in row]
-        means = [row[m]["mean"] for m in ms]
-        sds = [row[m]["sd"] for m in ms]
-        ax.bar(range(len(ms)), means, yerr=sds, color=[COLOR[m] for m in ms], width=0.7, capsize=3,
-               error_kw={"ecolor": INK2, "lw": 0.8}, edgecolor="white", linewidth=2)
-        lo = min(means) - 1.5 * max(sds)
-        ax.set_ylim(max(0, lo), max(m + s for m, s in zip(means, sds, strict=True)) * 1.05)
-        ax.set_xticks(range(len(ms)))
-        ax.set_xticklabels([LABEL[m].split(" (")[0].replace("global harmonics + LOWESS", "harm+LOWESS") for m in ms],
-                           rotation=35, ha="right", fontsize=7)
-        ax.set_title(name, fontsize=8, color=INK)
-        for k, v in enumerate(means):
-            ax.text(k, v, f"{v:.3f}", ha="center", va="bottom", fontsize=6.5, color=INK)
-    axes[0].set_ylabel("held-out RMSE, ln units (mean ± SD, 20 splits)")
+        for k, m in enumerate(ms):
+            ax.errorbar(row[m]["mean"], k, xerr=row[m]["sd"], fmt=MARK.get(m, "o"), color=COLOR[m], ms=6,
+                        mec="white", mew=0.8, elinewidth=1.2, capsize=3)
+            ax.text(row[m]["mean"] + row[m]["sd"], k, f"  {row[m]['mean']:.3f}", ha="left", va="center", fontsize=7, color=INK)
+        ax.set_yticks(range(len(ms)))
+        ax.set_yticklabels([short[m] for m in ms], fontsize=7.5)
+        ax.invert_yaxis()
+        ax.set_title(name, fontsize=8.5, color=INK)
+        ax.set_xlabel("held-out RMSE (ln units), mean ± SD over 20 splits", fontsize=7)
+        lo = min(row[m]["mean"] - row[m]["sd"] for m in ms)
+        hi = max(row[m]["mean"] + row[m]["sd"] for m in ms)
+        ax.set_xlim(lo - 0.01, hi + 0.035)
+    MARK["tspec_ols_current"] = MARK["tspec_ols"]
     fig.tight_layout()
     fig.savefig(FIG / "real_cv.png", dpi=150)
     plt.close(fig)
