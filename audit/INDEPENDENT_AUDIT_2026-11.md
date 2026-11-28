@@ -12,7 +12,28 @@ Existing suite for reference: `pytest` → 181 passed, 1 skipped (`pymannkendall
 
 ## 0. Executive summary & verdict
 
-### Refreshed verdict (after remediation batches 1–4, 2026-11-28)
+### Current verdict (after the pre-registered held-out decomposition validation, 2026-11-28)
+
+**Verdict: CONDITIONAL-GO overall. NO-GO for decomposing irregularly sampled field data with `season="ols"` count windows, until AUD-19 is fixed.** This supersedes the "GO" below, for two reasons:
+
+1. **The remediation numbers are in-sample.** The constants of batches 1–4 were chosen while looking at the same simulation designs that then validated them. The GO below rests on those numbers.
+2. **The first held-out test failed.** That test was registered before running (`validation/decomposition_heldout_plan.md`, results in `validation/reports/decomp_heldout_report.md`, §6 below). It exposed a Critical defect (AUD-19) in exactly the use case that matters most for field data. Two of the five registered pass/fail criteria failed.
+
+What the held-out validation supports:
+* **Regular or jittered sampling:**
+  * trend error 21–24% lower than STL, seasonal 6% lower;
+  * pointwise trend bands 95–98%;
+  * no seasonal leakage into the remainder (STL on interpolated grids: correlation 0.13–0.41 on irregular data).
+* **Gaps:** trend inside gaps 2.5× more accurate than interpolate-then-STL (0.083 vs 0.209). The simple baseline does slightly better (0.071).
+* **Steps:** jump-aware decomposition cuts the trend error near a step by 38–47% relative to STL where detection is reliable (regular and Choptank sampling, step found in 88–89%). With 180 random samples the step is found in only 57% of series and the gain is 5%.
+
+What it does not support:
+* `tspec_ols` beat interpolate-then-STL on both trend and seasonal in only **1 of 15** irregular designs (H2 failed).
+* A simple global-harmonics + LOWESS baseline beat `tspec` in **12 of 18** irregular designs (H3 failed).
+  * `tspec` wins only when the seasonal shape evolves. It re-estimates the seasonal cycle in every 3-year window, which costs variance when the shape is really fixed.
+* On the real Choptank nitrate record, `tspec`'s default is level with STL and the simple baseline in held-out prediction (all three within 0.36–0.38). It is slightly worse on routine samples (0.317 vs 0.28–0.29).
+
+### Refreshed verdict (after remediation batches 1–4, 2026-11-28; superseded above)
 
 **Verdict: GO** for peer-reviewed use of the default workflows, provided results are reported together with the documented limitations listed below. **Two narrow components stay CONDITIONAL:** standalone `stpd` turning-point claims, and `consecutive_k` monitoring.
 
@@ -297,6 +318,29 @@ A likely cause is that the imputation model conditions on the estimated seasonal
 
 ---
 
+### AUD-19 — Critical — Decomposition blows up locally when a window's samples do not cover the seasonal cycle; `eval_times` changes results
+
+Found by the pre-registered held-out validation (§6). Reproducer: `audit/independent_2026_11/repro_aud19_eval_times.py`; magnitudes: `p19_out.txt`.
+
+* **(a) Ill-conditioned windows.** Two sampling patterns trigger it:
+  * a count window that covers only a few days of a storm-sampling burst (real Choptank sampling times, R7);
+  * a window with little winter data (summer-heavy sampling, R5).
+
+  In such a window the linear trend and four seasonal harmonics are nearly collinear, and the fit is unstable:
+  * `season="ols"` trend errors reach 50+ units (σ = 0.3); 6–7% of observations have errors > 1;
+  * the default ALLSSA model is affected too (R7: 3% of observations);
+  * `trend_bc` is unstable as well;
+  * no warning is emitted, and the tertile-based `VARIABLE_SAMPLING_RATE` check does not see within-year clustering.
+
+  The registered band-coverage criteria (H4) still passed, because the bands become extremely wide exactly where the fit fails (up to 18 000 units). Coverage alone is therefore not evidence of a good fit here. Duration windows fix the storm-burst case (R7: RMSE 0.051) but not the seasonally biased case (R5: 1.25).
+* **(b) `eval_times` changes the decomposition at the observation times.** Windows are rebuilt on the evaluation grid (count windows in grid points), and the minimum-observation guard and sparse-record harmonic reduction (AUD-13) are skipped on that path. Observation-time values then differ from a call without `eval_times` and can be NaN. In the Choptank cross-validation, 0.5–1.7% of held-out times could not be predicted.
+* **(c) Duration windows leave observations uncovered.** With rate changes (R6, quarterly years), skipped sparse windows leave 1.8% of observations with NaN trend. Only an info-level message is emitted.
+* **Fix (proposed; to be validated on new held-out designs, not these):**
+  * build windows on the observations only, and evaluate each window's fitted model at `eval_times`;
+  * check identifiability per window, keeping only the harmonics the window's sampling phases can resolve (rank or condition test of the window design), with a warning;
+  * flag windows that span less than one seasonal cycle;
+  * report uncovered observations as a warning.
+
 ## 3. Documented limitations & edge-case caveats — disclosure status
 
 | Topic | Independent result | Disclosed originally? | After remediation (batches 1–4) |
@@ -397,6 +441,38 @@ Runtime per fit (single thread): `just_decompose` 0.02–0.18 s and `just_jumps`
 * **Any analysis passing `datetime` inputs that depends on non-annual frequencies or exact time scaling** (AUD-01).
 
 **Minimum fix list for a GO:** AUD-01 (uniform time axis), AUD-03 (step-vs-bend test in STPD/pipeline), AUD-02 (autocorrelation-aware calibration or at least a prominent per-result guard plus documented magnitudes), and documentation of AUD-04/05/08/17. Each fix should add the corresponding reproducer from `audit/independent_2026_11/repro_confirmed_bugs.py` as a regression test.
+
+---
+
+## 6. Pre-registered held-out decomposition validation (2026-11-28)
+
+Plan: `validation/decomposition_heldout_plan.md`, committed before any design was run (commit `d8496e6`). Code under test: commit `def422e` with `src/` unchanged. Report: `validation/reports/decomp_heldout_report.md`. 33 cells × 100 replicates:
+* 7 sampling regimes: regular; missing months plus blackout; jittered; uniformly random; summer-biased; weekly→monthly→quarterly; the real Choptank sampling times;
+* 3 seasonal shapes: fixed, evolving, peaked;
+* 4 noise types: white, OU, two-scale OU, t₃;
+* a step design.
+
+Comparators: STL on linear-filled and bin-mean grids (also robust), and a global harmonics + LOWESS baseline. Real record: Choptank River nitrate (USGS 01491000), 804 samples 1985–2023, with 20 random 80/20 cross-validation splits.
+
+| Hypothesis | Verdict | Result |
+|---|---|---|
+| H1 regular data: within 10% of STL | **PASS** | trend 0.76–0.79×, seasonal 0.94× STL's RMSE |
+| H2 irregular: `tspec_ols` beats interpolate-then-STL on trend *and* seasonal in ≥ 12/15 | **FAIL (1/15)** | trend better in jittered/random designs, but seasonal 0.98–1.16× STL's; catastrophic on summer-biased and storm-clustered sampling (AUD-19a); STL better with rate changes |
+| H3 irregular: tspec ≤ harmonics + LOWESS baseline in ≥ 12/18 | **FAIL (6/18)** | tspec wins exactly the 6 evolving-shape cells; the baseline's pooled seasonal estimate wins whenever the shape is fixed |
+| H4 trend band 90–98% (white, fixed shape, all regimes) | **PASS** (hollow in R5/R7) | 95.0–97.0%; in R5/R7 achieved through exploding band widths (AUD-19a) |
+| H5 trend band 90–98% under OU noise | **PASS** | 94.4–97.4% |
+| H6 misspecified correlation / t₃ (descriptive) | — | two-scale OU: trend bands **62–85%**; t₃: 96% |
+| H7 `ols` vs default ALLSSA seasonal (descriptive) | — | `ols` better in 15/21 cells (default ALLSSA misses the peaked shape: 0.31 vs 0.14). Per the registered rule the docs should recommend `ols`, **but not before AUD-19a is fixed**, since `ols` count windows are the configuration that fails catastrophically |
+| H8 steps (descriptive) | — | jump found in 89% / 57% / 88% (regular / random / Choptank times); near-step trend RMSE 0.128 / 0.213 / 0.114 vs STL 0.205 / 0.224 / 0.214 |
+
+Real record, held-out prediction RMSE of ln(nitrate):
+
+| | `tspec_default` | `tspec_ols` | `tspec_ols_dur` | STL (bin) | harmonics + LOWESS |
+|---|---|---|---|---|---|
+| all 804 samples | 0.372 | 1.063 | 0.444 | 0.373 | **0.362** |
+| routine only | 0.317 | 16.1 | 0.887 | 0.292 | **0.280** |
+
+The trade-off behind H3 is real, not a bug: per-window seasonal estimation adapts to evolving seasonality but is noisier than a pooled estimate when the shape is fixed. A global (or slowly varying, e.g. 10-year-window) seasonal option would let users choose; this is a design addition, not a correction.
 
 ---
 
