@@ -2884,6 +2884,103 @@ def _window_bias_corrected_seasonal(
     return out
 
 
+SEASONAL_WINDOW_AUTO_YEARS = 7.0
+
+
+def _just_decompose_two_stage(
+    t: TimeLike,
+    y: ValueLike,
+    *,
+    seasonal_window: float | str,
+    weights: WeightLike | None,
+    eval_times: TimeLike | None,
+    jump_indices: Sequence[int] | None,
+    censor_status: ArrayLike | None,
+    censoring: CensoredConfig | None,
+    **kw: Any,
+) -> JustDecomposeResult:
+    """Two-stage (seasonal window / trend window) decomposition; see ``just_decompose``."""
+    single = dict(kw, eval_times=eval_times, seasonal_window=None)
+    try:
+        y_arr = np.asarray(y, dtype=np.float64)
+        numeric = y_arr.ndim == 1 and censor_status is None and censoring is None
+    except (TypeError, ValueError):
+        numeric = False
+    if not numeric:
+        res = just_decompose(t, y, weights=weights, jump_indices=jump_indices,
+                             censor_status=censor_status, censoring=censoring, **single)
+        info = WarningItem(
+            code="SEASONAL_WINDOW_UNAVAILABLE", severity="info",
+            message="`seasonal_window` is not yet available with censored data; the trend windows "
+                    "were used for the seasonal component as well.",
+        )
+        return replace(res, diagnostics=res.diagnostics.with_warnings([info]))
+
+    t_arr = np.asarray(t)
+    mask = np.isfinite(y_arr)
+    w_in: WeightLike | None = weights
+    ji = None if jump_indices is None else [int(j) for j in jump_indices]
+    if not np.all(mask):
+        if weights is not None:
+            w_arr = np.asarray(weights, dtype=np.float64)
+            if w_arr.ndim == 2:
+                w_in = w_arr[np.ix_(mask, mask)]
+            elif w_arr.ndim == 1 and w_arr.size == mask.size:
+                w_in = w_arr[mask]
+        if ji is not None:
+            pos = np.cumsum(mask) - 1
+            ji = sorted({int(pos[j]) + (0 if mask[j] else 1) for j in ji if 0 <= j < mask.size})
+        t_arr, y_arr = t_arr[mask], y_arr[mask]
+
+    seas_kw = dict(single, window_mode="duration", step_duration=None, min_window_obs=None,
+                   size=None, step=None)
+    trend_kw = dict(single, season="none")
+    t1 = just_decompose(t_arr, y_arr, weights=w_in, jump_indices=ji, **dict(trend_kw, eval_times=None))
+    tn = t1.times_numeric
+    span = float(tn[-1] - tn[0])
+    sw = SEASONAL_WINDOW_AUTO_YEARS if seasonal_window == "auto" else float(seasonal_window)
+    seas_kw["window_duration"] = min(sw, span)
+
+    s1 = just_decompose(t_arr, y_arr, weights=w_in, jump_indices=ji, **seas_kw)
+    t1 = just_decompose(t_arr, y_arr - s1.seasonal, weights=w_in, jump_indices=ji, **trend_kw)
+    s2 = just_decompose(t_arr, y_arr - t1.trend, weights=w_in, jump_indices=ji, **seas_kw)
+    t2 = just_decompose(t_arr, y_arr - s2.seasonal, weights=w_in, jump_indices=ji, **trend_kw)
+
+    seen: set[str] = set()
+    merged: list[WarningItem] = []
+    for w in (*s2.diagnostics.warnings, *t2.diagnostics.warnings):
+        if w.code not in seen:
+            seen.add(w.code)
+            merged.append(w)
+    merged.append(WarningItem(
+        code="SEASONAL_WINDOW", severity="info",
+        message=(f"Seasonal component estimated in {min(sw, span):.3g}-year windows and the trend "
+                 "in the trend windows (two-stage backfitting); pass seasonal_window=None for the "
+                 "single-window published JUST decomposition."),
+    ))
+    diag = replace(t2.diagnostics, warnings=tuple(merged),
+                   condition_number_max=max(s2.diagnostics.condition_number_max,
+                                            t2.diagnostics.condition_number_max))
+    return replace(
+        t2,
+        values=y_arr.astype(np.float64),
+        seasonal=s2.seasonal,
+        remainder=y_arr - t2.trend - s2.seasonal,
+        seasonal_ci_low=s2.seasonal_ci_low,
+        seasonal_ci_high=s2.seasonal_ci_high,
+        seasonal_reg=s2.seasonal_reg,
+        seasonal_reg_ci_low=s2.seasonal_reg_ci_low,
+        seasonal_reg_ci_high=s2.seasonal_reg_ci_high,
+        window_frequencies=s2.window_frequencies,
+        window_bounds=s2.window_bounds,
+        window_dilation=s2.window_dilation,
+        seasonal_bc=s2.seasonal_bc,
+        seasonal_reg_bc=s2.seasonal_reg_bc,
+        season=s2.season,
+        diagnostics=diag,
+    )
+
+
 def just_decompose(
     t: TimeLike,
     y: ValueLike,
@@ -2909,6 +3006,7 @@ def just_decompose(
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
     serial_correlation: SerialMode = "ar1",
+    seasonal_window: float | Literal["auto"] | None = "auto",
 ) -> JustDecomposeResult:
     """Decompose an unevenly sampled time series into trend, seasonal, and remainder via JUST.
 
@@ -2998,6 +3096,18 @@ def just_decompose(
         the annual frequency; ``"ou"`` uses continuous-time correlation; ``"none"`` (forced by
         ``parity_mode``) assumes independent errors.
 
+    seasonal_window:
+        Span (in years) of the windows that estimate the seasonal component. ``"auto"``
+        (default) uses ``min(7, record span)`` years whenever ``season != "none"``; ``None``
+        (forced by ``parity_mode``) uses the trend windows for both components, as in the
+        published JUST. With a seasonal window, the decomposition is two-stage (STL-like
+        backfitting): the seasonal component is estimated in long duration windows (with a
+        local linear trend), the trend in the trend windows on the de-seasonalized series
+        (``season="none"``), and both are re-estimated once. A seasonal cycle estimated from
+        three years of data is noisy (about ``sigma * sqrt(2K / n_window)``); a longer
+        seasonal window pools more years while the trend windows stay short. Not yet
+        available with censored data (falls back to ``None`` with an info message).
+
     Returns
     -------
     JustDecomposeResult
@@ -3008,6 +3118,19 @@ def just_decompose(
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
         raise ValueError(f"Unknown `season` {season!r}. Options: 'allssa', 'ols', 'none'.")
+    if seasonal_window is not None and not parity_mode and season_l != "none":
+        is_auto = isinstance(seasonal_window, str) and seasonal_window == "auto"
+        if not is_auto and (not np.isfinite(float(seasonal_window)) or float(seasonal_window) <= 0):
+            raise ValueError("`seasonal_window` must be 'auto', None or a positive number of years.")
+        return _just_decompose_two_stage(
+            t, y, seasonal_window=seasonal_window, weights=weights, eval_times=eval_times,
+            jump_indices=jump_indices, size=size, step=step, window_mode=window_mode,
+            window_duration=window_duration, step_duration=step_duration,
+            min_window_obs=min_window_obs, season=season_l, omega=omega, alpha=alpha,
+            ci_level=ci_level, trend_ci_method=trend_ci_method,
+            season_significance=season_significance, robust=robust, huber_k=huber_k,
+            censor_status=censor_status, censoring=censoring, serial_correlation=serial_correlation,
+        )
     if window_mode not in ("count", "duration"):
         raise ValueError(f"Unknown `window_mode` {window_mode!r}. Options: 'count', 'duration'.")
     if not (0.0 < alpha < 1.0):
@@ -3071,15 +3194,20 @@ def just_decompose(
     n = series.n_valid
     n_tt = int(tt0.size)
 
+    # Default mode builds windows on the observations whether or not eval_times are given,
+    # and evaluates each window's model at the evaluation times inside its span (AUD-19b).
+    # Parity mode keeps the published construction on the evaluation grid.
+    win_on_obs = has_eval and not parity_mode
+    w_n, w_t = (n, series.times_numeric) if (win_on_obs or not has_eval) else (n_tt, tt_num)
     if window_mode == "count":
         windows_tt, win_size, _win_step, rate_eff = _build_count_windows(
-            n_tt, tt_num, size, step, parity_mode=parity_mode
+            w_n, w_t, size, step, parity_mode=parity_mode
         )
         if parity_mode:
             rate_for_dil = float(rate_eff)
         else:
-            span_tt = float(tt_num[-1] - tt_num[0]) if n_tt > 1 else 1.0
-            rate_for_dil = (n_tt / span_tt) if span_tt > 0.0 else float(rate_eff)
+            span_tt = float(w_t[-1] - w_t[0]) if w_n > 1 else 1.0
+            rate_for_dil = (w_n / span_tt) if span_tt > 0.0 else float(rate_eff)
         dil_fac = float(np.log(0.1) / ((win_size / (6.0 * rate_for_dil)) ** 2))
         if not parity_mode and series.sampling_rate_ratio > 2.0:
             warnings_list.append(
@@ -3097,7 +3225,7 @@ def just_decompose(
         min_obs_default = 4 + (2 * int(om_arr.size) if season_l == "ols" else 0) + 5
         min_obs = int(min_window_obs) if min_window_obs is not None else max(12, min_obs_default)
         windows_tt, dur, skipped = _build_duration_windows(
-            tt_num, window_duration, step_duration, min_obs if not has_eval else 2
+            w_t, window_duration, step_duration, min_obs if (win_on_obs or not has_eval) else 2
         )
         dil_fac = float(np.log(0.1) / ((dur / 6.0) ** 2))
         if skipped > 0:
@@ -3109,13 +3237,13 @@ def just_decompose(
                 )
             )
 
-    if not has_eval:
+    if win_on_obs or not has_eval:
         om_arr, harm_warn_d = _fit_harmonics_to_windows(
             om_arr, windows_tt, season_l, omega is not None and len(omega) > 0, parity_mode
         )
         if harm_warn_d is not None:
             warnings_list.append(harm_warn_d)
-    sw_warn = _short_seasonal_window_warning(tt_num, windows_tt, om_arr, season_l, eff_season_sig)
+    sw_warn = _short_seasonal_window_warning(w_t, windows_tt, om_arr, season_l, eff_season_sig)
     if sw_warn is not None:
         warnings_list.append(sw_warn)
 
@@ -3172,8 +3300,8 @@ def just_decompose(
     cond_max = 1.0
 
     for lb, ub in windows_tt:
-        tty = tt0[lb:ub]
-        if has_eval:
+        if has_eval and not win_on_obs:
+            tty = tt0[lb:ub]
             lb0 = int(np.searchsorted(t0, tt0[lb], side="left"))
             ub0 = min(n, int(np.searchsorted(t0, tt0[ub - 1], side="left")) + 1)
         else:
@@ -3198,11 +3326,17 @@ def just_decompose(
             min_needed = base_nc + 3
         else:
             min_needed = base_nc + 1
-        if size0 <= 0 or (has_eval and size0 < min_needed):
+        if size0 <= 0 or (has_eval and not win_on_obs and size0 < min_needed):
             eval_gap_skipped += 1
             continue
 
         ty = t0[lb0:ub0]
+        if win_on_obs:
+            # evaluation times inside this window's observation span
+            lb, ub = int(np.searchsorted(tt0, ty[0], side="left")), int(np.searchsorted(tt0, ty[-1], side="right"))
+            tty = tt0[lb:ub]
+        elif not has_eval:
+            tty = tt0[lb:ub]
         if use_local_censor:
             assert prov is not None and cfg is not None
             yy, fb = impute_window_local(prov, cfg, lb0, ub0, rng_dec)
@@ -3323,7 +3457,7 @@ def just_decompose(
 
         bc_win: list[tuple[FloatArray, FloatArray]] | None = None
         if bc_on:
-            targets = [ty_loc, tty_loc] if has_eval else [ty_loc]
+            targets = [ty_loc, tty_loc] if (has_eval and tty.size > 0) else [ty_loc]
             bc_win = _window_bias_corrected_trend(
                 ty_loc, yy, pw_w, local_j, freqs_w, targets, [True, False][: len(targets)],
                 ci_level, robust=eff_robust, huber_k=huber_k,
@@ -3340,7 +3474,7 @@ def just_decompose(
 
         sbc_win: list[tuple[FloatArray, FloatArray]] | None = None
         if seas_bc_on:
-            targets_s = [ty_loc, tty_loc] if has_eval else [ty_loc]
+            targets_s = [ty_loc, tty_loc] if (has_eval and tty.size > 0) else [ty_loc]
             sbc_win = _window_bias_corrected_seasonal(
                 ty_loc, yy, pw_w, local_j, freqs_w, om_arr, targets_s,
                 ci_level, robust=eff_robust, huber_k=huber_k,
@@ -3351,7 +3485,7 @@ def just_decompose(
             hw_sbc0[lb0:ub0] += np.where(fin_sbc, sbc_obs[1] * gauss_w, 0.0)
             sum_w_sbc0[lb0:ub0] += np.where(fin_sbc, gauss_w, 0.0)
 
-        if has_eval:
+        if has_eval and ub > lb:
             trend_tt = _eval_piecewise_trend(
                 ty_loc, tty_loc, local_j, tr_coeff, parity_mode=parity_mode
             )
@@ -3372,11 +3506,14 @@ def just_decompose(
                 parity_mode=parity_mode,
             )
             w_len = ub - lb
-            tau_tt = (
-                float(tty[w_len // 2])
-                if (w_len % 2 == 1)
-                else 0.5 * float(tty[w_len // 2] + tty[w_len // 2 - 1])
-            )
+            if win_on_obs:
+                tau_tt = tau0  # same Gaussian weight function as at the observations
+            else:
+                tau_tt = (
+                    float(tty[w_len // 2])
+                    if (w_len % 2 == 1)
+                    else 0.5 * float(tty[w_len // 2] + tty[w_len // 2 - 1])
+                )
             gw_tt = np.exp(dil_fac * (tty - tau_tt) ** 2)
             trends_reg_acc[lb:ub] += trend_tt * gw_tt
             seasonals_reg_acc[lb:ub] += season_tt * gw_tt
@@ -3428,6 +3565,20 @@ def just_decompose(
             )
         )
 
+    n_unc_obs = int(np.sum(sum_w0 <= 0))
+    n_unc_eval = int(np.sum(sum_w_reg <= 0)) if has_eval else 0
+    if not parity_mode and (n_unc_obs > 0 or n_unc_eval > 0):
+        warnings_list.append(
+            WarningItem(
+                code="UNCOVERED_OBSERVATIONS",
+                severity="warning",
+                message=(
+                    f"{n_unc_obs} observation(s) and {n_unc_eval} evaluation time(s) are not covered "
+                    "by any fitted window (sparse windows were skipped); their components are NaN."
+                ),
+                suggestion="Use longer windows (`window_duration`/`size`) or count windows.",
+            )
+        )
     with np.errstate(divide="ignore", invalid="ignore"):
         trend = np.where(sum_w0 > 0, trends0 / sum_w0, np.nan)
         seasonal = np.where(sum_w0 > 0, seasonals0 / sum_w0, np.nan)

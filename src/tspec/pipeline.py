@@ -1676,6 +1676,9 @@ def analyze_series(
     d_kw.setdefault("robust", rob_method)
     d_kw.setdefault("huber_k", huber_k)
     d_kw.setdefault("ci_level", ci_level)
+    # The pipeline's bands and bootstrap were validated with the single-window seasonal model;
+    # the two-stage seasonal window of just_decompose is opt-in here until validated for the pipeline.
+    d_kw.setdefault("seasonal_window", None)
     s_kw.setdefault("robust", rob_method)
     s_kw.setdefault("huber_k", huber_k)
     s_kw.setdefault("ci_level", ci_level)

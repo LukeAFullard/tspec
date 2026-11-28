@@ -113,3 +113,38 @@ def test_allssa_coarse_user_grid_is_oversampled() -> None:
     f = tspec.allssa(t[keep], y[keep], omega=np.arange(0.5, 4.01, 0.5), decimal=3, n_mc=499).frequencies
     for true in tide.values():
         assert np.min(np.abs(f - true)) < 0.002
+
+
+def test_seasonal_window_two_stage_and_eval_consistency() -> None:
+    """Validation-2 change: decoupled seasonal window; eval_times no longer changes results (AUD-19b)."""
+    rng = np.random.default_rng(11)
+    t = np.sort(rng.uniform(2000, 2020, 200))
+    seas = 0.8 * np.cos(2 * np.pi * t) + 0.3 * np.sin(4 * np.pi * t)
+    y = 1.0 + 0.03 * (t - 2000) + seas + rng.normal(0, 0.3, t.size)
+    new = tspec.just_decompose(t, y, season="ols")
+    old = tspec.just_decompose(t, y, season="ols", seasonal_window=None)
+    assert np.allclose(new.trend + new.seasonal + new.remainder, y)
+    assert any(w.code == "SEASONAL_WINDOW" for w in new.diagnostics.warnings)
+    rm = lambda d: float(np.sqrt(np.mean((d.seasonal - seas) ** 2)))  # noqa: E731
+    assert rm(new) < rm(old)
+    grid = np.linspace(t[0], t[-1], 120)
+    g = tspec.just_decompose(t, y, season="ols", eval_times=grid)
+    assert np.max(np.abs(g.trend - new.trend)) < 1e-10
+    assert np.all(np.isfinite(g.trend_reg)) and np.all(np.isfinite(g.seasonal_reg))
+    with pytest.raises(ValueError, match="seasonal_window"):
+        tspec.just_decompose(t, y, seasonal_window=-1.0)
+    # parity mode keeps the published single-window decomposition
+    p = tspec.just_decompose(t, y, season="ols", parity_mode=True)
+    assert not any(w.code == "SEASONAL_WINDOW" for w in p.diagnostics.warnings)
+
+
+def test_storm_burst_sampling_does_not_blow_up() -> None:
+    """AUD-19a: a count window over a few days of clustered samples made the OLS fit ill-conditioned."""
+    rng = np.random.default_rng(12)
+    routine = 2000 + (np.arange(240) + 0.5) / 12
+    bursts = [2000 + yr + rng.uniform(0, 1) + rng.uniform(0, 4 / 365.25, 25) for yr in range(0, 20, 3)]
+    t = np.unique(np.concatenate([routine, *bursts]))
+    tr = 1.0 + 0.03 * (t - 2000)
+    y = tr + 0.8 * np.cos(2 * np.pi * t) + rng.normal(0, 0.3, t.size)
+    d = tspec.just_decompose(t, y, season="ols")
+    assert np.max(np.abs(d.trend - tr)) < 1.0
