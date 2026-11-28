@@ -5,6 +5,13 @@
 Statistical-calibration and hardening release. Several defaults change results. `parity_mode=True` keeps reproducing the upstream Ghaderpour implementations.
 
 ### Fixed (independent audit, 2026-11; see `audit/INDEPENDENT_AUDIT_2026-11.md`)
+- **`just_decompose`: separate seasonal window for unevenly sampled data (AUD-19, held-out validations 1 and 2).**
+  - New `seasonal_window` (default `"auto"` = `min(7, span)` years; `None` = published single-window JUST, forced by `parity_mode`). The seasonal component is estimated in long duration windows, and the trend in the usual windows on the de-seasonalized series (STL-like two-stage backfitting, one extra pass). **Default results of `just_decompose` change.**
+  - Why: a seasonal cycle estimated from one 3-year window is noisy (about σ·√(2K/n)). On irregular sampling, `tspec` lost to interpolate-then-STL on the seasonal component in 14 of 15 designs (pre-registered validation 1). With the separate window it wins in 17 of 18 new designs (validation 2), and on the remainder in 18 of 18.
+  - With `eval_times`, windows are now always built on the observations, so results at the observation times no longer change and are never NaN (AUD-19b).
+  - New warning `UNCOVERED_OBSERVATIONS` (AUD-19c).
+  - Storm-burst or seasonally clustered sampling no longer makes windows ill-conditioned (AUD-19a). The legacy single window blew up on up to 10% of observations with real sampling dates.
+  - Not yet available with censored data (falls back to the single window, with the info message `SEASONAL_WINDOW_UNAVAILABLE`). `analyze_series` keeps the single window until validated.
 - **`allssa` resolves close and non-integer frequencies (AUD-05).**
   - New `search="rayleigh"` (default; `"integer"` = published algorithm, forced by `parity_mode`). The default grid runs from `1.5/T` to the mean-rate pseudo-Nyquist in steps of `1/(4T)` (it was integers only, starting at 0.5 cycles/unit).
   - Each peak is refined within `±1/T`, and only a selected frequency within `1/T` is re-fitted, so several components may lie within one cycle per unit. Monte Carlo acceptance uses a matching dense grid.

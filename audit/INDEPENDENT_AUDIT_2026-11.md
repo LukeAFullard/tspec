@@ -12,7 +12,35 @@ Existing suite for reference: `pytest` → 181 passed, 1 skipped (`pymannkendall
 
 ## 0. Executive summary & verdict
 
-### Current verdict (after the pre-registered held-out decomposition validation, 2026-11-28)
+### Decomposition update (pre-registered validation 2, 2026-11-28)
+
+The fix for validation 1 was specified and registered before it was implemented (`validation/decomposition_heldout_plan_2.md`) and then tested once on new designs and a new real record (`validation/reports/decomp_heldout_2_report.md`; §6b):
+* a separate, longer seasonal window (`seasonal_window`, default 7 years, STL-like two-stage backfitting);
+* windows always built on the observations (AUD-19b);
+* a warning for uncovered observations (AUD-19c).
+
+**Registered overall verdict for decomposing unevenly sampled data: PASS** (G1–G4).
+
+Against interpolate-then-STL (best of two variants), `tspec` (`season="ols"`) has:
+* lower seasonal error in 17 of 18 designs;
+* lower remainder error in 18 of 18;
+* lower trend error in 16 of 18.
+
+Other registered results:
+* No blow-ups and no NaN in any of the 21 designs (the legacy single window blew up on 9–10% of observations with real Conowingo sampling dates).
+* `eval_times` changes nothing at the observations.
+* Trend and seasonal bands 92–96% for fixed shapes.
+* Beats the pooled-seasonal baseline in all 6 evolving-shape designs.
+
+**The registered real-record criterion failed narrowly** (Conowingo held-out RMSE 0.262 vs STL 0.255; all methods 0.252–0.266, split SD ≈ 0.024). On both real records the simple pooled-seasonal baseline is best.
+
+**Remaining limitations:**
+* For a seasonal shape that really is fixed, the pooled baseline's seasonal error is 1.3–2.4× lower. A global or longer seasonal window is the user's choice.
+* Seasonal bands under-cover strongly evolving shapes (86–89%).
+* With censored data the new seasonal window is not yet available. The fallback to the single window still shows AUD-19a: one Choptank split had an error of 7.7 near a 1989 storm burst.
+* `analyze_series` still uses the single window.
+
+### Verdict after validation 1 (2026-11-28; decomposition part superseded above)
 
 **Verdict: CONDITIONAL-GO overall. NO-GO for decomposing irregularly sampled field data with `season="ols"` count windows, until AUD-19 is fixed.** This supersedes the "GO" below, for two reasons:
 
@@ -473,6 +501,38 @@ Real record, held-out prediction RMSE of ln(nitrate):
 | routine only | 0.317 | 16.1 | 0.887 | 0.292 | **0.280** |
 
 The trade-off behind H3 is real, not a bug: per-window seasonal estimation adapts to evolving seasonality but is noisier than a pooled estimate when the shape is fixed. A global (or slowly varying, e.g. 10-year-window) seasonal option would let users choose; this is a design addition, not a correction.
+
+## 6b. Pre-registered held-out validation 2: decoupled seasonal window
+
+Plan `validation/decomposition_heldout_plan_2.md` (commit `c98d06f`, registered before implementation); code `7c6c8ef`. Six new sampling regimes:
+* every 14 days;
+* Poisson-random;
+* monthly samples plus storm clusters;
+* winter-sparse;
+* monthly then quarterly-random;
+* the real Conowingo sampling dates (USGS 01578310).
+
+Three new truths, white and OU noise, 21 cells × 100 replicates.
+
+| ID | Verdict | Result |
+|---|---|---|
+| G1 seasonal < best STL | **PASS** | 17/18 |
+| G2 remainder < best STL | **PASS** | 18/18 |
+| G3 no blow-ups / NaN | **PASS** | 0.00% in all cells (legacy single window: up to 9.7%) |
+| G4 `eval_times` consistency | **PASS** | max difference 0 |
+| G5 trend < best STL | **PASS** | 16/18 |
+| G6 bands 90–98% (fixed shape, white) | **PASS** | trend 91.9–95.4%, seasonal 95.4–95.9% |
+| G7 evolving seasonality vs pooled baseline | **PASS** | 6/6 |
+| D1 fixed shapes vs pooled baseline | descriptive | seasonal RMSE ratio 1.30–2.37 (pooled better) |
+| R Conowingo held-out prediction ≤ best STL | **FAIL** | 0.2620 vs 0.2548 (harmonics + LOWESS 0.2522; legacy 0.2607) |
+
+Choptank (descriptive; used before), held-out RMSE:
+
+| Method | All samples | Routine only |
+|---|---|---|
+| `tspec_ols` | 0.400 ± 0.088 (inflated by the censored fallback, see above) | 0.293 |
+| STL (bin) | 0.373 | 0.292 |
+| baseline | 0.362 | 0.280 |
 
 ---
 

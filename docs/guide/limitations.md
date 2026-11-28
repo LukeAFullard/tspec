@@ -25,6 +25,15 @@ When `stpd()` or `analyze_series()` first *detect* turning points and then fit a
 
 STPD tests each sliding window separately. Its power depends on how much information one window contains (by default about five seasonal cycles), not on the length of the whole record. For example, a change in slope from +0.5 to −0.5 per year with noise σ = 1.5 was detected in only about 6% of simulated series of 500 observations. A non-detection is not evidence that the trend is straight.
 
+## 2a. Decomposition of unevenly sampled data
+
+- `just_decompose` estimates the seasonal component in 7-year windows by default (`seasonal_window`) and the trend in shorter windows. In a pre-registered held-out test on six irregular sampling regimes (including storm clusters, winter gaps and real USGS sampling dates), this beat interpolate-then-STL on the seasonal component in 17 of 18 designs and on the remainder in 18 of 18 (`validation/reports/decomp_heldout_2_report.md`).
+- When the seasonal shape really is fixed, one seasonal fit pooled over the whole record is more precise (1.3–2.4× lower seasonal error in the test). Pass a longer `seasonal_window` (up to the record length) if you have reason to believe the shape is stable. A 7-year window adapts to shapes that change over the years.
+- On two real nitrate records, held-out prediction errors of `tspec`, STL and a pooled harmonic baseline were within one split standard deviation of each other; the pooled baseline was marginally best.
+- Seasonal bands under-cover shapes that change quickly within the seasonal window (86–89% in the test).
+- **Censored data:** the separate seasonal window is not yet available; the single-window fallback can still be unstable when a window covers only a short burst of samples (use `window_mode="duration"`). `analyze_series` also still uses the single window.
+- `seasonal_window=None` reproduces the published single-window JUST decomposition, which should be avoided for clustered sampling (storm sampling, field campaigns) with `season="ols"`.
+
 ## 2b. JUST jumps: what they are and how small a step can be found
 
 - **Definition.** Since 2026-11, `just_jumps` (`jump_definition="step"`, default) and `analyze_series` report only abrupt vertical steps: a significant level-and-slope break that a continuous bend plus gentle curvature cannot explain, searched over window scales 1, 2 and 4. `jump_definition="level_or_slope"` (and `parity_mode=True`) gives the published JUST definition, which also reports slope changes and, with slowly curving trends, curvature: a 9-year cycle of amplitude 3σ gave false "jumps" in 37% of series. In that mode the warning `NOT_A_VERTICAL_STEP` flags these.
