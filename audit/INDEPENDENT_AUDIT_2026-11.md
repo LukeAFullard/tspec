@@ -55,7 +55,7 @@ Further fixes:
 * **Standalone `stpd` turning points.** A pure 4σ step is still reported as a TP in 26% of series. Publish TPs from `analyze_series` (JUST runs first) or after checking the reported `step_pvalue`/flags. Unweighted heteroscedastic records detect the bend correctly in only 16% of series; pass weights.
 * **`consecutive_k` with a horizon.** 7.3% false alarms at nominal 5% (H = 24). Use `alpha=0.03`, or Pocock/O'Brien–Fleming (which are conservative).
 
-Full suite on the remediated code: see §0b. Lint (`ruff`) and type checks (`mypy`) are clean.
+Full suite on the remediated code: **216 passed, 1 skipped** (`pymannkendall` absent), 355 s (`audit/independent_2026_11/pytest_final.txt`); `ruff check` and `mypy src` clean.
 
 ### Original verdict (pre-remediation, `73a9eb3`)
 
