@@ -17,7 +17,9 @@ Statistical-calibration and hardening release. Several defaults change results. 
 - **`just_decompose` bands under serial correlation (AUD-02, remainder).** New `serial_correlation` (default `"ar1"`). The trend band is widened by `sqrt((1+ρ)/(1−ρ))`, and the seasonal band by the AR(1) spectral factor at 1 cycle/unit (never narrowed). Trend-band coverage under AR(1) ρ = 0.5 / 0.8: 73% / 44% → 97% / 95%. Seasonal: 89% / 86% → 98% / 91%.
 - **Sparse records no longer fail with the default seasonal model (AUD-13).** When the smallest window cannot fit the default four OLS harmonics, the highest are dropped, with the warning `HARMONICS_REDUCED`.
 - **Bounded memory in the vectorized spectrum (AUD-12).** The frequency chunk adapts to the record length (about 8 MB per work matrix). Peak memory at n = 32 000: 443 MB → 49 MB.
-- **`consecutive_k` monitoring calibration is conservative (AUD-11).** At least 1 999 Monte Carlo draws, and the per-step level is a one-sided 80% lower confidence bound on the simulated α-quantile.
+- **`consecutive_k` monitoring calibration is more conservative (AUD-11, partly resolved).** At least 1 999 Monte Carlo draws, and the per-step level is a one-sided 80% lower confidence bound on the simulated α-quantile. False alarms at α = 0.05 remain 7.3% (H = 24), 5.3% (H = 120) and 4.0% (irregular), which points to a plug-in effect of harmonics selected on the history rather than Monte Carlo error; this is disclosed in `limitations.md` §5.
+- **Heavy-tail warning (AUD-07).** Non-robust `just_jumps` and `stpd` fits emit `HEAVY_TAILS` when more than 0.5% of the residuals (and at least two) lie beyond 4.5 robust standard deviations. Under Student-t(3) / t(2) noise the non-robust jump test gave 16% / 24% false jumps at a nominal 5%; `robust="mm"` gives 0.7% / 1.3%.
+- **ALLSSA with a coarse user grid.** In `search="rayleigh"` mode, a user `omega` coarser than half the Rayleigh resolution is treated as the band of interest and oversampled to `1/(4T)`, so off-grid peaks are reached (blind tides with `omega=0.5, 1.0, …, 4.0`: 4/4).
 - **Heavy censoring (AUD-15).** OLS segments more than 40% censored carry the caution `HEAVY_CENSORING_OLS_MI` (Rubin-pooled CIs covered ~91% at 50% censoring; Akritas–Theil–Sen ~95%).
 - **`just_jumps` default is the step detector.** New `jump_definition="step"` (default) or `"level_or_slope"` (published JUST, forced by `parity_mode`). `step_alpha` defaults to `"auto"` and `window_scales` to `None`; both resolve from the definition, and explicit values override. **Results of `just_jumps()` with default arguments change:** pure slope changes and curvature are no longer reported as jumps.
 - **JUST step detection: curvature-robust step test, multi-scale windows and conditional re-test (AUD-04, AUD-17, AUD-18).**
@@ -28,13 +30,13 @@ Statistical-calibration and hardening release. Several defaults change results. 
 
     | | before (single scale) | now |
     |---|---|---|
-    | false jumps: line / curved / AR(1) 0.5–0.8 | 0–0.5% | 0–2% |
-    | 2σ step found (reported as TP instead) | 0% (11%) | 54.5% (2.5%) |
-    | 4σ step found (reported as TP instead) | 9.5% (42.5%) | 100% (0.5%) |
+    | false jumps: line / curved / AR(1) 0.5–0.8 | 0–0.5% | 0% |
+    | 2σ step found (reported as TP instead) | 0% (11%) | 41.5% (4%) |
+    | 4σ step found (reported as TP instead) | 9.5% (42.5%) | 99% (0.5%) |
 
     Against the original release, a 4σ step had been reported as a turning point in 59% of series.
-  - **Costs:** `analyze_series` takes about 3× longer (~3 s instead of ~1 s for 240 points). Steps on strongly curved trends remain hard to detect (2σ: 8%).
-  - **Standalone `just_jumps`** keeps the published single-scale level-or-slope definition. The new warning `NOT_A_VERTICAL_STEP` flags reported jumps that are not significant vertical steps; use `step_alpha=0.05, window_scales=(1, 2, 4)` for abrupt steps.
+  - **Costs:** `analyze_series` takes about 3× longer (~3 s instead of ~1 s for 240 points). Steps on curved trends remain hard to detect (2σ on a 9-year cycle of amplitude 3σ: 4%).
+  - **Standalone `just_jumps`** defaults to the same step detector (`jump_definition="step"`, see above). In simulation (200 series, 240 points over 20 years, seasonality, σ = 0.5): false jumps on a straight line 1% (level-or-slope: 5.5%), on a smooth 9-year cycle 0% (level-or-slope: 36.5%); a 6.7σ step is found in 100% of series with no extra jumps (level-or-slope: 93% with 0.15 extra jumps per series). `jump_definition="level_or_slope"` restores the published definition, with the new warning `NOT_A_VERTICAL_STEP` on reported jumps that are not significant vertical steps.
 - **Change-point and OLS trend tests are calibrated for serially correlated errors (AUD-02).** New `serial_correlation="ar1"` (default; `"ou"` continuous-time; `"none"`, also forced by `parity_mode` and by a 2D `weights` covariance) on `just_jumps`, `stpd`/`detect_turning_points` and `analyze_series`.
   - A lag-1 residual autocorrelation is estimated robustly to jumps from difference variances (Chakar et al., 2017), using trimmed means after a smooth global fit (quadratic, four hinges, annual harmonics, and a level-shift column for every step larger than six robust SDs of the differences). It is treated as zero unless distinguishable from zero; otherwise one standard error is added.
   - Monte Carlo nulls (JUST max-F, STPD max-t) simulate AR(1)/OU errors. Analytical references are deflated by `(1+rho)/(1-rho)`.

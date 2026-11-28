@@ -22,5 +22,11 @@ All scripts are standalone and run from this directory with `OMP_NUM_THREADS=1 M
 | `repro_confirmed_bugs.py` (re-run) | `repro_post_batch1_out.txt` | reproducers after batch 1 |
 | `p14_batch2_serial.py [NREP]` | `p14_final_ar1_out.txt` (final), `p14_none_out.txt` (independent-error comparison), `p14_pre_jumpfix_out.txt`, `p14_margin0_partial_out.txt` (earlier variants) | batch-2 validation of serial-correlation calibration (AUD-02) |
 | `p11_readme_hero.py` (re-run) | `p11_post_batch2_results.json` | README example after batch 2 |
-| `p15_batch3_scales.py [NREP]` | `p15_out.txt` | batch-3 validation: multi-scale JUST, curvature-robust step test, ghosts (AUD-04/17/18) |
+| `p15_batch3_scales.py [NREP]` (`P15_ONLY`, `P15_OUT` env filters) | `p15_preliminary_out.txt` (before the local split search), `p15_final_out.txt` (final code) | batch-3 validation: multi-scale JUST, curvature-robust step test, ghosts (AUD-04/17/18) |
 | `p10_pipeline_step.py`, `p11_readme_hero.py` (re-runs) | `p10_batch3_results.json`, `p11_batch3_results.json` | pipeline step-vs-TP and README example after batch 3 |
+| `p16_allssa_rayleigh.py` | `p16_results.json` | batch-4 validation: Rayleigh-band ALLSSA (AUD-05) |
+| `p17_consk.py [NREP]` | `p17_out.txt`, `p17_results.json` | `consecutive_k` false alarms after the conservative calibration (AUD-11) |
+| `p18_batch4.py [NREP]` | `p18_out.txt`, `p18_results.json` | STPD bootstrap bands with uneven density / heteroscedasticity (AUD-08); heavy tails under the step default (AUD-07) |
+| `p13_batch1_stpd.py` (re-run, `P13_ONLY`) | `p13_final_code_out.txt` | standalone STPD step/bend rows on the final code |
+| `../../validation/bench_stl_headtohead.py` (`BENCH_NREP=60`) | `bench_out.txt`, `../../validation/reports/stl_headtohead_report.md` | STL head-to-head re-run on the final code |
+| `pytest` | `pytest_batch1_summary.txt`, `pytest_batch3.txt`, `pytest_final.txt` | full test suite after batches 1, 3 and 4 |

@@ -1,0 +1,8 @@
+null_white step {'any_tp': 0.0, 'tp_near': 0.0, 'flag_near': 0.0}
+bend1.0 step {'any_tp': 0.415, 'tp_near': 0.41, 'flag_near': 0.01}
+bend1.0_uneven step {'any_tp': 0.56, 'tp_near': 0.55, 'flag_near': 0.005}
+bend1.0_hetero4x_unweighted step {'any_tp': 0.03, 'tp_near': 0.03, 'flag_near': 0.015}
+bend1.0_sd0.05 step {'any_tp': 1.0, 'tp_near': 1.0, 'flag_near': 0.0}
+step2.0 step {'any_tp': 0.295, 'tp_near': 0.26, 'flag_near': 0.76}
+step2.0_uneven step {'any_tp': 0.43, 'tp_near': 0.33, 'flag_near': 0.34}
+step3.0 step {'any_tp': 0.175, 'tp_near': 0.16, 'flag_near': 0.86}

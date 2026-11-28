@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-11-28 · **Target:** `LukeAFullard/tspec` `main` @ `73a9eb3` · **Auditor stance:** every claim guilty until independently reproduced.
 
-All probes are new code written for this audit (`audit/independent_2026_11/`); the existing tests, reports and audit files were *not* used as evidence. No file under `src/tspec/` was modified.
+All probes are new code written for this audit (`audit/independent_2026_11/`); the existing tests, reports and audit files were *not* used as evidence. No file under `src/tspec/` was modified during the audit itself. Every confirmed bug was then documented with a reproducer (`repro_confirmed_bugs.py`) before remediation batches 1–4 changed the code on branch `claude/hopeful-johnson-hnarah`. §0 gives the refreshed verdict on the remediated code; the original findings are kept unchanged in §0 (original verdict) and §2.
 
 **Environment:** Python 3.13.18 · tspec 0.1.0 · numpy 2.5.3 · scipy 1.18.1 · statsmodels 0.15.0 · ndimpute 0.1.1 · pandas 3.0.5 · matplotlib 3.11.2 · ruptures 1.1.10 · `OMP_NUM_THREADS=1 MPLBACKEND=Agg` · 4 cores (Monte Carlo replicates parallelised across processes, each single-threaded).
 
@@ -11,6 +11,53 @@ Existing suite for reference: `pytest` → 181 passed, 1 skipped (`pymannkendall
 ---
 
 ## 0. Executive summary & verdict
+
+### Refreshed verdict (after remediation batches 1–4, 2026-11-28)
+
+**Verdict: GO** for peer-reviewed use of the default workflows, provided results are reported together with the documented limitations listed below. **Two narrow components stay CONDITIONAL:** standalone `stpd` turning-point claims, and `consecutive_k` monitoring.
+
+All four items of the original minimum fix list (§5) are done:
+
+| Original blocker | Status on the remediated code |
+|---|---|
+| AUD-01 non-uniform datetime axis | **Fixed.** Noiseless M2 tide on datetimes: LSS 0.25 → 1.000. |
+| AUD-02 serial correlation | **Fixed** for `just_jumps`, `stpd`, `analyze_series` and `just_decompose`. False jumps at AR(1) ρ = 0.3/0.6/0.8: 34%/95%/100% → 4.3%/4.0%/7.0%. STPD false TPs at ρ = 0.8: 88% → 3.0%. OLS slope Type-I: up to 50% → 1.3–8.7%. Decompose trend band at ρ = 0.8: 44% → 95%. |
+| AUD-03 steps reported as bends | **Resolved in `analyze_series`** (4σ step reported as a TP: 59% → 0.5%; found as a jump in 99%). **Mitigated in standalone `stpd`**: 4σ step reported as a TP 69% → 26%, 6σ 63% → 16% (`p13_final_code_out.txt`). |
+| Documentation of AUD-04/05/08/17 | **Done, and the first three were fixed in code:** multi-scale step detector (AUD-04), Rayleigh ALLSSA (AUD-05), ghost suppression (AUD-17). AUD-08: the default bootstrap STPD band covers 95–96% in the problem designs. |
+
+Further fixes:
+* AUD-06 (precise bends rejected), AUD-09 (zero variance), AUD-10 (monitor history), AUD-12 (memory) and AUD-13 (sparse records) are fixed.
+* AUD-18, found during remediation (curvature reported as "jumps": 37–89%), is fixed by the step definition, now the `just_jumps` default; the published level-or-slope definition stays selectable.
+* The STL head-to-head (§4) was re-run on the remediated code (60 replicates):
+  * every `tspec` advantage is reproduced;
+  * S2 step recall is now 100% with 0 false jumps;
+  * blind ALLSSA finds all four tidal constituents (RMSE 0.325 → 0.041).
+
+**Conditions that come with the GO** (all disclosed in `docs/guide/limitations.md`):
+
+1. **Report `serial_rho` / `serial_rho_used`.**
+   * The AR(1) calibration covers first-order dependence only, not long memory or seasonal dependence.
+   * Model misfit (sharp structure in precise records, growing seasonal amplitude) can inflate ρ̂. That makes tests conservative (S4b seasonal band: 98.7%).
+   * `lssa`/`allssa` p-values and `just_monitor` still assume independent errors unless a full covariance is supplied.
+2. **Heavy tails or outliers: use `robust="mm"`.** The defaults stay non-robust:
+   * non-robust false jumps: t₃ 16%, t₂ 24%;
+   * with `mm`: 0.7% and 1.3%;
+   * the new `HEAVY_TAILS` warning flags the problem.
+3. **Detection power is limited, and the defaults are deliberately conservative.**
+   * Pipeline steps: a 2σ step is found in ~42% of series, 4σ in 99%; a 2σ step on a curved trend in 4%.
+   * Bends: a 0.6/yr slope change at σ = 0.5 with seasonality is found in 3% (unchanged from the original release).
+   * The Nile 1898/99 shift is not reported by the defaults (p = 0.05). `jump_definition="level_or_slope", serial_correlation="none"` reproduces the classic result.
+   * Treat a non-detection as "not shown", never as "no change".
+4. **`analyze_series` trend bands are ~90% bands** (README example: 89–91%). STPD-only bootstrap bands hold 95–96%.
+
+**Still CONDITIONAL:**
+
+* **Standalone `stpd` turning points.** A pure 4σ step is still reported as a TP in 26% of series. Publish TPs from `analyze_series` (JUST runs first) or after checking the reported `step_pvalue`/flags. Unweighted heteroscedastic records detect the bend correctly in only 16% of series; pass weights.
+* **`consecutive_k` with a horizon.** 7.3% false alarms at nominal 5% (H = 24). Use `alpha=0.03`, or Pocock/O'Brien–Fleming (which are conservative).
+
+Full suite on the remediated code: see §0b. Lint (`ruff`) and type checks (`mypy`) are clean.
+
+### Original verdict (pre-remediation, `73a9eb3`)
 
 **Verdict: CONDITIONAL-GO** for peer-reviewed use of a *defined subset* of workflows; **NO-GO** for unqualified use of the automatic change-point detectors (`just_jumps`, `stpd`, `analyze_series`) on real environmental records without the mitigations listed in §5.
 
@@ -51,21 +98,23 @@ What blocks unqualified publication use (details in §2):
 | AUD-09 | **Fixed** | `just.py`: zero-variance guard relative to the window's total sum of squares | Perfect line: 1 spurious jump → 0; 2 segments → 1; noiseless steps (also at 1e-13 scale) still detected |
 | AUD-10 | **Fixed** | `monitor.py`: seasonal history needs ~one cycle and ≥ model size + 5 points for numeric time too | `start=5` → `InsufficientDataError` |
 | AUD-02 | **Fixed** (batch 2) for `just_jumps`, `stpd`, `analyze_series`; open for `just_decompose`, `just_monitor`, `lssa`/`allssa` | New `_serial.py` and `serial_correlation="ar1"` (default). Jump-robust trimmed difference estimator of ρ, pre-test plus one-SE margin; AR(1)/OU Monte Carlo nulls; F/κ² for analytical references; exact sandwich VIF for OLS segment slopes and the trend band | False jumps at nominal 5%: 34% / 95% / 100% → **4.3% / 4.0% / 7.0%** (ρ = 0.3 / 0.6 / 0.8). STPD false TPs at nominal 1%: 28% / 88% → **0.7% / 3.0%** (ρ = 0.5 / 0.8). OLS slope Type-I at 5%: 22–50% → **1.3–8.7%**. White-noise power: 4σ jump 51% → 46%, bend 43% → 38% |
-| AUD-04 | **Fixed in `analyze_series`** (batch 3); opt-in for standalone `just_jumps` | `window_scales` (multiples of the base window, one Holm family); `analyze_series` default `(1, 2, 4)` with `step_alpha=0.05` | Pipeline: 2σ step found 0% → **54.5%**, 4σ 9.5% → **100%**; false jumps 0–2% (line, curved, AR(1)); runtime ~3× |
+| AUD-04 | **Fixed** (batch 3; standalone default since batch 4) | `window_scales` (multiples of the base window, one Holm family) with the curvature-robust step test; default `(1, 2, 4)` with `step_alpha=0.05` in `analyze_series` and, via `jump_definition="step"`, in standalone `just_jumps` | Pipeline (final code): 2σ step 0% → **41.5%**, 4σ 9.5% → **99%**; false jumps **0%** on line, curved and AR(1) 0.5/0.8 records. Standalone `just_jumps`: 6.7σ step 100% with 0 extra jumps; false jumps 1% (line), 0% (curved). Runtime ~3×. The local ±2 split search added to stop high-SNR bends being called steps cost some 2σ power (54.5% → 41.5%) |
 | AUD-17 | **Mitigated** (batch 3) | Root cause: in a 3-cycle window a step one seasonal period from the split is nearly indistinguishable from ramp + seasonal sawtooth. Conditional re-test against stronger accepted jumps (`known_jumps`); multi-scale windows resolve the alias | Ghosts in the S2 design: 7 → 1 per 60 series with `window_scales=(1, 2, 4)`; single-scale aliasing disclosed |
 | AUD-18 *(new, batch 3)* | **Fixed for the step test**; standalone default disclosed | Found while testing AUD-04: the 2-df JUST jump test reports smooth curvature as "jumps" (9-yr cycle, amplitude 3σ / 6σ: **37% / 89%** false jumps at default settings, ~100% in longer windows). `step_pvalue` now uses a quadratic term and fixed harmonics in both models (ALLSSA-selected harmonics had biased it to 11%); new `NOT_A_VERTICAL_STEP` warning | Step test under curvature: 0–2% false jumps; pipeline 1–2% |
-| AUD-03 (update) | Largely resolved by batch 3 | Multi-scale JUST stage catches steps before STPD | Pipeline: 4σ step misreported as TP 59% → 38% (batch 2) → **0.5%** (batch 3) |
+| AUD-03 (update) | Largely resolved by batch 3 | Multi-scale JUST stage catches steps before STPD | Pipeline: 4σ step misreported as TP 59% → 38% (batch 2) → **0.5%** (batch 3; final code 0.5%, found as a jump in 99%). Standalone `stpd` on the final code: 4σ step reported as a TP in 26%, 6σ 16%; bend recall 41% (`p13_final_code_out.txt`) |
 | AUD-05 | **Fixed** (batch 4) | `allssa(search="rayleigh")` default: oversampled grid from 1.5/T, refinement within ±1/T, only frequencies within 1/T re-fitted; `"integer"` = published | 1.00+1.37 cy/yr 0% → **100%**; 11.2-yr cycle 0% → **100%**; 2.37 cy/yr 37.5% → **100%**; blind tides 2/4 → **4/4**; null rate unchanged (0/80) |
 | AUD-02 (rest) | `just_decompose` **fixed** (batch 4); `just_monitor`, `lssa`/`allssa` open (disclosed) | `just_decompose(serial_correlation="ar1")`: trend band × κ, seasonal band × AR(1) spectral factor | Trend-band coverage at ρ = 0.5 / 0.8: 73% / 44% → **97% / 95%**; seasonal 89% / 86% → 98% / 91% |
-| AUD-11 | **Fixed** (batch 4) | ≥ 1 999 draws, one-sided 80% lower confidence bound on the α-quantile | see validation `p17_out.txt` |
+| AUD-11 | **Partly resolved, disclosed** (batch 4) | ≥ 1 999 draws, one-sided 80% lower confidence bound on the α-quantile | False alarms at α = 0.05: H = 24 **7.3%** [4.9, 10.9], H = 120 5.3%, irregular 4.0% (`p17_out.txt`): unchanged, so Monte Carlo error was not the cause. Most likely a plug-in effect of harmonics selected on the history. Disclosed in `limitations.md` §5 (use `alpha=0.03` for a strict 5% bound) |
 | AUD-12 | **Fixed** (batch 4) | Frequency chunk adapts to n (~8 MB per work matrix) | n = 32 000: 443 MB → **49 MB** |
 | AUD-13 | **Fixed** (batch 4) | Default OLS harmonics reduced to fit the smallest window (`HARMONICS_REDUCED`) | 50%-missing and 70%-gap records now run (jump still found) |
 | AUD-14 | **Fixed** (docs) | Runtime claims re-measured; "lite" NumPy + SciPy install already documented in README | — |
 | AUD-15 | **Mitigated** (batch 4) | `HEAVY_CENSORING_OLS_MI` caution for segments > 40% censored; ATS recommended | — |
 | AUD-16 | **Fixed** (docs) | `hamed_rao` Type-I under AR(1) documented (15–29%) | — |
-| AUD-07, 08 | Under re-measurement | see §0c | — |
+| AUD-07 | **Mitigated** (batch 4): warning + documented remedy | `HEAVY_TAILS` warning in non-robust `just_jumps`/`stpd` when > 0.5% of residuals (≥ 2) lie beyond 4.5 robust SDs; `robust="mm"` recommended | Default `just_jumps` (step definition), FWER at nominal 5%: t₃ 16% / t₂ 24% non-robust; **`robust="mm"` 0.7% / 1.3%** (was 6.7% / 10.7% under the level-or-slope definition). Warning fires on t₂ noise, not on Gaussian noise or after `mm` (`tests/test_batch4_audit.py`). Defaults stay non-robust (efficiency on Gaussian data) |
+| AUD-08 | **Largely resolved for the default band**; conditional band and pipeline disclosed | No code change needed for STPD: `stpd` defaults to `band_method="bootstrap"` (the original probe used `"conditional"`); a caution is emitted for the conditional band | STPD bootstrap band after correct detection: uniform **96.2%** (near TP 93.4%), 3× denser half **95.6%** (95.0%), 4× SD step with correct weights **95.2%** (94.9%); `p18_batch4.py`, 150 seeds, slope change 2.5/yr so that exact detection is common enough to measure coverage (the original rows used 1.0/yr). Residuals: unweighted heteroscedastic records detect the bend exactly in only 16% of series (61% weighted); `analyze_series` README example bands **89–91%** (documented as ~90% in `limitations.md` §1) |
+| S4c / R4 *(benchmark)* | ALLSSA user grid fixed; Nile disclosed | `allssa(search="rayleigh")` oversamples a user `omega` coarser than 1/(2T) | Blind tides with `omega=0.5…4.0`: tidal RMSE 0.325 → **0.041**, 4/4 constituents. Nile: defaults no longer report 1898/99 (p = 0.05 under AR(1)); `level_or_slope` + `serial_correlation="none"` → 1899 (p = 0.02). Documented in `limitations.md` §2b |
 
-Batch-3 evidence: `audit/independent_2026_11/p15_batch3_scales.py` (`p15_out.txt`), `p10_batch3_results.json`, `p11_batch3_results.json`; tests in `tests/test_jump_scales_and_ghosts.py`.
+Batch-3 evidence: `audit/independent_2026_11/p15_batch3_scales.py` (`p15_preliminary_out.txt`; final code `p15_final_out.txt`), `p10_batch3_results.json`, `p11_batch3_results.json`; tests in `tests/test_jump_scales_and_ghosts.py`.
 
 Batch-2 evidence: `audit/independent_2026_11/p14_batch2_serial.py` (`p14_final_ar1_out.txt`, `p14_none_out.txt`), `p11_post_batch2_results.json` (README example: jump and TP still found in 100% of 100 seeds, exact events 95–97%, band coverage 92%), regression tests in `tests/test_serial_correlation.py`. Full suite: 201 passed, 1 skipped. Known residual: on very precise records with structure the smooth global fit cannot follow, misfit can inflate ρ̂ (disclosed in `limitations.md` §3).
 
@@ -250,49 +299,51 @@ A likely cause is that the imputation model conditions on the estimated seasonal
 
 ## 3. Documented limitations & edge-case caveats — disclosure status
 
-| Topic | Independent result | Disclosed in `limitations.md`? |
-|---|---|---|
-| CI after detection conditional on detected TPs | `just_decompose` near-break coverage drops to **40%** when the jump is not supplied (`break_unknown`), 94% when supplied | Yes (§1), for STPD/pipeline; *not* explicitly for `just_decompose` |
-| STPD power not growing with record length | bend ±0.5/yr, σ = 0.5, n = 200: 46% recall | Yes (§2) |
-| JUST power not growing with record length | AUD-04 | **No** |
-| Serial correlation | AUD-02 | Partially (no magnitudes; trend tests only quantified) |
-| Gaussian-null Monte Carlo calibrations | AUD-07 | Yes (§6) |
-| ALLSSA one-per-band / 0.5 floor | AUD-05 | **No** |
-| Calendar decimal years | AUD-01 | **No** |
-| NDRI step/bend discrimination | AUD-03, AUD-06 | **No** (README and validation summary claim the opposite) |
-| Heteroscedastic bands | AUD-08 | Partially (power only, not coverage) |
-| Pocock very conservative | 0.33% at α = 0.05 (H = 24 and 120; open-ended 0.33%) | Yes (§5), confirmed |
-| `consecutive_k` without horizon uncalibrated | 2.7% at 24 steps (happens to be ≤ α here) | Yes (§5) |
-| Robust MM not high-breakdown | t₂ FWER 10.7% | Yes (§6) |
+| Topic | Independent result | Disclosed originally? | After remediation (batches 1–4) |
+|---|---|---|---|
+| CI after detection conditional on detected TPs | `just_decompose` near-break coverage drops to **40%** when the jump is not supplied (`break_unknown`), 94% when supplied | Yes (§1), for STPD/pipeline; *not* explicitly for `just_decompose` | Unchanged; disclosed (§1) |
+| STPD power not growing with record length | bend ±0.5/yr, σ = 0.5, n = 200: 46% recall | Yes (§2) | Unchanged; disclosed (§2). Through `analyze_series` with seasonality, a 0.6/yr slope change at σ = 0.5 is found in only 3% of series (same in the original release) |
+| JUST power not growing with record length | AUD-04 | **No** | Multi-scale step detector by default; rates disclosed (§2b) |
+| Serial correlation | AUD-02 | Partially | Calibrated for JUST/STPD/pipeline/decompose; `lssa`/`allssa`/`just_monitor` still assume independence (disclosed, §3) |
+| Gaussian-null Monte Carlo calibrations | AUD-07 | Yes (§6) | `HEAVY_TAILS` warning; `mm` 0.7–1.3% (§6) |
+| ALLSSA one-per-band / 0.5 floor | AUD-05 | **No** | Fixed (Rayleigh search) |
+| Calendar decimal years | AUD-01 | **No** | Fixed (uniform axis) |
+| NDRI step/bend discrimination | AUD-03, AUD-06 | **No** (README and validation summary claim the opposite) | Replaced by the step-vs-hinge test; docs corrected |
+| Heteroscedastic bands | AUD-08 | Partially (power only, not coverage) | Default bootstrap band 95–96%; conditional band, unweighted detection and pipeline ~90% disclosed (§1) |
+| Pocock very conservative | 0.33% at α = 0.05 (H = 24 and 120; open-ended 0.33%) | Yes (§5), confirmed | Unchanged |
+| `consecutive_k` without horizon uncalibrated | 2.7% at 24 steps (happens to be ≤ α here) | Yes (§5) | Unchanged |
+| `consecutive_k` with horizon | 7.3% at H = 24 | Range 4–6% claimed | Still 7.3%; disclosed with remedy (§5) |
+| Robust MM not high-breakdown | t₂ FWER 10.7% | Yes (§6) | 1.3% under the step definition |
+| Conservative jump defaults on borderline records | Nile 1898/99 not reported by defaults (p = 0.05) | — | Disclosed (§2b) with the settings that reproduce the classic result |
 
 ---
 
 ## 4. Benchmark & STL head-to-head (Tier 2e)
 
-Full tables and figures: [`validation/reports/stl_headtohead_report.md`](../validation/reports/stl_headtohead_report.md) (generated by `validation/bench_stl_headtohead.py`, 60 replicates per synthetic scenario). The headline numbers are reproduced in §4.1.
+Full tables and figures: [`validation/reports/stl_headtohead_report.md`](../validation/reports/stl_headtohead_report.md) (generated by `validation/bench_stl_headtohead.py`, 60 replicates per synthetic scenario; `BENCH_NREP=60`). The headline numbers are reproduced in §4.1, updated after remediation batches 1–4 (re-run on the remediated code; unchanged rows were reproduced within Monte Carlo error).
 
 ### 4.1 Headline metrics (60 replicates; RMSE against exact truth unless stated)
 
 | Scenario | Metric | `tspec` | STL (robust) | STL (non-robust) / other |
 |---|---|---|---|---|
 | S1 regular grid, smooth trend | trend RMSE · seasonal RMSE | **0.072** · **0.139** (`ols`) | 0.086 · 0.167 | 0.078 · 0.149 |
-| | trend / seasonal 95% CI coverage | **95.2% / 95.6%** | — | — |
-| S2 +2.0 step (σ = 0.3) | trend RMSE ±1 yr of step | **0.095** | 0.501 | 0.430 |
-| | 10–90% rise time | **1.0 month** (0 when detected) | 13.0 months | 11.1 months |
-| | jump magnitude error | **+0.020** (recall 97%) | −1.87 | −1.84 |
-| | seasonal RMSE ±1 yr | **0.144** | 0.184 | 0.211 |
+| | trend / seasonal 95% CI coverage | **95.7% / 95.9%** | — | — |
+| S2 +2.0 step (σ = 0.3) | trend RMSE ±1 yr of step | **0.075** (was 0.095) | 0.501 | 0.430 |
+| | 10–90% rise time | **0.3 month** (was 1.0) | 13.0 months | 11.1 months |
+| | jump magnitude error | **+0.005** (recall 100%, was 97%; 0 false jumps) | −1.87 | −1.84 |
+| | seasonal RMSE ±1 yr | **0.137** | 0.184 | 0.211 |
 | S3 35% dropout + 5-month blackout | trend RMSE (observed / in gap) | **0.097 / 0.098** | 0.128 / 0.154 (linear fill) | 0.131 / 0.155 (spline fill) |
-| | trend CI coverage (observed / in gap) | **94.9% / 94.3%** | — | — |
+| | trend CI coverage (observed / in gap) | **95.5% / 97.3%** (wider under the AR(1) adjustment) | — | — |
 | S4a 1.0 + 2.37 cy/yr | total periodic RMSE | **0.095** (windowed ALLSSA) | 0.529 | MSTL(5, 12): 0.125 |
-| S4b growing amplitude | seasonal RMSE · CI coverage | **0.115** · 95.6% | 0.137 | 0.122 |
-| S4c tides M2+S2+K1+O1, 30% dropouts | tidal RMSE | **0.0083** (`known_freqs`); 0.325 (blind ALLSSA, 2/4 found — AUD-05) | — | MSTL(12h, 25h): 0.119 |
+| S4b growing amplitude | seasonal RMSE · CI coverage | **0.115** · 98.7% (conservative: amplitude misfit inflates ρ̂) | 0.137 | 0.122 |
+| S4c tides M2+S2+K1+O1, 30% dropouts | tidal RMSE | **0.0083** (`known_freqs`); blind ALLSSA **0.041, 4/4 found** (was 0.325, 2/4 — AUD-05 fixed) | — | MSTL(12h, 25h): 0.119 |
 | S5a 7% spikes of 15–30σ | trend · seasonal RMSE | **0.090 · 0.174** (`mm`); 0.327 · 0.847 (non-robust) | 0.118 · 0.273 | 0.460 · 0.906 |
-| S5b 30% left-censored | trend RMSE · bias · CI cov | **0.063 · −0.004 · 95.2%** | DL/2: 0.117 · −0.072 | DL: 0.108 · +0.069; uncensored oracle 0.088 |
+| S5b 30% left-censored | trend RMSE · bias · CI cov | **0.063 · −0.004 · 95.4%** | DL/2: 0.117 · −0.072 | DL: 0.108 · +0.069; uncensored oracle 0.088 |
 | R1 Mauna Loa CO₂, complete | agreement with STL | trend 0.12 ppm, seasonal 0.17 ppm RMSE | — | — |
 | R1 CO₂ gapped (in blackout, vs own complete) | trend · seasonal RMSE | default `allssa` 0.378 · 0.496 (worse); `ols` + 4-yr windows **0.054 · 0.066** | 0.152 · 0.146 | — |
 | R2 AirPassengers (log) | remainder SD | `allssa` 0.049; `ols` 6 harmonics 0.031 | **0.026** | — |
 | R3 SF tide gauge 1900–2025 | secular rate (mm/yr) | 1.96 (trend), Sen 1.95 [1.81, 2.09] | 1.97 | NOAA ≈ 2 |
-| R4 Nile (no seasonality) | change year | **1899** (p = 0.02) | n/a | `ruptures` Binseg/Pelt: 1901 |
+| R4 Nile (no seasonality) | change year | defaults: none (step definition + AR(1), ρ̂ = 0.18, level-or-slope p = 0.05); level-or-slope with independent errors **1899** (p = 0.02) | n/a | `ruptures` Binseg/Pelt: 1901 |
 
 Runtime per fit (single thread): `just_decompose` 0.02–0.18 s and `just_jumps` + decompose 0.23 s, vs STL 0.003–0.034 s. `tspec` is 5–80× slower than STL but well under a second for all scenarios.
 
@@ -303,7 +354,7 @@ Runtime per fit (single thread): `just_decompose` 0.02–0.18 s and `just_jumps`
 | ![S1](../validation/reports/figures_stl/s1_regular_grid.png) | ![S2](../validation/reports/figures_stl/s2_step_jump_zoom.png) |
 | S1: regular grid (STL home turf) | S2: STL smears a step over ~1 year; JUST keeps it sharp |
 | ![S3](../validation/reports/figures_stl/s3_gaps.png) | ![S4c](../validation/reports/figures_stl/s4c_tides.png) |
-| S3: native gaps vs interpolate-then-STL | S4c: tides; `known_freqs` exact, blind ALLSSA limited to one constituent per band |
+| S3: native gaps vs interpolate-then-STL | S4c: tides; `known_freqs` exact, blind Rayleigh ALLSSA finds all four constituents |
 | ![S5a](../validation/reports/figures_stl/s5a_outliers.png) | ![R1](../validation/reports/figures_stl/r1_mauna_loa_co2.png) |
 | S5a: 7% extreme spikes | R1: Mauna Loa CO₂, complete vs gapped |
 | ![R3](../validation/reports/figures_stl/r3_sf_tide_gauge.png) | ![R2](../validation/reports/figures_stl/r2_airpassengers.png) |
@@ -313,11 +364,16 @@ Runtime per fit (single thread): `just_decompose` 0.02–0.18 s and `just_jumps`
 
 * STL is a smoother with no inference; `tspec` gives calibrated pointwise bands (94–96% in every synthetic scenario where the model is correctly specified), which STL cannot.
 * STL wins where seasonality changes *shape* quickly (AirPassengers) and is 5–80× faster. `tspec`'s default per-window ALLSSA seasonal model is noisier than fixed OLS harmonics on regular data (S1 seasonal RMSE 0.212 vs 0.139) and fragile across long real blackouts (R1). Prefer `season="ols"` with an explicit `omega` when the harmonic content is known.
-* `tspec`'s advantages on steps (S2) depend on JUST *detecting* the step (AUD-04). For steps below ~4σ at default window sizes, it will usually not, and the decomposition then smears like STL (`break_unknown`: 40% CI coverage near the break).
+* `tspec`'s advantages on steps (S2) depend on JUST *detecting* the step (AUD-04). With the new multi-scale step detector, 4σ steps are found in 99% of series and 2σ steps in ~40%; an undetected step is smeared like STL (`break_unknown`: 40% CI coverage near the break).
+* The Nile (R4) shows the price of the new conservative defaults: a ~1.5σ drop in a 30-year window is explained almost as well by a curved continuous trend, and the record's mild persistence (ρ̂ = 0.18) pushes the evidence to p = 0.05. Classic analyses that assume independent errors and a flat mean find 1898/99; `jump_definition="level_or_slope", serial_correlation="none"` reproduces them (p = 0.02).
 
 ---
 
-## 5. Final scientific-readiness verdict
+## 5. Scientific-readiness verdict
+
+**Refreshed (remediated code): GO with documented conditions; standalone `stpd` turning points and `consecutive_k` CONDITIONAL. See §0 for the evidence and conditions.** The original verdict below is kept unchanged for the record. Every item of its minimum fix list has since been addressed (§0b).
+
+#### Original verdict (`73a9eb3`)
 
 **Overall: CONDITIONAL-GO.** The numerical core is publication-grade; several automatic detection defaults are not.
 

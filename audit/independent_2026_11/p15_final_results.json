@@ -1,0 +1,129 @@
+{
+ "NREP": 200,
+ "pipe_null_line|new": {
+  "any_jump": 0.0,
+  "any_tp": 0.01,
+  "jump_hit": 0.0,
+  "tp_hit": 0.0,
+  "extra_jumps": 0.0,
+  "sec": 3.4676950860023497,
+  "wall": 182.7
+ },
+ "pipe_null_curved|new": {
+  "any_jump": 0.0,
+  "any_tp": 0.99,
+  "jump_hit": 0.0,
+  "tp_hit": 0.64,
+  "extra_jumps": 0.0,
+  "sec": 3.7845228695869446,
+  "wall": 197.8
+ },
+ "pipe_null_curved_strong|new": {
+  "any_jump": 0.0,
+  "any_tp": 1.0,
+  "jump_hit": 0.0,
+  "tp_hit": 0.625,
+  "extra_jumps": 0.0,
+  "sec": 5.320091770887375,
+  "wall": 274.7
+ },
+ "pipe_null_ar0.5|new": {
+  "any_jump": 0.0,
+  "any_tp": 0.015,
+  "jump_hit": 0.0,
+  "tp_hit": 0.0,
+  "extra_jumps": 0.0,
+  "sec": 6.75225136756897,
+  "wall": 350.3
+ },
+ "pipe_null_ar0.8|new": {
+  "any_jump": 0.0,
+  "any_tp": 0.045,
+  "jump_hit": 0.0,
+  "tp_hit": 0.01,
+  "extra_jumps": 0.0,
+  "sec": 7.902030649185181,
+  "wall": 407.8
+ },
+ "pipe_step0.5_line|new": {
+  "any_jump": 0.025,
+  "any_tp": 0.02,
+  "jump_hit": 0.025,
+  "tp_hit": 0.01,
+  "extra_jumps": 0.0,
+  "sec": 2.9902456152439116,
+  "wall": 159.7
+ },
+ "pipe_step1.0_line|new": {
+  "any_jump": 0.425,
+  "any_tp": 0.065,
+  "jump_hit": 0.415,
+  "tp_hit": 0.04,
+  "extra_jumps": 0.01,
+  "sec": 2.973003319501877,
+  "wall": 158.5
+ },
+ "pipe_step2.0_line|new": {
+  "any_jump": 0.99,
+  "any_tp": 0.025,
+  "jump_hit": 0.99,
+  "tp_hit": 0.005,
+  "extra_jumps": 0.0,
+  "sec": 2.811800398826599,
+  "wall": 151.4
+ },
+ "pipe_step1.0_curved|new": {
+  "any_jump": 0.04,
+  "any_tp": 1.0,
+  "jump_hit": 0.04,
+  "tp_hit": 0.7,
+  "extra_jumps": 0.0,
+  "sec": 3.3902537846565246,
+  "wall": 178.6
+ },
+ "pipe_bend0.6_line|new": {
+  "any_jump": 0.005,
+  "any_tp": 0.045,
+  "jump_hit": 0.005,
+  "tp_hit": 0.03,
+  "extra_jumps": 0.0,
+  "sec": 3.889713751077652,
+  "wall": 204.6
+ },
+ "jj_null_line|default_step": {
+  "any_jump": 0.01,
+  "jump_hit": 0.005,
+  "extra_jumps": 0.005,
+  "wall": 49.5
+ },
+ "jj_null_curved|default_step": {
+  "any_jump": 0.0,
+  "jump_hit": 0.0,
+  "extra_jumps": 0.0,
+  "wall": 26.3
+ },
+ "jj_ghosts_step3.35|default_step": {
+  "any_jump": 1.0,
+  "jump_hit": 1.0,
+  "extra_jumps": 0.0,
+  "wall": 23.5
+ },
+ "jj_null_line|level_or_slope": {
+  "any_jump": 0.055,
+  "jump_hit": 0.0,
+  "extra_jumps": 0.055,
+  "wall": 8.3
+ },
+ "jj_null_curved|level_or_slope": {
+  "any_jump": 0.365,
+  "jump_hit": 0.015,
+  "extra_jumps": 0.47,
+  "wall": 10.2
+ },
+ "jj_ghosts_step3.35|level_or_slope": {
+  "any_jump": 0.96,
+  "jump_hit": 0.93,
+  "extra_jumps": 0.15,
+  "wall": 9.4
+ }
+}

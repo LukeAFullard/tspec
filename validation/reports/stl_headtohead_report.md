@@ -8,10 +8,10 @@ All synthetic truths are exact analytic functions. RMSE is against the truth; `c
 
 | method | trend RMSE | trend_bc RMSE | seasonal RMSE | remainder vs true noise | trend CI cov | seasonal CI cov | sec |
 |---|---|---|---|---|---|---|---|
-| `tspec_ols` | 0.072 | 0.073 | 0.139 | 0.156 | 0.957 | 0.959 | 0.015 |
-| `tspec_allssa` | 0.072 | 0.074 | 0.212 | 0.222 | 0.973 | 0.963 | 0.056 |
-| `stl` | 0.078 | — | 0.149 | 0.167 | — | — | 0.002 |
-| `stl_robust` | 0.086 | — | 0.167 | 0.188 | — | — | 0.013 |
+| `tspec_ols` | 0.072 | 0.073 | 0.139 | 0.156 | 0.957 | 0.959 | 0.027 |
+| `tspec_allssa` | 0.072 | 0.074 | 0.212 | 0.222 | 0.973 | 0.963 | 0.102 |
+| `stl` | 0.078 | — | 0.149 | 0.167 | — | — | 0.004 |
+| `stl_robust` | 0.086 | — | 0.167 | 0.188 | — | — | 0.024 |
 
 
 ![S1](figures_stl/s1_regular_grid.png)
@@ -22,9 +22,9 @@ All synthetic truths are exact analytic functions. RMSE is against the truth; `c
 
 | method | trend RMSE | trend RMSE ±1 yr | seasonal RMSE ±1 yr | 10–90% rise (months) | jump-magnitude error | sec |
 |---|---|---|---|---|---|---|
-| `tspec` | 0.059 | 0.075 | 0.137 | 0.333 | 0.005 | 0.468 |
-| `stl` | 0.155 | 0.430 | 0.211 | 11.100 | -1.836 | 0.002 |
-| `stl_robust` | 0.180 | 0.501 | 0.184 | 13.000 | -1.868 | 0.014 |
+| `tspec` | 0.059 | 0.075 | 0.137 | 0.333 | 0.005 | 0.569 |
+| `stl` | 0.155 | 0.430 | 0.211 | 11.100 | -1.836 | 0.003 |
+| `stl_robust` | 0.180 | 0.501 | 0.184 | 13.000 | -1.868 | 0.018 |
 
 
 ![S2](figures_stl/s2_step_jump.png)
@@ -36,9 +36,9 @@ All synthetic truths are exact analytic functions. RMSE is against the truth; `c
 
 | method | trend RMSE (obs) | seasonal RMSE (obs) | trend RMSE in gap | trend bias in gap | seasonal RMSE (grid) | trend CI cov (obs) | trend CI cov (gap) | sec |
 |---|---|---|---|---|---|---|---|---|
-| `tspec` | 0.097 | 0.182 | 0.098 | 0.073 | 0.215 | 0.955 | 0.973 | 0.021 |
-| `stl_linear` | 0.128 | 0.204 | 0.154 | -0.058 | 0.223 | — | — | 0.015 |
-| `stl_spline` | 0.131 | 0.194 | 0.155 | 0.016 | 0.211 | — | — | 0.014 |
+| `tspec` | 0.097 | 0.182 | 0.098 | 0.073 | 0.215 | 0.955 | 0.973 | 0.035 |
+| `stl_linear` | 0.128 | 0.204 | 0.154 | -0.058 | 0.223 | — | — | 0.023 |
+| `stl_spline` | 0.131 | 0.194 | 0.155 | 0.016 | 0.211 | — | — | 0.022 |
 
 
 STL seasonal RMSE inside the blackout (linear fill): 0.240; (spline fill): 0.186.
@@ -50,22 +50,22 @@ STL seasonal RMSE inside the blackout (linear fill): 0.240; (spline fill): 0.186
 
 | method | trend RMSE | total periodic RMSE | sec |
 |---|---|---|---|
-| `tspec_allssa_win` | 0.047 | 0.095 | 0.059 |
-| `tspec_ols_fixed124` | 0.049 | 0.551 | 0.016 |
-| `stl` | 0.065 | 0.529 | 0.014 |
-| `mstl_5_12` | 0.069 | 0.125 | 0.007 |
+| `tspec_allssa_win` | 0.047 | 0.095 | 0.123 |
+| `tspec_ols_fixed124` | 0.049 | 0.551 | 0.032 |
+| `stl` | 0.065 | 0.529 | 0.026 |
+| `mstl_5_12` | 0.069 | 0.125 | 0.015 |
 
 
-Global `allssa(decimal=2)`: periodic RMSE 0.060; found 2.37 cy/yr in 100% and 1.0 cy/yr in 100% of replicates (0.08 s).
+Global `allssa(decimal=2)`: periodic RMSE 0.060; found 2.37 cy/yr in 100% and 1.0 cy/yr in 100% of replicates (0.17 s).
 
 ## S4b — Seasonal amplitude growing linearly 0.5 → 1.5 over 20 years
 
 | method | trend RMSE | seasonal RMSE | seasonal CI cov | sec |
 |---|---|---|---|---|
-| `tspec_ols` | 0.044 | 0.115 | 0.987 | 0.015 |
-| `tspec_allssa` | 0.045 | 0.128 | 0.989 | 0.054 |
-| `stl` | 0.063 | 0.122 | — | 0.002 |
-| `stl_robust` | 0.071 | 0.137 | — | 0.014 |
+| `tspec_ols` | 0.044 | 0.115 | 0.987 | 0.031 |
+| `tspec_allssa` | 0.045 | 0.128 | 0.989 | 0.111 |
+| `stl` | 0.063 | 0.122 | — | 0.004 |
+| `stl_robust` | 0.071 | 0.137 | — | 0.027 |
 
 
 Baseline global fixed-amplitude harmonic fit (`lssa(known_freqs=[1,2])`): seasonal RMSE 0.215.
@@ -74,9 +74,9 @@ Baseline global fixed-amplitude harmonic fit (`lssa(known_freqs=[1,2])`): season
 
 | method | tidal-signal RMSE | constituents | sec |
 |---|---|---|---|
-| `tspec.lssa(known_freqs=[M2,S2,K1,O1])` (classical harmonic analysis, no interpolation) | 0.0083 | 4 (given) | 0.001 |
-| `tspec.allssa(decimal=3)` (blind search) | 0.7325 | 2.0 found | 0.39 |
-| `MSTL(periods=(12, 25))` after linear interpolation | 0.1190 | 2 integer periods | 0.08 |
+| `tspec.lssa(known_freqs=[M2,S2,K1,O1])` (classical harmonic analysis, no interpolation) | 0.0083 | 4 (given) | 0.002 |
+| `tspec.allssa(decimal=3)` (blind search) | 0.0406 | 4.0 found | 1.94 |
+| `MSTL(periods=(12, 25))` after linear interpolation | 0.1190 | 2 integer periods | 0.14 |
 
 
 Amplitude errors with `known_freqs`: M2 -0.0004, S2 -0.0010, K1 +0.0004, O1 -0.0007.
@@ -88,11 +88,11 @@ Amplitude errors with `known_freqs`: M2 -0.0004, S2 -0.0010, K1 +0.0004, O1 -0.0
 
 | method | trend RMSE | seasonal RMSE | remainder err (clean pts) | trend CI cov | sec |
 |---|---|---|---|---|---|
-| `tspec_none` | 0.327 | 0.847 | 0.780 | 0.975 | 0.015 |
-| `tspec_huber` | 0.106 | 0.226 | 0.220 | 0.947 | 0.049 |
-| `tspec_mm` | 0.090 | 0.174 | 0.184 | 0.939 | 0.073 |
-| `stl` | 0.460 | 0.906 | 0.750 | — | 0.002 |
-| `stl_robust` | 0.118 | 0.273 | 0.248 | — | 0.013 |
+| `tspec_none` | 0.327 | 0.847 | 0.780 | 0.975 | 0.030 |
+| `tspec_huber` | 0.106 | 0.226 | 0.220 | 0.947 | 0.097 |
+| `tspec_mm` | 0.090 | 0.174 | 0.184 | 0.939 | 0.139 |
+| `stl` | 0.460 | 0.906 | 0.750 | — | 0.004 |
+| `stl_robust` | 0.118 | 0.273 | 0.248 | — | 0.026 |
 
 
 ![S5a](figures_stl/s5a_outliers.png)
@@ -101,10 +101,10 @@ Amplitude errors with `known_freqs`: M2 -0.0004, S2 -0.0010, K1 +0.0004, O1 -0.0
 
 | method | trend RMSE | trend bias | seasonal RMSE | trend CI cov | sec |
 |---|---|---|---|---|---|
-| `tspec` | 0.063 | -0.004 | 0.154 | 0.954 | 0.019 |
+| `tspec` | 0.063 | -0.004 | 0.154 | 0.954 | 0.025 |
 | `tspec_dl2` | 0.089 | -0.063 | — | — | — |
-| `stl_dl2` | 0.117 | -0.072 | 0.230 | — | 0.011 |
-| `stl_dl` | 0.108 | 0.069 | 0.186 | — | 0.011 |
+| `stl_dl2` | 0.117 | -0.072 | 0.230 | — | 0.014 |
+| `stl_dl` | 0.108 | 0.069 | 0.186 | — | 0.013 |
 | `stl_uncensored_oracle` | 0.088 | — | — | — | — |
 
 
@@ -145,7 +145,9 @@ trend RMSE(tspec allssa vs STL) = 0.0138, seasonal RMSE = 0.0356 (tspec OLS with
 
 ## R4 — Nile at Aswan (known 1898/99 regime shift; no seasonality, STL not applicable)
 
-`just_jumps(season='none', size=30, step=5)`: jumps at [] (magnitudes [], calibrated p []); `ruptures` Binseg(1 bkp): 1901; Pelt(BIC-type penalty): [1901.0]. Known: 1898/1899 (Cobb 1978).
+`just_jumps(season='none', size=30, step=5)` with the defaults (step definition, AR(1) calibration; estimated rho = 0.18): jumps at []. Published level-or-slope definition: []. Level-or-slope with independent errors (the assumption of the classic analyses): [1899.0] (calibrated p ['0.02']). `ruptures` Binseg(1 bkp): 1901; Pelt(BIC-type penalty): [1901.0]. Known: 1898/1899 (Cobb 1978).
+
+The Nile drop is about 1.5 sigma within a 30-year window: under the default step definition a continuous bend with curvature explains it as well as a vertical step, and allowing for the record's mild persistence makes the evidence borderline (p = 0.05). Methods that assume independent errors and a flat mean (ruptures, the classic analyses) find it; tspec's defaults are deliberately more conservative.
 
 
-Total wall time 56 s.
+Total wall time 68 s.

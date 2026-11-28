@@ -1,9 +1,9 @@
-S1 done in 2.7s
-S2 done in 15.4s
-S3 done in 1.6s
+S1 done in 2.6s
+S2 done in 9.8s
+S3 done in 1.4s
 S4a done in 5.7s
-S4b done in 2.8s
-S4c done in 14.8s
-S5a done in 4.9s
-S5b done in 2.0s
-total 56s
+S4b done in 2.9s
+S4c done in 33.4s
+S5a done in 4.8s
+S5b done in 1.3s
+total 68s
