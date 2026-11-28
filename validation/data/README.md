@@ -26,3 +26,7 @@ All datasets in this directory are classic public-domain scientific records used
 8. **`airpassengers_monthly.csv`** ($n = 144$, 1949–1960)
    - Monthly international airline passengers (thousands); the classic multiplicative-seasonality benchmark (Box & Jenkins, 1976, Series G).
    - Source: R `datasets::AirPassengers` via Rdatasets (`https://raw.githubusercontent.com/vincentarelbundock/Rdatasets/master/csv/datasets/AirPassengers.csv`). Public domain.
+9. **`choptank_01491000_nitrate.csv`** ($n = 846$, June 1973 – September 2023; irregular grab samples)
+   - Dissolved nitrate plus nitrite (mg/L as N, USGS parameter code 00631) in the Choptank River near Greensboro, Maryland (USGS station 01491000). This is the example record of the USGS WRTDS/EGRET method (Hirsch, Moyer & Archfield, 2010, *J. Am. Water Resour. Assoc.* 46:857–880).
+   - Source: Water Quality Portal (National Water Quality Monitoring Council; USGS/EPA), `https://www.waterqualitydata.us/data/Result/search?siteid=USGS-01491000&pCode=00631&mimeType=csv&zip=no`, downloaded 2026-11-28 (925 result rows). US Government public domain.
+   - Cleaning: field-replicate QC samples (79) removed; routine, composite and undetermined-type samples kept (846, no duplicate timestamps remained); missing sample times set to 12:00. One non-detect (1998-12-14, `<0.05`) is stored at its detection limit with `censored=True`. `event` is the WQP `HydrologicEvent` (about 39% storm samples, which are not random in time). Sampling ranges from 1 to 74 samples per year (sparse before 1985).

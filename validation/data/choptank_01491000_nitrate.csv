@@ -1,0 +1,847 @@
+date,value,censored,event,n_merged
+1973-06-04 11:10,1.3,False,Routine sample,1
+1979-09-25 13:00,0.52,False,Routine sample,1
+1979-10-24 10:30,0.62,False,Routine sample,1
+1979-12-05 10:30,1.4,False,Routine sample,1
+1979-12-21 11:30,1.2,False,Routine sample,1
+1980-01-24 10:30,0.84,False,Routine sample,1
+1980-02-25 11:45,1.2,False,Routine sample,1
+1980-03-18 13:20,1.0,False,Routine sample,1
+1980-04-22 09:55,1.0,False,Routine sample,1
+1980-05-27 10:50,1.0,False,Routine sample,1
+1980-06-24 10:45,1.1,False,Routine sample,1
+1980-07-28 10:40,0.93,False,Routine sample,1
+1980-09-08 10:30,1.1,False,Routine sample,1
+1980-10-29 10:45,0.62,False,Routine sample,1
+1980-11-26 10:00,0.81,False,Routine sample,1
+1980-12-17 10:30,1.1,False,Routine sample,1
+1981-01-27 10:50,1.3,False,Routine sample,1
+1981-02-26 11:20,0.82,False,Routine sample,1
+1981-04-01 11:30,0.6,False,Routine sample,1
+1981-04-29 10:45,0.69,False,Routine sample,1
+1981-05-20 10:30,0.98,False,Routine sample,1
+1981-06-23 10:45,0.94,False,Routine sample,1
+1981-07-14 11:00,0.88,False,Routine sample,1
+1981-08-27 09:50,1.3,False,Routine sample,1
+1981-09-29 09:50,1.2,False,Routine sample,1
+1982-01-26 11:30,1.4,False,Routine sample,1
+1982-03-15 11:15,1.2,False,Routine sample,1
+1982-04-27 10:15,1.4,False,Routine sample,1
+1982-07-27 10:00,1.1,False,Routine sample,1
+1982-09-28 08:50,1.1,False,Routine sample,1
+1982-11-22 10:05,0.99,False,Routine sample,1
+1983-01-11 10:15,1.4,False,Routine sample,1
+1983-03-22 09:05,0.56,False,Routine sample,1
+1983-05-23 09:30,0.83,False,Routine sample,1
+1983-08-16 11:50,1.2,False,Routine sample,1
+1983-11-08 12:00,1.2,False,Routine sample,1
+1984-02-14 11:00,1.3,False,Routine sample,1
+1984-05-16 10:30,1.1,False,Routine sample,1
+1984-08-01 10:00,1.2,False,Routine sample,1
+1984-10-19 11:15,1.0,False,Routine sample,1
+1984-11-26 11:30,1.4,False,Routine sample,1
+1984-12-05 11:30,1.1,False,Routine sample,1
+1985-01-10 11:30,1.3,False,Routine sample,1
+1985-02-11 10:30,1.4,False,Routine sample,1
+1985-03-07 11:45,0.91,False,Routine sample,1
+1985-04-18 11:00,0.56,False,Routine sample,1
+1985-05-15 11:00,0.88,False,Routine sample,1
+1985-05-24 11:00,0.92,False,Routine sample,1
+1985-05-24 11:15,0.94,False,Routine sample,1
+1985-06-20 14:05,0.83,False,Routine sample,1
+1985-07-11 09:30,0.72,False,Routine sample,1
+1985-07-26 11:00,2.0,False,Routine sample,1
+1985-08-15 09:00,0.77,False,Routine sample,1
+1985-08-29 11:00,0.67,False,Routine sample,1
+1985-09-13 10:00,0.78,False,Routine sample,1
+1985-09-27 13:15,0.57,False,Hurricane,1
+1985-09-28 09:30,0.18,False,Hurricane,1
+1985-09-29 09:45,0.28,False,Hurricane,1
+1985-09-29 10:45,0.29,False,Hurricane,1
+1985-11-04 08:40,0.83,False,Routine sample,1
+1985-11-18 10:45,0.7,False,Routine sample,1
+1985-12-27 11:30,1.5,False,Routine sample,1
+1986-01-30 10:45,1.3,False,Routine sample,1
+1986-02-03 10:30,1.5,False,Routine sample,1
+1986-02-05 12:00,1.2,False,Not Determined (historical),1
+1986-02-06 12:00,1.2,False,Not Determined (historical),1
+1986-02-19 16:00,1.1,False,Not Determined (historical),1
+1986-02-28 09:45,1.4,False,Routine sample,1
+1986-03-28 09:45,1.2,False,Routine sample,1
+1986-03-28 09:50,1.2,False,Routine sample,1
+1986-04-18 09:50,1.1,False,Routine sample,1
+1986-04-30 10:00,0.92,False,Routine sample,1
+1986-05-09 10:30,0.88,False,Routine sample,1
+1986-05-19 10:00,1.0,False,Routine sample,1
+1986-05-27 11:40,1.1,False,Routine sample,1
+1986-06-05 08:55,1.0,False,Routine sample,1
+1986-06-16 11:30,0.95,False,Drought,1
+1986-06-30 08:30,1.0,False,Routine sample,1
+1986-07-11 13:45,0.93,False,Routine sample,1
+1986-07-17 13:15,0.98,False,Routine sample,1
+1986-07-28 09:00,0.94,False,Routine sample,1
+1986-08-19 12:00,0.67,False,Not Determined (historical),1
+1986-08-26 12:00,1.1,False,Routine sample,1
+1986-09-08 10:00,1.0,False,Routine sample,1
+1986-09-26 10:00,0.97,False,Routine sample,1
+1986-11-05 09:50,0.54,False,Routine sample,1
+1986-11-12 09:30,0.71,False,Routine sample,1
+1986-11-28 10:45,0.77,False,Storm,1
+1986-12-04 10:15,1.0,False,Storm,1
+1986-12-17 09:30,1.5,False,Routine sample,1
+1986-12-29 11:30,1.4,False,Routine sample,1
+1987-01-02 00:00,1.0,False,Storm,1
+1987-01-02 12:30,1.3,False,Storm,1
+1987-01-03 13:15,0.77,False,Storm,1
+1987-01-14 10:15,1.6,False,Routine sample,1
+1987-01-19 19:00,1.2,False,Storm,1
+1987-01-20 14:15,1.1,False,Storm,1
+1987-01-21 11:45,1.1,False,Storm,1
+1987-02-11 10:30,1.5,False,Routine sample,1
+1987-02-19 11:45,1.8,False,Routine sample,1
+1987-03-01 11:00,0.97,False,Routine sample,1
+1987-03-04 13:15,1.1,False,Routine sample,1
+1987-03-26 11:00,1.2,False,Routine sample,1
+1987-03-31 09:30,0.9,False,Routine sample,1
+1987-04-13 11:30,0.86,False,Routine sample,1
+1987-04-21 11:30,0.97,False,Routine sample,1
+1987-04-27 11:45,0.79,False,Routine sample,1
+1987-05-07 11:20,0.67,False,Routine sample,1
+1987-05-13 11:00,0.78,False,Routine sample,1
+1987-06-12 10:30,0.84,False,Routine sample,1
+1987-06-25 11:00,0.93,False,Routine sample,1
+1987-08-04 10:00,0.99,False,Routine sample,1
+1987-08-11 10:00,0.23,False,Routine sample,1
+1987-08-28 10:00,1.4,False,Routine sample,1
+1987-09-11 13:45,1.1,False,Routine sample,1
+1987-10-14 12:30,1.3,False,Routine sample,1
+1987-10-28 12:30,0.95,False,Storm,1
+1987-11-17 10:30,0.9,False,Routine sample,1
+1987-12-16 10:30,1.1,False,Routine sample,1
+1988-01-07 09:00,1.4,False,Routine sample,1
+1988-01-20 13:00,1.8,False,Routine sample,1
+1988-01-21 10:15,1.4,False,Storm,1
+1988-01-21 14:00,1.2,False,Storm,1
+1988-01-28 13:15,1.6,False,Routine sample,1
+1988-02-04 14:00,1.2,False,Routine sample,1
+1988-02-05 10:15,1.3,False,Routine sample,1
+1988-02-12 10:17,1.4,False,Storm,1
+1988-02-13 10:00,0.84,False,Storm,1
+1988-02-13 14:15,0.84,False,Storm,1
+1988-02-14 12:30,1.2,False,Storm,1
+1988-02-16 11:45,1.7,False,Storm,1
+1988-02-25 12:30,1.3,False,Routine sample,1
+1988-03-02 10:15,1.5,False,Routine sample,1
+1988-03-08 10:30,1.3,False,Routine sample,1
+1988-03-22 09:10,1.2,False,Routine sample,1
+1988-04-06 09:30,0.56,False,Routine sample,1
+1988-04-20 09:15,0.8,False,Routine sample,1
+1988-05-06 10:30,0.7,False,Routine sample,1
+1988-05-19 10:30,0.58,False,Storm,1
+1988-06-15 09:30,0.9,False,Routine sample,1
+1988-06-30 10:00,0.98,False,Routine sample,1
+1988-07-21 14:15,0.8,False,Routine sample,1
+1988-07-22 15:00,0.89,False,Routine sample,1
+1988-07-25 13:45,0.65,False,Storm,1
+1988-07-28 09:45,0.84,False,Routine sample,1
+1988-08-16 12:30,1.2,False,Routine sample,1
+1988-08-21 14:00,1.1,False,Routine sample,1
+1988-08-30 10:30,0.94,False,Storm,1
+1988-09-16 10:15,1.1,False,Routine sample,1
+1988-10-27 14:00,0.84,False,Routine sample,1
+1988-11-02 09:45,1.1,False,Routine sample,1
+1988-11-03 10:45,0.58,False,Routine sample,1
+1988-11-18 09:50,0.93,False,Storm,1
+1988-11-21 10:40,1.0,False,Storm,1
+1988-11-28 12:00,1.5,False,Storm,1
+1988-11-29 09:45,1.1,False,Storm,1
+1988-11-29 13:30,0.85,False,Storm,1
+1988-11-30 12:00,0.71,False,Storm,1
+1988-12-01 13:00,1.0,False,Storm,1
+1988-12-15 11:00,1.7,False,Routine sample,1
+1989-01-05 14:00,1.5,False,Routine sample,1
+1989-01-12 14:45,1.4,False,Routine sample,1
+1989-01-17 11:00,1.2,False,Routine sample,1
+1989-01-30 10:30,1.6,False,Routine sample,1
+1989-02-01 11:35,1.5,False,Routine sample,1
+1989-02-22 09:15,1.3,False,Storm,1
+1989-02-23 09:10,0.97,False,Storm,1
+1989-02-23 13:15,0.97,False,Storm,1
+1989-02-27 10:30,1.5,False,Storm,1
+1989-03-03 11:30,1.4,False,Routine sample,1
+1989-03-06 14:00,1.6,False,Storm,1
+1989-03-08 10:00,0.96,False,Storm,1
+1989-03-08 14:00,1.0,False,Storm,1
+1989-03-09 09:30,1.2,False,Storm,1
+1989-03-10 11:45,1.5,False,Storm,1
+1989-03-21 14:00,1.3,False,Routine sample,1
+1989-03-24 10:45,1.3,False,Storm,1
+1989-03-24 14:30,1.3,False,Storm,1
+1989-03-25 10:45,0.53,False,Storm,1
+1989-03-25 14:15,0.44,False,Storm,1
+1989-03-26 08:45,0.65,False,Storm,1
+1989-03-26 17:30,0.8,False,Routine sample,1
+1989-03-27 13:30,0.94,False,Storm,1
+1989-03-28 11:30,1.0,False,Storm,1
+1989-03-31 14:30,1.2,False,Routine sample,1
+1989-04-06 14:00,1.3,False,Storm,1
+1989-04-08 04:00,1.0,False,Storm,1
+1989-04-08 12:15,0.99,False,Storm,1
+1989-04-08 12:30,0.91,False,Storm,1
+1989-04-09 10:15,0.76,False,Storm,1
+1989-04-09 10:45,0.74,False,Storm,1
+1989-04-10 09:45,0.94,False,Storm,1
+1989-04-11 13:45,1.2,False,Storm,1
+1989-04-20 10:30,1.1,False,Storm,1
+1989-04-27 10:40,1.1,False,Routine sample,1
+1989-05-02 10:00,0.94,False,Storm,1
+1989-05-02 11:55,0.68,False,Storm,1
+1989-05-02 14:45,0.65,False,Routine sample,1
+1989-05-03 00:15,0.44,False,Storm,1
+1989-05-03 10:15,0.38,False,Storm,1
+1989-05-03 16:00,0.4,False,Routine sample,1
+1989-05-04 10:10,0.57,False,Storm,1
+1989-05-04 14:00,0.62,False,Storm,1
+1989-05-05 11:30,0.83,False,Storm,1
+1989-05-06 11:15,0.82,False,Storm,1
+1989-05-06 14:30,0.84,False,Storm,1
+1989-05-07 11:15,0.41,False,Storm,1
+1989-05-08 14:30,0.57,False,Storm,1
+1989-05-11 11:15,0.86,False,Storm,1
+1989-05-11 14:00,0.77,False,Storm,1
+1989-05-12 11:30,0.76,False,Storm,1
+1989-05-24 10:30,0.88,False,Storm,1
+1989-05-24 14:00,0.73,False,Storm,1
+1989-05-25 10:30,0.47,False,Storm,1
+1989-05-25 14:00,0.49,False,Storm,1
+1989-06-06 14:10,1.2,False,Routine sample,1
+1989-06-22 09:15,0.57,False,Storm,1
+1989-06-22 15:00,0.56,False,Storm,1
+1989-06-23 11:30,0.6,False,Storm,1
+1989-06-23 14:00,0.52,False,Storm,1
+1989-06-24 11:00,0.57,False,Storm,1
+1989-07-14 12:00,1.2,False,Routine sample,1
+1989-08-11 10:30,1.2,False,Routine sample,1
+1989-09-07 11:30,1.1,False,Routine sample,1
+1989-09-07 11:45,1.4,False,Routine sample,1
+1989-10-04 11:45,0.72,False,Routine sample,1
+1989-10-19 12:15,0.94,False,Routine sample,1
+1989-11-01 11:00,1.1,False,Routine sample,1
+1989-11-08 12:00,1.1,False,Routine sample,1
+1989-11-22 10:00,1.4,False,Routine sample,1
+1989-12-06 11:15,1.9,False,Routine sample,1
+1990-01-02 12:00,1.1,False,Snowmelt,1
+1990-01-04 13:30,1.4,False,Snowmelt,1
+1990-01-17 10:45,1.6,False,Routine sample,1
+1990-01-26 10:15,1.4,False,Storm,1
+1990-01-26 14:30,1.3,False,Storm,1
+1990-01-31 08:30,1.5,False,Routine sample,1
+1990-02-22 10:25,1.5,False,Routine sample,1
+1990-04-13 11:15,1.1,False,Routine sample,1
+1990-04-26 11:00,0.9,False,Routine sample,1
+1990-04-30 10:30,0.9,False,Routine sample,1
+1990-05-03 10:10,0.9,False,Routine sample,1
+1990-05-08 12:00,1.1,False,Routine sample,1
+1990-05-11 10:15,0.9,False,Storm,1
+1990-05-11 14:30,0.8,False,Storm,1
+1990-05-12 09:30,0.8,False,Storm,1
+1990-05-14 10:15,1.1,False,Routine sample,1
+1990-05-22 11:15,1.2,False,Routine sample,1
+1990-05-30 10:00,1.1,False,Storm,1
+1990-05-30 11:30,1.0,False,Storm,1
+1990-05-30 13:30,1.0,False,Storm,1
+1990-06-21 09:30,1.3,False,Routine sample,1
+1990-07-18 10:00,1.3,False,Routine sample,1
+1990-08-08 12:30,1.4,False,Routine sample,1
+1990-08-28 09:30,1.7,False,Routine sample,1
+1990-09-21 10:00,1.5,False,Routine sample,1
+1990-10-04 10:30,1.7,False,Routine sample,1
+1990-10-19 10:00,1.2,False,Routine sample,1
+1990-10-30 11:30,1.7,False,Routine sample,1
+1990-11-13 12:15,1.1,False,Routine sample,1
+1990-11-28 11:00,1.4,False,Routine sample,1
+1990-12-17 10:00,1.5,False,Routine sample,1
+1991-01-10 12:30,1.0,False,Snowmelt,1
+1991-01-12 11:00,0.9,False,Storm,1
+1991-01-17 11:15,1.4,False,Storm,1
+1991-02-11 14:40,1.6,False,Routine sample,1
+1991-02-11 15:06,1.6,False,Routine sample,1
+1991-03-12 12:00,1.2,False,Routine sample,1
+1991-04-10 10:30,0.92,False,Routine sample,1
+1991-05-08 13:15,0.85,False,Routine sample,1
+1991-05-15 12:45,0.92,False,Routine sample,1
+1991-06-06 12:45,1.3,False,Routine sample,1
+1991-06-10 10:30,1.6,False,Routine sample,1
+1991-06-18 12:15,1.2,False,Storm,1
+1991-06-19 11:00,0.97,False,Storm,1
+1991-06-20 11:00,1.0,False,Storm,1
+1991-07-10 10:45,0.98,False,Routine sample,1
+1991-07-27 14:00,0.79,False,Storm,1
+1991-07-27 16:00,0.83,False,Storm,1
+1991-07-28 09:30,0.35,False,Storm,1
+1991-07-29 12:00,0.43,False,Storm,1
+1991-08-15 12:45,1.2,False,Routine sample,1
+1991-09-06 13:40,1.4,False,Routine sample,1
+1991-10-09 13:00,1.6,False,Routine sample,1
+1991-10-22 16:30,1.3,False,Routine sample,1
+1991-11-12 11:15,1.4,False,Routine sample,1
+1991-12-04 10:15,1.3,False,Routine sample,1
+1992-01-22 13:30,1.6,False,Routine sample,1
+1992-02-19 10:15,1.2,False,Routine sample,1
+1992-03-27 09:15,1.4,False,Routine sample,1
+1992-03-27 15:15,1.1,False,Storm,1
+1992-03-28 09:45,0.88,False,Storm,1
+1992-04-29 11:15,0.96,False,Routine sample,1
+1992-05-19 11:00,0.95,False,Routine sample,1
+1992-06-25 10:00,1.1,False,Routine sample,1
+1992-07-22 09:45,1.0,False,Routine sample,1
+1992-08-18 10:15,0.77,False,Dambreak,1
+1992-08-19 10:30,0.62,False,Routine sample,1
+1992-09-24 11:30,1.2,False,Routine sample,1
+1992-11-03 11:00,0.97,False,Routine sample,1
+1993-01-28 09:30,1.7,False,Routine sample,1
+1993-03-22 11:15,1.4,False,Routine sample,1
+1993-05-26 11:15,1.5,False,Routine sample,1
+1993-06-10 13:00,1.4,False,Routine sample,1
+1993-06-24 12:30,1.4,False,Routine sample,1
+1993-07-08 12:00,1.5,False,Routine sample,1
+1993-07-21 12:30,1.5,False,Routine sample,1
+1993-08-18 12:00,1.5,False,Routine sample,1
+1993-09-01 11:30,1.4,False,Routine sample,1
+1993-10-18 12:15,1.3,False,Routine sample,1
+1993-11-02 13:30,0.85,False,Routine sample,1
+1993-11-18 11:00,0.84,False,Routine sample,1
+1993-12-14 12:55,1.6,False,Routine sample,1
+1994-01-06 11:05,1.6,False,Routine sample,1
+1994-02-17 13:11,2.2,False,Routine sample,1
+1994-02-25 13:00,0.79,False,Storm,1
+1994-03-03 14:30,0.74,False,Storm,1
+1994-03-04 13:00,0.64,False,Storm,1
+1994-03-08 13:30,1.4,False,Storm,1
+1994-03-22 15:05,1.8,False,Routine sample,1
+1994-03-24 13:15,1.2,False,Storm,1
+1994-03-31 13:00,0.8,False,Storm,1
+1994-04-07 12:50,1.2,False,Routine sample,1
+1994-04-14 11:15,1.3,False,Storm,1
+1994-04-21 10:15,1.0,False,Routine sample,1
+1994-05-05 13:25,1.08,False,Routine sample,1
+1994-05-19 08:30,1.0,False,Routine sample,1
+1994-06-16 10:17,1.03,False,Routine sample,1
+1994-06-28 10:15,1.0,False,Routine sample,1
+1994-07-12 10:30,1.1,False,Routine sample,1
+1994-07-14 10:53,0.176,False,Routine sample,1
+1994-08-09 09:45,0.7,False,Routine sample,1
+1994-08-18 08:15,0.64,False,Storm,1
+1994-08-18 09:53,0.668,False,Routine sample,1
+1994-09-15 11:45,1.0,False,Routine sample,1
+1994-09-15 12:13,1.04,False,Routine sample,1
+1994-09-27 09:30,0.58,False,Routine sample,1
+1994-10-13 10:15,1.7,False,Routine sample,1
+1994-10-26 14:30,0.82,False,Routine sample,1
+1994-11-15 14:00,1.1,False,Routine sample,1
+1994-11-17 11:05,1.04,False,Routine sample,1
+1994-12-07 10:45,1.0,False,Storm,1
+1994-12-15 10:05,1.23,False,Routine sample,1
+1995-01-11 13:20,1.22,False,Routine sample,1
+1995-01-16 14:45,1.1,False,Routine sample,1
+1995-01-20 17:15,1.3,False,Storm,1
+1995-01-21 15:30,0.6,False,Storm,1
+1995-01-22 13:15,0.7,False,Storm,1
+1995-01-23 17:00,0.95,False,Storm,1
+1995-02-15 10:10,1.74,False,Routine sample,1
+1995-03-08 12:30,1.2,False,Routine sample,1
+1995-03-22 13:25,1.18,False,Routine sample,1
+1995-04-11 12:15,0.74,False,Routine sample,1
+1995-04-27 10:20,1.02,False,Routine sample,1
+1995-05-16 10:00,0.69,False,Routine sample,1
+1995-05-25 14:25,1.01,False,Routine sample,1
+1995-06-19 10:15,1.2,False,Routine sample,1
+1995-06-22 13:10,1.06,False,Routine sample,1
+1995-07-18 09:15,1.1,False,Routine sample,1
+1995-07-27 12:25,1.01,False,Routine sample,1
+1995-08-16 08:00,1.2,False,Routine sample,1
+1995-08-24 13:10,1.35,False,Routine sample,1
+1995-09-05 10:00,1.3,False,Routine sample,1
+1995-09-21 11:00,0.98,False,Routine sample,1
+1995-10-19 13:45,1.16,False,Routine sample,1
+1995-10-30 12:00,0.94,False,Routine sample,1
+1995-11-14 13:45,0.994,False,Routine sample,1
+1995-11-28 11:00,1.7,False,Routine sample,1
+1995-12-11 13:00,1.82,False,Routine sample,1
+1996-01-16 11:00,1.6,False,Snowmelt,1
+1996-01-19 12:00,1.2,False,Snowmelt,1
+1996-01-20 12:30,0.68,False,Storm,1
+1996-01-21 12:45,0.87,False,Storm,1
+1996-02-13 12:45,1.4,False,Routine sample,1
+1996-03-27 12:00,1.4,False,Routine sample,1
+1996-04-17 15:15,0.6,False,Storm,1
+1996-05-06 11:30,0.71,False,Storm,1
+1996-05-10 09:45,1.0,False,Storm,1
+1996-05-30 12:00,1.2,False,Routine sample,1
+1996-06-18 15:45,1.1,False,Storm,1
+1996-06-19 14:00,0.95,False,Storm,1
+1996-06-20 18:30,0.39,False,Storm,1
+1996-07-14 14:15,1.2,False,Storm,1
+1996-08-14 10:00,0.38,False,Storm,1
+1996-09-05 11:00,1.5,False,Routine sample,1
+1996-10-24 11:30,1.1,False,Routine sample,1
+1996-11-06 10:45,1.5,False,Routine sample,1
+1996-12-02 15:00,0.97,False,Storm,1
+1996-12-09 12:00,0.7,False,Storm,1
+1996-12-14 15:00,1.5,False,Storm,1
+1996-12-15 14:00,0.32,False,Storm,1
+1996-12-17 11:45,0.92,False,Storm,1
+1997-01-23 14:30,1.89,False,Routine sample,1
+1997-02-06 13:15,0.97,False,Storm,1
+1997-03-15 15:30,1.6,False,Routine sample,1
+1997-04-16 14:15,0.88,False,Routine sample,1
+1997-05-14 14:15,1.12,False,Routine sample,1
+1997-06-25 08:30,1.2,False,Routine sample,1
+1997-07-22 12:30,1.22,False,Routine sample,1
+1997-08-14 10:30,1.41,False,Routine sample,1
+1997-09-16 10:30,1.42,False,Routine sample,1
+1997-10-28 11:00,1.31,False,Routine sample,1
+1997-11-20 12:15,1.57,False,Routine sample,1
+1997-12-10 12:00,1.57,False,Routine sample,1
+1998-01-22 11:15,1.62,False,Routine sample,1
+1998-01-29 14:00,0.4,False,Storm,1
+1998-02-03 13:00,1.37,False,Routine sample,1
+1998-02-06 13:30,0.5,False,Storm,1
+1998-02-07 09:30,0.73,False,Storm,1
+1998-02-25 11:45,0.49,False,Storm,1
+1998-03-10 13:45,0.48,False,Storm,1
+1998-04-22 12:00,0.97,False,Routine sample,1
+1998-05-26 10:15,1.28,False,Routine sample,1
+1998-06-09 10:45,1.27,False,Routine sample,1
+1998-07-06 10:00,1.24,False,Routine sample,1
+1998-08-04 09:45,1.48,False,Routine sample,1
+1998-10-07 08:45,1.38,False,Routine sample,1
+1998-11-03 10:00,1.2,False,Routine sample,1
+1998-12-14 10:30,0.05,True,Storm,1
+1999-01-05 12:45,0.92,False,Storm,1
+1999-01-16 14:30,0.95,False,Storm,1
+1999-01-26 09:45,0.6,False,Storm,1
+1999-02-11 10:15,1.57,False,Routine sample,1
+1999-03-05 10:45,1.06,False,Routine sample,1
+1999-03-15 16:45,1.1,False,Storm,1
+1999-03-23 10:30,0.77,False,Storm,1
+1999-04-06 08:45,0.81,False,Tidal action,1
+1999-05-04 10:45,1.01,False,Routine sample,1
+1999-06-02 12:00,1.29,False,Routine sample,1
+1999-06-21 12:30,1.27,False,Storm,1
+1999-08-16 11:30,1.37,False,Storm,1
+1999-08-26 13:00,1.24,False,Storm,1
+1999-09-07 10:30,1.08,False,Storm,1
+1999-09-16 11:15,0.74,False,Storm,1
+1999-09-18 17:00,0.4,False,Routine sample,1
+1999-09-21 09:00,0.9,False,Storm,1
+1999-10-07 10:30,1.4,False,Routine sample,1
+1999-11-04 11:00,0.99,False,Routine sample,1
+1999-12-03 11:30,1.42,False,Routine sample,1
+2000-01-04 12:00,1.59,False,Routine sample,1
+2000-02-03 12:30,1.54,False,Routine sample,1
+2000-02-15 12:45,1.37,False,Storm,1
+2000-02-19 13:45,1.24,False,Storm,1
+2000-03-23 15:30,0.52,False,Storm,1
+2000-07-05 12:15,0.9,False,Routine sample,1
+2000-07-27 12:00,0.89,False,Storm,1
+2000-08-03 10:15,0.69,False,Routine sample,1
+2000-08-15 08:00,0.78,False,Routine sample,1
+2000-08-15 14:00,0.5,False,Routine sample,1
+2000-10-04 10:45,1.27,False,Routine sample,1
+2000-11-07 12:15,1.41,False,Routine sample,1
+2000-12-04 10:30,1.29,False,Routine sample,1
+2000-12-18 12:50,0.64,False,Routine sample,1
+2001-01-03 10:00,1.81,False,Routine sample,1
+2001-01-20 13:00,1.36,False,Storm,1
+2001-02-06 09:45,1.23,False,Routine sample,1
+2001-03-22 17:25,0.58,False,Storm,1
+2001-04-04 11:45,1.35,False,Routine sample,1
+2001-05-03 09:30,1.24,False,Routine sample,1
+2001-06-18 08:45,0.64,False,Storm,1
+2001-07-02 09:00,1.42,False,Routine sample,1
+2001-08-01 10:40,1.55,False,Routine sample,1
+2001-10-03 11:30,1.51,False,Routine sample,1
+2001-11-06 10:00,1.16,False,Routine sample,1
+2001-12-05 12:30,1.38,False,Routine sample,1
+2002-01-08 10:45,1.76,False,Routine sample,1
+2002-03-12 12:30,1.13,False,Routine sample,1
+2002-03-18 13:00,0.97,False,Storm,1
+2002-03-27 13:15,1.24,False,Storm,1
+2002-05-03 11:00,0.65,False,Storm,1
+2002-06-07 11:00,0.96,False,Storm,1
+2002-07-24 12:00,1.28,False,Storm,1
+2002-08-29 12:30,1.53,False,Storm,1
+2002-09-06 09:45,1.06,False,Routine sample,1
+2002-10-01 09:45,1.23,False,Routine sample,1
+2002-10-11 12:15,0.97,False,Storm,1
+2002-10-31 12:00,1.17,False,Storm,1
+2002-11-07 11:15,1.38,False,Storm,1
+2002-11-13 12:45,0.9,False,Storm,1
+2002-12-04 11:00,2.09,False,Routine sample,1
+2002-12-12 16:00,1.48,False,Storm,1
+2003-01-02 12:00,1.41,False,Storm,1
+2003-02-24 12:00,0.76,False,Storm,1
+2003-03-26 10:30,1.27,False,Routine sample,1
+2003-04-10 11:45,0.97,False,Storm,1
+2003-10-28 10:30,1.51,False,Storm,1
+2003-11-07 10:45,0.43,False,Storm,1
+2004-01-14 11:30,2.17,False,Routine sample,1
+2004-02-12 11:30,1.43,False,Routine sample,1
+2004-03-03 10:00,1.54,False,Routine sample,1
+2004-04-14 09:45,0.75,False,Storm,1
+2004-10-06 08:30,1.28,False,Routine sample,1
+2004-11-01 09:45,0.94,False,Routine sample,1
+2004-11-30 10:15,0.86,False,Storm,1
+2004-12-07 10:15,1.42,False,Routine sample,1
+2005-01-04 10:45,1.49,False,Routine sample,1
+2005-02-15 13:00,1.63,False,Routine sample,1
+2005-03-22 10:45,1.38,False,Routine sample,1
+2005-03-25 11:00,1.04,False,Storm,1
+2005-04-04 11:30,0.6,False,Storm,1
+2005-04-19 10:15,1.54,False,Routine sample,1
+2005-05-17 10:15,1.38,False,Routine sample,1
+2005-06-01 09:00,1.37,False,Routine sample,1
+2005-07-06 08:15,1.32,False,Routine sample,1
+2005-08-03 09:00,1.18,False,Routine sample,1
+2005-09-12 09:00,1.23,False,Routine sample,1
+2005-11-09 12:30,1.46,False,Routine sample,1
+2005-12-08 11:00,1.72,False,Routine sample,1
+2006-01-04 11:00,1.17,False,Storm,1
+2006-01-24 10:30,0.98,False,Storm,1
+2006-02-06 10:30,1.7,False,Routine sample,1
+2006-03-09 11:45,1.87,False,Routine sample,1
+2006-04-18 10:30,1.18,False,Routine sample,1
+2006-04-23 09:15,1.15,False,Storm,1
+2006-05-11 10:30,1.33,False,Routine sample,1
+2006-06-07 08:15,1.34,False,Routine sample,1
+2006-06-26 15:45,1.14,False,Storm,1
+2006-07-12 12:30,1.29,False,Routine sample,1
+2006-08-08 09:30,1.51,False,Routine sample,1
+2006-09-05 10:30,0.97,False,Routine sample,1
+2006-10-03 09:30,1.75,False,Routine sample,1
+2006-11-09 09:30,1.26,False,Storm,1
+2006-12-11 11:00,2.17,False,Routine sample,1
+2007-01-02 11:00,1.1,False,Storm,1
+2007-02-13 11:00,2.36,False,Routine sample,1
+2007-03-06 11:00,1.52,False,Routine sample,1
+2007-04-10 10:00,1.37,False,Routine sample,1
+2007-04-13 09:00,1.14,False,Routine sample,1
+2007-04-18 12:00,0.87,False,Storm,1
+2007-05-10 10:00,1.59,False,Routine sample,1
+2007-06-04 10:00,1.35,False,Routine sample,1
+2007-07-05 14:00,1.46,False,Routine sample,1
+2007-08-27 09:00,1.68,False,Routine sample,1
+2007-09-10 09:30,1.58,False,Routine sample,1
+2007-10-02 10:00,1.66,False,Routine sample,1
+2007-10-25 11:30,1.06,False,Routine sample,1
+2007-11-15 10:30,1.66,False,Routine sample,1
+2007-12-03 11:30,1.42,False,Routine sample,1
+2007-12-17 10:00,1.29,False,Storm,1
+2008-01-04 11:45,1.74,False,Routine sample,1
+2008-02-06 11:00,1.59,False,Routine sample,1
+2008-02-14 11:30,1.46,False,Storm,1
+2008-03-05 10:30,1.59,False,Routine sample,1
+2008-03-09 13:00,0.6,False,Routine sample,1
+2008-04-10 10:00,1.25,False,Routine sample,1
+2008-05-12 11:15,0.93,False,Storm,1
+2008-05-13 10:10,0.7,False,Storm,1
+2008-06-05 09:35,1.29,False,Storm,1
+2008-08-06 10:15,1.69,False,Routine sample,1
+2008-09-03 11:30,2.14,False,Routine sample,1
+2008-09-08 09:30,1.43,False,Storm,1
+2008-10-01 11:30,1.64,False,Routine sample,1
+2008-10-27 10:00,1.56,False,Storm,1
+2008-10-29 09:00,1.36,False,Storm,1
+2008-11-06 13:45,1.12,False,Routine sample,1
+2008-12-02 11:30,1.62,False,Routine sample,1
+2008-12-12 11:00,1.4,False,Storm,1
+2009-01-08 10:00,1.66,False,Storm,1
+2009-02-02 11:30,1.86,False,Routine sample,1
+2009-03-12 09:10,1.18,False,Routine sample,1
+2009-03-30 10:15,0.97,False,Storm,1
+2009-04-15 12:45,0.95,False,Storm,1
+2009-05-04 09:15,1.04,False,Routine sample,1
+2009-06-01 11:30,1.22,False,Routine sample,1
+2009-06-11 08:15,0.72,False,Routine sample,1
+2009-07-06 08:30,1.29,False,Routine sample,1
+2009-08-12 12:30,1.49,False,Routine sample,1
+2009-08-24 08:15,0.31,False,Routine sample,1
+2009-09-08 08:30,1.54,False,Routine sample,1
+2009-10-05 09:30,1.55,False,Routine sample,1
+2009-10-29 08:30,0.3,False,Storm,1
+2009-11-09 11:30,1.59,False,Routine sample,1
+2009-12-03 10:00,1.08,False,Storm,1
+2009-12-10 10:45,0.31,False,Storm,1
+2010-01-12 13:30,2.43,False,Routine sample,1
+2010-01-26 12:30,0.85,False,Storm,1
+2010-03-09 09:15,1.6,False,Routine sample,1
+2010-03-15 08:00,0.69,False,Storm,1
+2010-04-08 09:30,1.26,False,Routine sample,1
+2010-04-27 10:00,1.21,False,Storm,1
+2010-05-06 09:15,1.54,False,Routine sample,1
+2010-05-19 08:45,1.36,False,Storm,1
+2010-06-04 08:30,1.43,False,Routine sample,1
+2010-07-08 08:45,1.51,False,Routine sample,1
+2010-07-12 09:15,1.02,False,Storm,1
+2010-07-14 08:00,1.13,False,Storm,1
+2010-08-02 09:15,1.46,False,Routine sample,1
+2010-09-01 10:00,1.78,False,Routine sample,1
+2010-10-01 07:30,0.74,False,Storm,1
+2010-10-01 14:30,0.75,False,Storm,1
+2010-10-13 09:00,1.81,False,Routine sample,1
+2010-11-05 08:30,1.44,False,Storm,1
+2010-12-08 11:00,1.74,False,Routine sample,1
+2011-01-10 10:15,1.8,False,Routine sample,1
+2011-02-03 09:45,0.94,False,Storm,1
+2011-03-01 09:45,1.18,False,Routine sample,1
+2011-04-13 11:00,0.99,False,Routine sample,1
+2011-04-18 09:00,0.57,False,Storm,1
+2011-05-16 09:00,1.23,False,Routine sample,1
+2011-06-14 10:30,1.74,False,Routine sample,1
+2011-07-13 09:30,1.39,False,Routine sample,1
+2011-08-09 10:00,1.54,False,Routine sample,1
+2011-08-15 10:25,0.92,False,Storm,1
+2011-08-30 10:00,0.2,False,Hurricane,1
+2011-09-08 08:00,0.78,False,Storm,1
+2011-09-29 08:30,0.8,False,Storm,1
+2011-10-12 09:00,0.52,False,Routine sample,1
+2011-11-07 11:00,1.62,False,Routine sample,1
+2011-12-01 10:30,0.875,False,Routine sample,1
+2011-12-08 11:30,0.375,False,Storm,1
+2012-01-09 10:30,2.08,False,Routine sample,1
+2012-02-06 10:30,1.85,False,Routine sample,1
+2012-03-01 09:40,1.04,False,Storm,1
+2012-03-12 09:45,1.59,False,Routine sample,1
+2012-04-09 09:30,1.4,False,Routine sample,1
+2012-04-23 10:00,1.23,False,Storm,1
+2012-05-10 09:00,1.22,False,Routine sample,1
+2012-06-06 10:00,1.23,False,Routine sample,1
+2012-07-12 10:00,1.01,False,Routine sample,1
+2012-08-02 10:00,1.5,False,Routine sample,1
+2012-09-17 10:00,1.48,False,Routine sample,1
+2012-10-31 09:30,0.584,False,Storm,1
+2012-11-01 09:00,0.916,False,Storm,1
+2012-11-06 11:15,1.67,False,Routine sample,1
+2012-12-18 13:00,1.66,False,Routine sample,1
+2013-01-08 11:00,1.9,False,Routine sample,1
+2013-02-21 09:30,1.77,False,Routine sample,1
+2013-02-27 12:10,1.73,False,Storm,1
+2013-03-27 10:15,1.26,False,Routine sample,1
+2013-04-29 13:00,1.42,False,Routine sample,1
+2013-05-10 09:45,0.818,False,Storm,1
+2013-05-23 12:45,1.17,False,Routine sample,1
+2013-06-03 12:15,1.02,False,Storm,1
+2013-06-07 14:45,1.16,False,Storm,1
+2013-06-08 10:15,1.17,False,Storm,1
+2013-06-19 08:50,0.44,False,Storm,1
+2013-07-01 09:45,1.33,False,Storm,1
+2013-08-13 13:45,1.19,False,Routine sample,1
+2013-09-11 09:30,1.78,False,Routine sample,1
+2013-09-13 08:15,1.69,False,Storm,1
+2013-10-22 11:45,1.5,False,Routine sample,1
+2013-11-05 11:45,1.43,False,Routine sample,1
+2013-11-27 08:45,1.47,False,Storm,1
+2013-12-09 09:15,1.26,False,Storm,1
+2014-01-31 10:15,2.18,False,Routine sample,1
+2014-02-27 15:45,1.71,False,Routine sample,1
+2014-03-11 11:00,1.5,False,Routine sample,1
+2014-03-30 11:15,0.96,False,Storm,1
+2014-04-10 08:45,1.26,False,Routine sample,1
+2014-04-16 08:15,1.18,False,Storm,1
+2014-04-30 07:15,1.15,False,Storm,1
+2014-05-01 11:00,0.821,False,Storm,1
+2014-05-07 09:15,1.23,False,Routine sample,1
+2014-05-16 17:30,1.18,False,Storm,1
+2014-06-04 12:00,1.45,False,Routine sample,1
+2014-06-12 08:30,1.08,False,Storm,1
+2014-07-09 10:15,1.5,False,Routine sample,1
+2014-07-16 08:45,0.947,False,Routine sample,1
+2014-08-07 09:30,1.36,False,Routine sample,1
+2014-08-13 07:45,1.08,False,Storm,1
+2014-09-02 09:30,1.29,False,Routine sample,1
+2014-09-25 09:15,1.57,False,Storm,1
+2014-10-08 09:15,1.33,False,Routine sample,1
+2014-10-16 10:30,1.24,False,Storm,1
+2014-11-05 11:00,1.23,False,Routine sample,1
+2014-11-18 13:00,1.08,False,Storm,1
+2014-12-07 09:00,1.63,False,Storm,1
+2014-12-12 11:30,1.35,False,Routine sample,1
+2015-01-08 11:00,1.7,False,Routine sample,1
+2015-02-03 11:15,1.44,False,Storm,1
+2015-03-02 13:15,1.57,False,Routine sample,1
+2015-03-15 13:30,0.732,False,Storm,1
+2015-04-06 09:30,1.29,False,Routine sample,1
+2015-04-15 08:45,1.03,False,Storm,1
+2015-07-10 08:00,1.13,False,Storm,1
+2015-08-04 10:00,1.22,False,Routine sample,1
+2015-08-12 07:00,1.25,False,Storm,1
+2015-12-02 09:45,1.38,False,Storm,1
+2016-01-05 10:15,1.85,False,Routine sample,1
+2016-01-28 09:30,1.68,False,Storm,1
+2016-02-04 10:15,1.23,False,Storm,1
+2016-03-11 10:30,1.42,False,Routine sample,1
+2016-04-04 13:00,1.16,False,Routine sample,1
+2016-05-02 11:00,1.2,False,Storm,1
+2016-05-04 09:45,0.7,False,Storm,1
+2016-05-31 10:15,0.957,False,Storm,1
+2016-06-10 12:15,1.26,False,Routine sample,1
+2016-06-22 08:00,1.34,False,Storm,1
+2016-07-05 11:00,1.3,False,Routine sample,1
+2016-07-06 14:15,0.859,False,Storm,1
+2016-07-29 10:30,0.992,False,Storm,1
+2016-08-02 09:15,1.01,False,Storm,1
+2016-08-22 08:30,1.02,False,Routine sample,1
+2016-09-01 07:15,2.12,False,Routine sample,1
+2016-09-29 08:00,1.22,False,Storm,1
+2016-09-30 10:15,0.851,False,Storm,1
+2016-10-06 10:00,1.42,False,Routine sample,1
+2016-10-10 08:15,0.765,False,Storm,1
+2016-11-01 08:15,1.59,False,Routine sample,1
+2016-12-01 13:15,1.64,False,Routine sample,1
+2016-12-07 10:45,1.56,False,Routine sample,1
+2017-01-04 07:45,1.34,False,Storm,1
+2017-02-06 11:30,1.89,False,Routine sample,1
+2017-03-02 11:00,1.04,False,Routine sample,1
+2017-03-15 09:00,0.607,False,Storm,1
+2017-03-16 09:25,0.968,False,Storm,1
+2017-04-04 10:15,1.23,False,Routine sample,1
+2017-04-07 09:00,0.903,False,Storm,1
+2017-04-26 08:00,1.07,False,Storm,1
+2017-05-02 09:30,1.21,False,Routine sample,1
+2017-05-05 17:15,1.36,False,Storm,1
+2017-05-15 10:30,1.4,False,Storm,1
+2017-05-26 10:15,1.1,False,Storm,1
+2017-06-08 09:30,1.49,False,Routine sample,1
+2017-06-21 08:30,1.5,False,Storm,1
+2017-07-06 11:30,1.42,False,Routine sample,1
+2017-07-25 12:30,1.04,False,Storm,1
+2017-08-01 09:45,1.36,False,Routine sample,1
+2017-08-08 09:30,0.864,False,Storm,1
+2017-09-05 10:30,0.89,False,Routine sample,1
+2017-10-03 08:15,1.6,False,Routine sample,1
+2017-10-30 08:30,1.14,False,Storm,1
+2017-11-02 09:15,1.49,False,Routine sample,1
+2017-11-08 11:15,1.2,False,Storm,1
+2017-12-01 16:00,1.72,False,Routine sample,1
+2018-01-13 08:30,1.22,False,Storm,1
+2018-01-18 10:45,1.68,False,Routine sample,1
+2018-02-06 12:00,1.22,False,Storm,1
+2018-02-11 17:00,0.534,False,Storm,1
+2018-02-13 10:10,0.817,False,Storm,1
+2018-03-05 10:00,1.73,False,Routine sample,1
+2018-03-08 10:30,0.896,False,Storm,1
+2018-04-02 09:00,1.54,False,Routine sample,1
+2018-04-16 08:30,1.05,False,Storm,1
+2018-05-14 08:15,1.23,False,Storm,1
+2018-05-20 08:45,0.508,False,Storm,1
+2018-06-04 10:15,1.42,False,Routine sample,1
+2018-06-11 11:00,1.28,False,Storm,1
+2018-07-05 09:45,1.45,False,Routine sample,1
+2018-07-23 09:30,2.47,False,Storm,1
+2018-07-27 08:30,0.762,False,Storm,1
+2018-08-01 10:00,1.6,False,Routine sample,1
+2018-09-04 12:30,1.82,False,Routine sample,1
+2018-09-13 09:30,0.549,False,Routine sample,1
+2018-10-04 07:15,1.59,False,Routine sample,1
+2018-11-02 09:15,1.71,False,Routine sample,1
+2018-11-06 11:15,0.612,False,Storm,1
+2018-12-06 12:00,1.93,False,Routine sample,1
+2019-01-29 10:45,2.0,False,Routine sample,1
+2019-02-06 12:00,2.09,False,Routine sample,1
+2019-03-04 11:15,1.13,False,Storm,1
+2019-03-11 11:30,1.14,False,Storm,1
+2019-04-03 08:30,1.74,False,Routine sample,1
+2019-04-21 11:15,0.774,False,Storm,1
+2019-05-07 10:15,1.06,False,Storm,1
+2019-05-13 12:00,1.31,False,Storm,1
+2019-06-04 08:45,1.56,False,Routine sample,1
+2019-07-02 08:30,1.28,False,Routine sample,1
+2019-07-12 10:30,1.05,False,Storm,1
+2019-08-02 06:30,1.15,False,Storm,1
+2019-09-04 10:00,0.81,False,Routine sample,1
+2019-10-03 08:45,1.72,False,Routine sample,1
+2019-11-04 09:00,1.21,False,Routine sample,1
+2019-12-02 12:00,1.42,False,Routine sample,1
+2019-12-10 11:15,1.6,False,Storm,1
+2020-01-06 10:45,1.4,False,Routine sample,1
+2020-01-26 11:15,1.19,False,Storm,1
+2020-02-04 09:15,1.65,False,Routine sample,1
+2020-02-08 09:45,1.13,False,Storm,1
+2020-02-12 10:45,1.08,False,Storm,1
+2020-03-02 12:45,1.79,False,Routine sample,1
+2020-03-20 11:00,1.23,False,Storm,1
+2020-04-14 11:00,0.814,False,Storm,1
+2020-06-01 13:00,1.37,False,Routine sample,1
+2020-07-07 08:00,1.36,False,Storm,1
+2020-07-10 15:30,1.31,False,Storm,1
+2020-08-03 10:30,1.17,False,Routine sample,1
+2020-08-05 10:15,0.414,False,Storm,1
+2020-09-01 09:15,1.19,False,Routine sample,1
+2020-10-05 10:15,1.55,False,Routine sample,1
+2020-10-13 11:15,1.3,False,Storm,1
+2020-10-30 13:00,0.558,False,Storm,1
+2020-11-03 13:45,0.918,False,Routine sample,1
+2020-12-01 11:00,0.729,False,Routine sample,1
+2020-12-07 10:30,0.919,False,Storm,1
+2021-01-05 11:45,1.27,False,Storm,1
+2021-02-04 10:45,1.69,False,Routine sample,1
+2021-02-16 10:00,1.54,False,Storm,1
+2021-03-01 13:30,0.653,False,Storm,1
+2021-03-25 10:15,0.56,False,Storm,1
+2021-04-05 11:30,1.32,False,Routine sample,1
+2021-04-26 11:00,1.05,False,Storm,1
+2021-05-03 10:15,1.52,False,Routine sample,1
+2021-05-30 12:30,1.33,False,Storm,1
+2021-06-01 10:15,3.85,False,Routine sample,1
+2021-07-07 09:00,1.45,False,Routine sample,1
+2021-07-09 09:15,1.11,False,Storm,1
+2021-08-04 11:00,1.17,False,Routine sample,1
+2021-08-10 10:15,0.724,False,Storm,1
+2021-08-20 12:45,0.946,False,Storm,1
+2021-09-01 09:15,0.426,False,Routine sample,1
+2021-10-06 14:00,1.6,False,Routine sample,1
+2021-11-01 12:15,0.844,False,Routine sample,1
+2021-12-06 12:45,1.74,False,Routine sample,1
+2022-01-06 09:15,1.44,False,Routine sample,1
+2022-01-10 09:30,1.49,False,Storm,1
+2022-02-01 09:45,1.75,False,Not applicable,1
+2022-02-04 09:30,1.59,False,Storm,1
+2022-03-01 11:30,1.29,False,Routine sample,1
+2022-03-13 11:00,0.94,False,Storm,1
+2022-04-07 12:00,0.489,False,Storm,1
+2022-04-09 08:00,0.671,False,Storm,1
+2022-04-19 12:45,1.1,False,Storm,1
+2022-05-04 08:30,1.13,False,Routine sample,1
+2022-05-09 10:00,0.883,False,Storm,1
+2022-06-07 14:00,1.05,False,Routine sample,1
+2022-07-05 08:30,0.976,False,Routine sample,1
+2022-07-06 08:45,1.03,False,Storm,1
+2022-07-17 15:30,1.01,False,Storm,1
+2022-07-20 11:00,0.948,False,Storm,1
+2022-08-01 09:15,1.27,False,Routine sample,1
+2022-09-07 10:00,0.837,False,Routine sample,1
+2022-10-01 09:30,1.0,False,Storm,1
+2022-10-03 12:00,1.23,False,Storm,1
+2022-10-05 10:30,1.04,False,Storm,1
+2022-11-02 08:00,1.1,False,Routine sample,1
+2022-11-17 08:45,1.04,False,Storm,1
+2022-12-01 14:00,1.41,False,Routine sample,1
+2022-12-09 11:00,1.24,False,Storm,1
+2022-12-16 10:45,0.995,False,Storm,1
+2023-01-04 09:15,1.39,False,Routine sample,1
+2023-01-27 09:45,0.98,False,Storm,1
+2023-02-02 10:15,1.58,False,Routine sample,1
+2023-03-02 12:15,1.42,False,Routine sample,1
+2023-04-05 11:45,1.01,False,Routine sample,1
+2023-04-24 09:45,0.816,False,Storm,1
+2023-04-29 11:30,1.07,False,Storm,1
+2023-05-02 11:30,0.699,False,Routine sample,1
+2023-06-05 12:00,1.4,False,Routine sample,1
+2023-06-23 10:15,1.32,False,Storm,1
+2023-07-05 11:15,0.957,False,Routine sample,1
+2023-07-10 11:30,1.0,False,Storm,1
+2023-08-01 08:30,1.02,False,Routine sample,1
+2023-09-06 08:15,1.54,False,Routine sample,1
+2023-09-11 09:15,0.812,False,Storm,1
+2023-09-25 11:15,0.932,False,Storm,1
