@@ -981,6 +981,8 @@ def _nested_jump_ftests(
     mc_cache: dict[Any, Any] | None = None,
     raw_step: bool = False,
     serial: SerialSpec = NO_SERIAL,
+    known_jumps: Sequence[int] = (),
+    step_quadratic: bool = False,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -1008,8 +1010,19 @@ def _nested_jump_ftests(
     ``serial`` (AUD-02): with an active AR(1)/OU model, the Monte Carlo null is simulated
     with correlated errors and every analytical F reference (Bonferroni, robust, step)
     uses ``F / kappa^2`` with ``kappa^2 = (1 + rho) / (1 - rho)``.
+
+    ``known_jumps`` (local indices; AUD-17) enter every model as known level-and-slope
+    breaks, so a candidate is tested conditionally on stronger jumps already accepted in
+    the same window; the split-selection correction is then Bonferroni. ``step_quadratic``
+    (AUD-18) adds a global quadratic term to both models of the step test (continuous
+    hinge vs discontinuous two-piece), so smooth curvature inside the window is not
+    mistaken for a vertical step.
     """
     k2 = serial.kappa2
+    known = np.array(sorted({int(k) for k in known_jumps if 2 <= int(k) <= int(t_win.size) - 2}),
+                     dtype=np.intp)
+    known = known[known != int(local_jump_idx)]
+    n_known = int(known.size)
     from ._linalg import solve_weighted_ols
 
     eff_robust: RobustMethod = "none" if parity_mode else robust
@@ -1053,18 +1066,28 @@ def _nested_jump_ftests(
         # Using the window's break-adjusted harmonic basis avoids that distortion while
         # jump_pvalue remains strictly conditioned on the 1-piece null subspace.
         step_freqs = freqs if (4 + 2 * int(freqs.size) < n_win) else test_freqs
+        if step_quadratic and not parity_mode:
+            # Curvature-robust step test (AUD-18): use a fixed, non-data-mined harmonic set
+            # (the integer harmonics of omega). Harmonics selected jointly with the
+            # discontinuous split are tuned to the step model and gave it an unfair edge
+            # over the continuous hinge (~11% false steps under smooth curvature vs ~2%).
+            fixed = np.unique(np.round(omega))
+            fixed = fixed[fixed >= 1.0]
+            max_h = max(0, (n_win - 10 - 2 * n_known) // 2)
+            step_freqs = fixed[: max_h].astype(np.float64)
     else:
         test_freqs = freqs
         step_freqs = freqs
 
     n_f = int(test_freqs.size)
-    nc_full = 4 + 2 * n_f
+    nc_full = 4 + 2 * n_f + 2 * n_known
     dof2 = n_win - nc_full
     if dof2 <= 0:
         return float("nan"), float("nan")
 
     n_f_step = int(step_freqs.size)
-    dof2_step = n_win - (4 + 2 * n_f_step)
+    q_step = 1 if step_quadratic else 0
+    dof2_step = n_win - (4 + 2 * n_f_step + 2 * n_known + q_step)
     same_step_freqs = bool(
         n_f_step == n_f and (n_f == 0 or np.array_equal(step_freqs, test_freqs))
     )
@@ -1077,7 +1100,7 @@ def _nested_jump_ftests(
     calib: JumpCalibration = calibration if calibration is not None else (
         "bonferroni" if bonferroni else "none"
     )
-    if calib == "montecarlo" and eff_robust != "none":
+    if calib == "montecarlo" and (eff_robust != "none" or n_known > 0):
         calib = "bonferroni"
     n_cands = max(1, (n_win - 2 * min_seg + 1) if eff_robust != "none" else (n_win - 5))
     mult = float(n_cands) if calib == "bonferroni" else 1.0
@@ -1085,6 +1108,7 @@ def _nested_jump_ftests(
         return 1.0, 1.0
 
     # Continuous hinge basis [1, t0/s, max(0, t0 - t0[k])/s, cos/sin(step_freqs)]
+    # (+ known-jump level/slope breaks, + (t0/s)^2 for the curvature-robust step test)
     s_t = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
     D_hinge = np.empty((n_win, 3 + 2 * n_f_step), dtype=np.float64)
     D_hinge[:, 0] = 1.0
@@ -1093,14 +1117,20 @@ def _nested_jump_ftests(
         phases_step = np.outer((2.0 * np.pi) * t0, step_freqs)
         D_hinge[:, 3::2] = np.cos(phases_step)
         D_hinge[:, 4::2] = np.sin(phases_step)
+    extra_cols = []
+    for kj in known:
+        on = (np.arange(n_win) >= kj).astype(np.float64)
+        extra_cols += [on, on * (t0 - t0[kj]) / s_t]
+    if step_quadratic:
+        extra_cols.append((t0 / s_t) ** 2)
+    if extra_cols:
+        D_hinge = np.column_stack([D_hinge, *extra_cols])
+    trend_step = "quadratic" if step_quadratic else "linear"
+    full_idx = np.array(sorted({*known.tolist(), int(local_jump_idx)}), dtype=np.intp)
 
     if eff_robust != "none":
-        D_full, cs_full = build_design_matrix(
-            t0, "linear", np.array([local_jump_idx], dtype=np.intp), False, test_freqs
-        )
-        D_null, cs_null = build_design_matrix(
-            t0, "linear", np.empty(0, dtype=np.intp), False, test_freqs
-        )
+        D_full, cs_full = build_design_matrix(t0, "linear", full_idx, False, test_freqs)
+        D_null, cs_null = build_design_matrix(t0, "linear", known, False, test_freqs)
         f_jump_rob, p_jump_raw, res_full, _ = huber_nested_ftest(
             D_null,
             D_full,
@@ -1115,12 +1145,10 @@ def _nested_jump_ftests(
             return float("nan"), float("nan")
         if k2 > 1.0 and np.isfinite(f_jump_rob):
             p_jump_raw = float(f_dist.sf(f_jump_rob / k2, 2, dof2))
-        if same_step_freqs:
+        if same_step_freqs and not step_quadratic:
             res_full_step = res_full
         else:
-            D_full_s, cs_full_s = build_design_matrix(
-                t0, "linear", np.array([local_jump_idx], dtype=np.intp), False, step_freqs
-            )
+            D_full_s, cs_full_s = build_design_matrix(t0, trend_step, full_idx, False, step_freqs)
             res_full_step = solve_robust_irls(
                 D_full_s,
                 y_win,
@@ -1163,14 +1191,15 @@ def _nested_jump_ftests(
                 / res_full_step.lambda_scale
             )
             p_step_raw = float(f_dist.sf(f_step / k2, 1, dof2_step))
-        return float(min(1.0, mult * p_jump_raw)), float(min(1.0, mult * p_step_raw))
+        step_mult_r = mult if parity_mode else 1.0
+        return float(min(1.0, mult * p_jump_raw)), float(min(1.0, step_mult_r * p_step_raw))
 
     res_full_ols = _lssa_core(
         t0,
         y_win,
         pw_win,
         np.empty(0, dtype=np.float64),
-        np.array([local_jump_idx], dtype=np.intp),
+        full_idx,
         0.05,
         "linear",
         False,
@@ -1182,7 +1211,7 @@ def _nested_jump_ftests(
         y_win,
         pw_win,
         np.empty(0, dtype=np.float64),
-        np.empty(0, dtype=np.intp),
+        known,
         0.05,
         "linear",
         False,
@@ -1191,15 +1220,15 @@ def _nested_jump_ftests(
     )
     res_full_step_ols = (
         res_full_ols
-        if same_step_freqs
+        if (same_step_freqs and not step_quadratic)
         else _lssa_core(
             t0,
             y_win,
             pw_win,
             np.empty(0, dtype=np.float64),
-            np.array([local_jump_idx], dtype=np.intp),
+            full_idx,
             0.05,
-            "linear",
+            trend_step,
             False,
             step_freqs,
             compute_cov=False,
@@ -1249,14 +1278,17 @@ def _nested_jump_ftests(
     else:
         den_step = rss1_step / dof2_step
         f_step = max(0.0, rss_hinge - rss1_step) / den_step
-        if calib == "montecarlo":
-            # The step test (jump vs best continuous hinge) is also evaluated at the
-            # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
-            # analytical Bonferroni correction over the scanned splits.
-            step_mult = 1.0 if raw_step else float(n_cands)
-            p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step / k2, 1, dof2_step))))
+        # The step test (discontinuity vs best continuous hinge) is evaluated at the split
+        # chosen by the jump scan, not maximised over splits, so in default mode no split
+        # multiplier is applied (AUD-04): with Holm across candidate locations it held the
+        # family-wise rate at 1-3% under straight, curved, bent and AR(1) null trends while
+        # the Bonferroni-over-splits version had almost no power. Parity mode keeps the
+        # previous Bonferroni correction.
+        if parity_mode:
+            step_mult = 1.0 if raw_step else (float(n_cands) if calib == "montecarlo" else mult)
         else:
-            p_step = float(min(1.0, mult * float(f_dist.sf(f_step / k2, 1, dof2_step))))
+            step_mult = 1.0
+        p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step / k2, 1, dof2_step))))
     return p_jump, p_step
 
 
@@ -1316,12 +1348,18 @@ def _run_just_jumps_array(
     mi_spec: tuple[int, str] | None = None,
     mi_counter: list[int] | None = None,
     serial: SerialSpec = NO_SERIAL,
+    step_quadratic: bool = False,
+    finalize: bool = True,
 ) -> tuple[
     list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
     list[WindowCandidate],
     int,
 ]:
     """Core sliding-window JUST jump search + aggregation + merging.
+
+    With ``finalize=False`` the first element is the list of tested candidates *before*
+    the family-wise adjustment and selection (used to pool several window scales into one
+    Holm family, see :func:`_finalize_jump_candidates`).
 
     ``mi_spec = (n_imputations, dist)`` pools each candidate's jump and step p-values
     (Licht–Rubin) over ``n_imputations`` proper imputations of the candidate's window
@@ -1449,6 +1487,7 @@ def _run_just_jumps_array(
             season_significance=season_significance,
             mc_cache=mc_cache,
             serial=serial,
+            step_quadratic=step_quadratic,
         )
         ws_c, we_c = int(best_c.window_start), int(best_c.window_stop)
         if (
@@ -1521,6 +1560,7 @@ def _run_just_jumps_array(
                         mc_cache=mc_cache,
                         raw_step=True,
                         serial=serial,
+                        step_quadratic=step_quadratic,
                     )
                     pj.append(pj_m)
                     ps.append(ps_m)
@@ -1529,13 +1569,76 @@ def _run_just_jumps_array(
                 p_step = float(min(1.0, n_sp * pool_pvalues(np.asarray(ps, dtype=np.float64))))
         tested.append((j_idx, occ, mag_val, dir_val, dis_raw, p_jump, p_step, best_c))
 
-    # Family-wise control across all distinct candidate locations (Holm step-down) when
-    # a calibrated jump test is requested.
-    if calib != "none" and tested:
-        tested = _holm_adjust_candidates(tested)
+    if not finalize:
+        return tested, candidates_sorted, window_fallbacks
+    accepted = _finalize_jump_candidates(
+        tested,
+        t_valid,
+        y_valid,
+        pw,
+        window_y_cache,
+        calib=calib,
+        mag_th=mag_th,
+        dir_th=dir_th,
+        jump_th=jump_th,
+        jump_alpha=jump_alpha,
+        step_alpha=step_alpha,
+        season=season,
+        omega=omega,
+        alpha=alpha,
+        parity_mode=parity_mode,
+        robust=robust,
+        huber_k=huber_k,
+        season_significance=season_significance,
+        serial=serial,
+        step_quadratic=step_quadratic,
+    )
+    return accepted, candidates_sorted, window_fallbacks
+
+
+def _finalize_jump_candidates(
+    tested: list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
+    t_valid: FloatArray,
+    y_valid: FloatArray,
+    pw: PreparedWeights,
+    window_y_cache: dict[tuple[int, int], FloatArray] | None,
+    *,
+    calib: str,
+    mag_th: float,
+    dir_th: float,
+    jump_th: float,
+    jump_alpha: float | None,
+    step_alpha: float | None,
+    season: str,
+    omega: FloatArray,
+    alpha: float,
+    parity_mode: bool,
+    robust: RobustMethod,
+    huber_k: float,
+    season_significance: str,
+    serial: SerialSpec,
+    step_quadratic: bool,
+    suppress_ghosts: bool = True,
+) -> list[tuple[int, int, float, float, float, float, float, WindowCandidate]]:
+    """Holm adjustment, selection, ghost-jump suppression and duplicate merging.
+
+    1. Family-wise control (Holm step-down) across *all* tested candidates when a
+       calibrated jump test is requested (several window scales form one family).
+    2. Effect-size / ``jump_alpha`` / ``step_alpha`` selection.
+    3. Ghost suppression (AUD-17): a window that contains a strong genuine jump near its
+       edge cannot model it and may place a spurious split elsewhere (typically one window
+       step away). Accepted candidates are re-tested in order of significance, conditional
+       on every stronger accepted jump inside their window (known level-and-slope breaks,
+       Bonferroni split correction); candidates no longer significant are dropped.
+    4. Candidates closer than ``jump_th`` (e.g. the same jump found at several scales)
+       are merged, keeping the most significant.
+    """
+    work = list(tested)
+    if calib != "none" and work:
+        work = _holm_adjust_candidates(work)
 
     accepted: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
-    for cand in tested:
+    for cand in work:
         mag_c, dir_c, p_jump, p_step = cand[2], cand[3], cand[5], cand[6]
         if abs(mag_c) < mag_th and abs(dir_c) < dir_th:
             continue
@@ -1545,7 +1648,133 @@ def _run_just_jumps_array(
             continue
         accepted.append(cand)
 
-    return accepted, candidates_sorted, window_fallbacks
+    def _key(c: tuple[int, int, float, float, float, float, float, WindowCandidate]) -> tuple[float, float]:
+        pj = c[5] if np.isfinite(c[5]) else 1.0
+        ps = c[6] if np.isfinite(c[6]) else 1.0
+        return (pj, ps)
+
+    if suppress_ghosts and not parity_mode and jump_alpha is not None and len(accepted) > 1:
+        kept: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+        for cand in sorted(accepted, key=_key):
+            bc = cand[7]
+            ws, we = int(bc.window_start), int(bc.window_stop)
+            stronger = [int(k[0]) - ws for k in kept if ws <= int(k[0]) < we and int(k[0]) != int(cand[0])]
+            if stronger:
+                t_w = t_valid[ws:we]
+                y_w = (
+                    window_y_cache.get((ws, we), y_valid[ws:we])
+                    if window_y_cache is not None
+                    else y_valid[ws:we]
+                )
+                p_j_c, p_s_c = _nested_jump_ftests(
+                    t_w,
+                    y_w,
+                    pw.slice_range(ws, we),
+                    int(cand[0]) - ws,
+                    bc.selected_freqs,
+                    season=season,
+                    omega=omega,
+                    alpha=alpha,
+                    parity_mode=parity_mode,
+                    robust=robust,
+                    huber_k=huber_k,
+                    calibration="bonferroni",
+                    season_significance=season_significance,
+                    serial=serial,
+                    known_jumps=stronger,
+                    step_quadratic=step_quadratic,
+                )
+                if np.isnan(p_j_c) or p_j_c >= jump_alpha:
+                    continue
+                if step_alpha is not None and (np.isnan(p_s_c) or p_s_c >= step_alpha):
+                    continue
+            kept.append(cand)
+        accepted = sorted(kept, key=lambda c: c[0])
+
+    # Merge candidates closer than jump_th (e.g. one jump found at several scales)
+    if len(accepted) > 1:
+        accepted = sorted(accepted, key=lambda c: c[0])
+        merged: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+        for cand in accepted:
+            if merged and t_valid[cand[0]] - t_valid[merged[-1][0]] < jump_th:
+                if _key(cand) < _key(merged[-1]):
+                    merged[-1] = cand
+            else:
+                merged.append(cand)
+        accepted = merged
+    return accepted
+
+
+def _run_jump_scales(
+    t_valid: FloatArray,
+    y_valid: FloatArray,
+    pw: PreparedWeights,
+    scale_windows: list[tuple[list[tuple[int, int]], float]],
+    season: str,
+    omega: FloatArray,
+    alpha: float,
+    mag_th: float,
+    dir_th: float,
+    jump_th: float,
+    jump_alpha: float | None,
+    **kw: Any,
+) -> tuple[
+    list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
+    list[WindowCandidate],
+    int,
+]:
+    """Run the JUST window search at one or several window scales (AUD-04).
+
+    A single scale reproduces :func:`_run_just_jumps_array`. With several scales, every
+    scale's tested candidates enter one Holm family (so the family-wise error rate is
+    controlled across scales), followed by selection, ghost suppression and merging of
+    the same jump found at several scales (:func:`_finalize_jump_candidates`).
+    """
+    if len(scale_windows) == 1:
+        windows, sfb = scale_windows[0]
+        return _run_just_jumps_array(
+            t_valid, y_valid, pw, windows, sfb, season, omega, alpha, mag_th, dir_th, jump_th,
+            jump_alpha, **kw,
+        )
+    tested_all: list[tuple[int, int, float, float, float, float, float, WindowCandidate]] = []
+    cands_all: list[WindowCandidate] = []
+    fallbacks = 0
+    for windows, sfb in scale_windows:
+        tested, cands, fb = _run_just_jumps_array(
+            t_valid, y_valid, pw, windows, sfb, season, omega, alpha, mag_th, dir_th, jump_th,
+            jump_alpha, finalize=False, **kw,
+        )
+        tested_all.extend(tested)
+        cands_all.extend(cands)
+        fallbacks += fb
+    calib_kw = kw.get("jump_calibration")
+    calib = calib_kw if calib_kw is not None else (
+        "bonferroni" if kw.get("bonferroni_window") else "none"
+    )
+    accepted = _finalize_jump_candidates(
+        tested_all,
+        t_valid,
+        y_valid,
+        pw,
+        None,
+        calib=calib,
+        mag_th=mag_th,
+        dir_th=dir_th,
+        jump_th=jump_th,
+        jump_alpha=jump_alpha,
+        step_alpha=kw.get("step_alpha"),
+        season=season,
+        omega=omega,
+        alpha=alpha,
+        parity_mode=bool(kw.get("parity_mode", False)),
+        robust=kw.get("robust", "none"),
+        huber_k=float(kw.get("huber_k", 1.345)),
+        season_significance=str(kw.get("season_significance", "per_frequency")),
+        serial=kw.get("serial", NO_SERIAL),
+        step_quadratic=bool(kw.get("step_quadratic", False)),
+    )
+    cands_all.sort(key=lambda c: c.valid_index)
+    return accepted, cands_all, fallbacks
 
 
 def just_jumps(
@@ -1577,6 +1806,7 @@ def just_jumps(
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
     serial_correlation: SerialMode = "ar1",
+    window_scales: Sequence[float] | None = None,
 ) -> JustJumpResult:
     """Detect abrupt jumps and trend slope shifts via JUST (Ghaderpour & Vujadinovic, 2020).
 
@@ -1627,8 +1857,14 @@ def just_jumps(
         filter; ``jump_pvalue`` is always computed and stored on every
         :class:`JumpEvent`.
     step_alpha:
-        Optional additional cutoff on ``step_pvalue`` (discontinuous jump vs.
-        best continuous hinge), isolating vertical steps from smooth bends.
+        Optional additional cutoff on ``step_pvalue``, isolating vertical steps from
+        smooth bends and curvature. ``step_pvalue`` tests the discontinuous two-piece model
+        against the best *continuous* hinge, both with a global quadratic term (so smooth
+        curvature in the window is not mistaken for a step, AUD-18), at the split chosen by
+        the jump scan, Holm-adjusted across candidate locations. ``jump_pvalue`` alone (the
+        default selection) also reports slope changes and smooth curvature as "jumps": a
+        9-year cycle of amplitude 3 sigma gave 37% false jumps (89% at 6 sigma). For abrupt
+        steps use ``step_alpha=0.05`` (``analyze_series`` does so by default).
     jump_calibration:
         Correction of ``jump_pvalue`` for the data-driven choice of split inside
         each window: ``"montecarlo"`` (default for non-robust fits; exact Monte
@@ -1672,6 +1908,14 @@ def just_jumps(
         sampling. ``"none"`` assumes independent errors (forced by ``parity_mode=True``,
         and used when a 2D ``weights`` covariance is supplied). Independent-error tests
         reported 34% / 95% family-wise false jumps at AR(1) ``rho = 0.3 / 0.6``.
+    window_scales:
+        Additional window sizes as multiples of the base window (``size``/``step`` or
+        ``window_duration``/``step_duration``), e.g. ``(1, 2, 4)`` (AUD-04). Longer windows
+        detect much smaller steps (single 3-cycle windows found a 2-sigma step in only ~6% of
+        240-point series). All scales form one Holm family. Default ``None`` = ``(1,)``
+        (single scale; forced by ``parity_mode``). Because longer windows fit a straight line
+        per piece, combine multiple scales with ``step_alpha`` (curvature-robust step test) to
+        avoid reporting smooth curvature as jumps.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -1703,6 +1947,11 @@ def just_jumps(
         raise ValueError(f"`n_mc` must be >= 99; got {n_mc}.")
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
     eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
+    eff_scales: tuple[float, ...] = (
+        (1.0,) if (parity_mode or window_scales is None) else tuple(float(x) for x in window_scales)
+    )
+    if any((not np.isfinite(x)) or x < 1.0 for x in eff_scales):
+        raise ValueError("`window_scales` must contain finite multiples >= 1 of the base window.")
     calib_warn: WarningItem | None = None
     if parity_mode:
         eff_calib: JumpCalibration = "none"
@@ -1834,6 +2083,7 @@ def just_jumps(
             series.times_numeric, window_duration, step_duration, min_obs
         )
         size_for_bucket = float(np.median([b - a for a, b in windows]))
+        _win_step = None
         if skipped > 0:
             warnings_list.append(
                 WarningItem(
@@ -1849,6 +2099,32 @@ def just_jumps(
     sw_warn = _short_seasonal_window_warning(series.times_numeric, windows, om_arr, season_l, eff_season_sig)
     if sw_warn is not None:
         warnings_list.append(sw_warn)
+
+    # Multi-scale windows (AUD-04): longer windows add power for small steps; all scales
+    # form one Holm family. Scales whose windows would exceed the record are skipped.
+    scale_windows: list[tuple[list[tuple[int, int]], float]] = [(windows, size_for_bucket)]
+    for sc in sorted({float(x) for x in eff_scales if float(x) > 1.0}):
+        if window_mode == "count":
+            sz = int(round(size_for_bucket * sc))
+            if sz > series.n_valid:
+                continue
+            st = max(1, int(round((_win_step if _win_step is not None else sz // 3) * sc)))
+            st = min(st, sz - 1)
+            w_s, _, _, _ = _build_count_windows(
+                series.n_valid, series.times_numeric, sz, st, parity_mode=False
+            )
+            scale_windows.append((w_s, float(sz)))
+        else:
+            span_v = float(series.times_numeric[-1] - series.times_numeric[0])
+            dur_base = float(window_duration) if window_duration is not None else min(3.0, span_v)
+            if dur_base * sc > span_v:
+                continue
+            step_base = float(step_duration) if step_duration is not None else dur_base / 3.0
+            w_s, _, _ = _build_duration_windows(
+                series.times_numeric, dur_base * sc, step_base * sc, min_obs
+            )
+            if w_s:
+                scale_windows.append((w_s, float(np.median([b - a for a, b in w_s]))))
 
     if cfg is not None and isinstance(cfg.random_state, np.random.Generator):
         rng: np.random.Generator = cfg.random_state
@@ -1890,12 +2166,11 @@ def just_jumps(
             )
     mi_counter = [0, 0]
 
-    accepted, all_cands_valid, win_fb = _run_just_jumps_array(
+    accepted, all_cands_valid, win_fb = _run_jump_scales(
         series.times_numeric,
         series.values,
         pw,
-        windows,
-        size_for_bucket,
+        scale_windows,
         season_l,
         om_arr,
         alpha,
@@ -1916,6 +2191,7 @@ def just_jumps(
         mi_spec=mi_spec,
         mi_counter=mi_counter,
         serial=serial_spec,
+        step_quadratic=not parity_mode,
     )
     if mi_counter[1] > 0:
         warnings_list.append(
@@ -1981,12 +2257,11 @@ def just_jumps(
                 if cfg.scope == "windowed"
                 else None
             )
-            acc_d, _, _ = _run_just_jumps_array(
+            acc_d, _, _ = _run_jump_scales(
                 series.times_numeric,
                 y_draw,
                 pw,
-                windows,
-                size_for_bucket,
+                scale_windows,
                 season_l,
                 om_arr,
                 alpha,
@@ -2005,6 +2280,7 @@ def just_jumps(
                 censor_cfg=draw_cfg,
                 rng=win_rngs[idx_d] if win_rngs is not None else None,
                 serial=serial_spec,
+                step_quadratic=not parity_mode,
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted:
@@ -2213,6 +2489,29 @@ def just_jumps(
         sampling_rate_ratio=series.sampling_rate_ratio,
         warnings=tuple(warnings_list),
     )
+
+    if not parity_mode and step_alpha is None:
+        slope_only = [e for e in events if not (np.isfinite(e.step_pvalue) and e.step_pvalue < 0.05)]
+        if slope_only:
+            diag = replace(
+                diag,
+                warnings=(
+                    *diag.warnings,
+                    WarningItem(
+                        code="NOT_A_VERTICAL_STEP",
+                        severity="caution",
+                        message=(
+                            f"{len(slope_only)} reported jump(s) are not significant vertical steps "
+                            "(step_pvalue >= 0.05): they may be slope changes or smooth curvature "
+                            "rather than abrupt level shifts."
+                        ),
+                        suggestion=(
+                            "For abrupt steps only use step_alpha=0.05 (optionally with "
+                            "window_scales=(1, 2, 4)); use stpd()/analyze_series() for bends."
+                        ),
+                    ),
+                ),
+            )
 
     return JustJumpResult(
         jumps=tuple(events),

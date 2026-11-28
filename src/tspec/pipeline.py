@@ -1682,6 +1682,11 @@ def analyze_series(
         j_kw["jump_alpha"] = 0.05
     if detect_turning_points and "step_alpha" not in j_kw:
         j_kw["step_alpha"] = float(j_kw["jump_alpha"]) if j_kw["jump_alpha"] is not None else 0.05
+    # - Multi-scale windows (AUD-04): longer windows give Stage 1 power for small steps;
+    #   all scales form one Holm family and the curvature-robust step test keeps smooth
+    #   trends from being reported as jumps.
+    if not j_kw.get("parity_mode", False):
+        j_kw.setdefault("window_scales", (1.0, 2.0, 4.0))
     if "mag_th" not in j_kw and "dir_th" not in j_kw and j_kw["jump_alpha"] is not None:
         j_kw["mag_th"] = 0.0
         j_kw["dir_th"] = 0.0
