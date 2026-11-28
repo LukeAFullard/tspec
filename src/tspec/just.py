@@ -40,6 +40,7 @@ from ._serial import (
     SerialMode,
     SerialSpec,
     correlated_normals,
+    heavy_tail_warning,
     resolve_serial_spec,
     serial_warning_message,
 )
@@ -2076,6 +2077,12 @@ def just_jumps(
     warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     if calib_warn is not None:
         warnings_list.append(calib_warn)
+    if eff_robust == "none" and not parity_mode:
+        ht_warn = heavy_tail_warning(
+            series.times_numeric, series.values, pw.vector if pw.kind == "vector" else None, harmonics=np.unique(np.round(om_arr[om_arr >= 1.0])) if season_l != "none" else None
+        )
+        if ht_warn is not None:
+            warnings_list.append(ht_warn)
     serial_spec = resolve_serial_spec(
         serial_correlation,
         parity_mode=parity_mode,

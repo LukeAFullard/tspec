@@ -39,6 +39,7 @@ from ._serial import (
     SerialSpec,
     correlated_normals,
     deflate_t_pvalue,
+    heavy_tail_warning,
     resolve_serial_spec,
     serial_warning_message,
 )
@@ -2503,6 +2504,12 @@ def detect_turning_points(
     # Residual serial correlation (AUD-02). The smooth global fit includes annual
     # harmonics when the record spans >= 2 time units so that residual seasonality in a
     # non-deseasonalized input is not mistaken for autocorrelation.
+    if eff_robust == "none" and not parity_mode:
+        ht_warn = heavy_tail_warning(
+            series.times_numeric, series.values, w_valid, harmonics=np.array([1.0, 2.0, 3.0, 4.0]) if span >= 2.0 else None
+        )
+        if ht_warn is not None:
+            warnings_list.append(ht_warn)
     serial_spec = resolve_serial_spec(
         serial_correlation,
         parity_mode=parity_mode,

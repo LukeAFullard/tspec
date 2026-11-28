@@ -84,3 +84,32 @@ def test_heavy_censoring_ols_mi_caution() -> None:
     )
     assert r.segments[0].estimator == "ols_mi"
     assert any(w.code == "HEAVY_CENSORING_OLS_MI" for w in r.diagnostics.warnings)
+
+
+def test_heavy_tails_warning() -> None:
+    """AUD-07: non-robust fits under heavy-tailed noise give many false jumps; warn."""
+    rng = np.random.default_rng(3)
+    t = np.sort(rng.uniform(0, 20, 240))
+    base = 0.05 * t + np.cos(2 * np.pi * t)
+    heavy = base + 0.5 * rng.standard_t(2, 240)
+    gauss = base + 0.5 * rng.normal(size=240)
+    codes = {w.code for w in tspec.just_jumps(t, heavy, season="ols").diagnostics.warnings}
+    assert "HEAVY_TAILS" in codes
+    assert "HEAVY_TAILS" not in {w.code for w in tspec.just_jumps(t, gauss, season="ols").diagnostics.warnings}
+    assert "HEAVY_TAILS" not in {
+        w.code for w in tspec.just_jumps(t, heavy, season="ols", robust="mm").diagnostics.warnings
+    }
+
+
+def test_allssa_coarse_user_grid_is_oversampled() -> None:
+    """A coarse user `omega` defines the band; Rayleigh mode still reaches off-grid peaks."""
+    tide = {"M2": 24 / 12.4206012, "S2": 2.0, "K1": 24 / 23.9344696, "O1": 24 / 25.8193417}
+    rng = np.random.default_rng(500)
+    t = np.arange(0, 60, 1 / 24)
+    amp = {"M2": 1.0, "S2": 0.35, "K1": 0.45, "O1": 0.3}
+    y = sum(amp[k] * np.cos(2 * np.pi * f * t + 0.3 * i) for i, (k, f) in enumerate(tide.items()))
+    y = y + rng.normal(0, 0.1, t.size)
+    keep = rng.random(t.size) > 0.3
+    f = tspec.allssa(t[keep], y[keep], omega=np.arange(0.5, 4.01, 0.5), decimal=3, n_mc=499).frequencies
+    for true in tide.values():
+        assert np.min(np.abs(f - true)) < 0.002

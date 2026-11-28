@@ -1,0 +1,54 @@
+{
+ "stpd_bootstrap_band_uniform_wFalse": {
+  "detected_exactly": 0.9466666666666667,
+  "cov": 0.9615140845070422,
+  "cov_near": 0.9337613939430385,
+  "sec": 37.0
+ },
+ "stpd_bootstrap_band_uneven_wFalse": {
+  "detected_exactly": 0.9333333333333333,
+  "cov": 0.956392857142857,
+  "cov_near": 0.9501443788091584,
+  "sec": 38.5
+ },
+ "stpd_bootstrap_band_hetero_wFalse": {
+  "detected_exactly": 0.16,
+  "cov": 0.975625,
+  "cov_near": 0.9342407489311514,
+  "sec": 9.4
+ },
+ "stpd_bootstrap_band_hetero_wTrue": {
+  "detected_exactly": 0.6133333333333333,
+  "cov": 0.9521195652173915,
+  "cov_near": 0.9486089640806029,
+  "sec": 26.5
+ },
+ "just_jumps_default_t3_none": {
+  "fwer": 0.16,
+  "ci": [
+   0.10994008412845499,
+   0.22703968204183714
+  ]
+ },
+ "just_jumps_default_t3_mm": {
+  "fwer": 0.006666666666666667,
+  "ci": [
+   0.0011778013350174366,
+   0.03679283977481815
+  ]
+ },
+ "just_jumps_default_t2_none": {
+  "fwer": 0.24,
+  "ci": [
+   0.17869313331595332,
+   0.31429139375544646
+  ]
+ },
+ "just_jumps_default_t2_mm": {
+  "fwer": 0.013333333333333334,
+  "ci": [
+   0.0036641291512270503,
+   0.04730690870036751
+  ]
+ }
+}

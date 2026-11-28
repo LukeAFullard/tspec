@@ -16,7 +16,9 @@ When `stpd()` or `analyze_series()` first *detect* turning points and then fit a
 | Any of the above with `band_method="conditional"` | about 83–95% (too narrow, most so near turning points) |
 
 - All of these intervals are **conditional on the number of turning points found**. If a real turning point is missed, the trend and its band are wrong near it, and coverage there can be very low.
-- Under strong unweighted heteroscedasticity (e.g. a 4× variance shift without passing inverse-variance `weights`), `stpd()` may reject smooth bends via `NDRI_RMSE`; supply `weights = 1 / sigma**2` whenever variance shifts are known.
+- The default bootstrap STPD band held 95–96% coverage after correct detection with uneven sampling density and with weighted heteroscedastic noise (independent audit, 2026-11); the `band_method="conditional"` band was 84–90% (69–80% near the turning point) in the same designs.
+- Under strong **unweighted** heteroscedasticity (a 4× noise-SD shift without inverse-variance `weights`), STPD recovered exactly the true turning point in only 16% of series (61% with `weights = 1 / sigma**2`). Supply weights whenever variance shifts are known.
+- On the README example, the `analyze_series` trend band covered about 89–92% (not 95%) because of the seasonal-adjustment and jump-offset steps that precede STPD; treat it as a ~90% band.
 - Treat a band edge that only just excludes a value of interest as weak evidence.
 
 ## 2. Turning points can be missed even in long records
@@ -57,11 +59,13 @@ STPD tests each sliding window separately. Its power depends on how much informa
 ## 5. Near-real-time monitoring trades speed for safety
 
 - The default `just_monitor()` control (Šidák + Pocock spending) is very conservative: about 0.2–0.6% false alarms at $\alpha = 0.05$. Real disturbances are therefore detected later than necessary.
-- `sequential_control="consecutive_k"` with a planned `horizon` is calibrated (~4–6% at $\alpha = 0.05$, including with `season="allssa"` via Gauss–Newton frequency-tangent covariance) and detects faster. Its calibration assumes Gaussian errors and future sampling similar to the history. Without a `horizon` it does **not** control the false-alarm rate.
+- `sequential_control="consecutive_k"` with a planned `horizon` is Monte Carlo calibrated and detects faster, but it runs slightly hot. In the independent 2026-11 audit, false alarms at $\alpha = 0.05$ were 7.3% (H = 24), 5.3% (H = 120) and 4.0% (irregular sampling), even after a more conservative calibration. The likely cause is that harmonics selected from the history slightly overfit it, which the simulation does not reproduce. Use `alpha=0.03` if a strict 5% bound matters. The calibration assumes Gaussian errors and future sampling similar to the history. Without a `horizon` it does **not** control the false-alarm rate.
 
 ## 6. Monte Carlo calibrations assume Gaussian errors
 
 The calibrated jump test, ALLSSA frequency selection, STPD turning-point test, and `consecutive_k` monitoring simulate their null distributions under Gaussian errors. With heavy-tailed errors or outliers, use the robust options (`robust="huber"` or `"mm"`). These switch to conservative Bonferroni-type corrections in JUST/STPD (note that `lssa`/`allssa` Monte Carlo draws remain Gaussian-null). Note that `robust="mm"` and `mode="l1"` are **not** high-breakdown estimators: they can break down below 35% contamination.
+
+- **Heavy tails.** With non-robust fits (`robust="none"`, the default), Student-t(3) / t(2) noise gave 16% / 24% family-wise false jumps at a nominal 5% in `just_jumps`; `robust="mm"` gave 0.7% for t(3). `just_jumps` and `stpd` emit `HEAVY_TAILS` when more than 0.5% of residuals lie beyond 4.5 robust SDs. In simulation the warning fired for 64% of t(3) series, 96% of t(2) series, and never on Gaussian noise. Switch to `robust="mm"` when you see it.
 
 ## 7. Other assumptions & runtime
 

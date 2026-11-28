@@ -1290,7 +1290,8 @@ def allssa(
     search:
         Frequency search (audit finding AUD-05). ``"rayleigh"`` (default): the default
         ``omega`` is an oversampled grid from ``1.5/T`` to the mean-rate pseudo-Nyquist in
-        steps of ``1/(4T)`` (``T`` = record span); each peak is refined within ``+/- 1/T``
+        steps of ``1/(4T)`` (``T`` = record span), and a coarser user ``omega`` is treated as
+        the band of interest and oversampled to ``1/(4T)``; each peak is refined within ``+/- 1/T``
         and only a previously selected frequency within ``1/T`` is re-fitted, so several
         components may lie within one cycle per unit (e.g. tidal K1/O1, M2/S2). ``"integer"``
         (published algorithm, forced by ``parity_mode=True``): integer default grid, refinement
@@ -1341,6 +1342,16 @@ def allssa(
         if not np.all(np.isfinite(om_raw)) or np.any(om_raw <= 0.0):
             raise ValueError("`omega` must contain finite, strictly positive frequencies.")
         om_arr = np.sort(om_raw)
+        if eff_search == "rayleigh" and om_arr.size > 1:
+            # A user grid coarser than half the Rayleigh resolution defines the band of
+            # interest; oversample it so refinement within +/- 1/T can reach every peak.
+            span_u = float(t0[-1] - t0[0]) if t0[-1] > t0[0] else 1.0
+            d_om = float(np.median(np.diff(np.unique(om_arr))))
+            if d_om > 0.5 / span_u:
+                lo_u = max(float(om_arr[0]) - 0.5 * d_om, 0.25 / span_u)
+                hi_u = float(om_arr[-1]) + 0.5 * d_om
+                step_u = 1.0 / (4.0 * span_u)
+                om_arr = np.arange(lo_u, hi_u + 0.5 * step_u, step_u, dtype=np.float64)
 
     if eff_search == "rayleigh":
         iter_cap = max_iter if max_iter is not None else 50

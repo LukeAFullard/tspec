@@ -22,6 +22,7 @@ from typing import Literal
 
 import numpy as np
 
+from ._diagnostics import WarningItem
 from ._types import FloatArray
 
 SerialMode = Literal["ar1", "ou", "none"]
@@ -300,3 +301,55 @@ def deflate_t_pvalue(p: float, df: float, kappa2: float) -> float:
 
     t_obs = float(t_dist.isf(0.5 * min(p, 1.0), df))
     return float(2.0 * t_dist.sf(t_obs / np.sqrt(kappa2), df))
+
+
+def heavy_tail_warning(
+    t: FloatArray,
+    y: FloatArray,
+    w: FloatArray | None,
+    *,
+    harmonics: FloatArray | None = None,
+) -> WarningItem | None:
+    """Warn when residuals of a smooth global fit are clearly heavier-tailed than Gaussian.
+
+    Audit finding AUD-07: with non-robust fits, Student-t(3) / t(2) noise gave 16% / 24%
+    family-wise false jumps at a nominal 5% (``robust="mm"``: 0.7% for t(3)). Flags the
+    series when more than 0.5% of the (whitened) residuals lie beyond 4.5 robust standard
+    deviations (Gaussian expectation ~7e-6) and at least two such points exist.
+    """
+    t = np.asarray(t, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    n = int(t.size)
+    if n < 30:
+        return None
+    span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+    u = (t - t[0]) / span
+    cols = [np.ones(n), u, u * u] + [np.maximum(u - c, 0.0) for c in np.linspace(0, 1, 6)[1:-1]]
+    if harmonics is not None:
+        for f in np.asarray(harmonics, dtype=np.float64).ravel():
+            cols += [np.cos(2.0 * np.pi * f * t), np.sin(2.0 * np.pi * f * t)]
+    X = np.column_stack(cols)
+    if X.shape[1] >= n // 2:
+        X = X[:, :3]
+    sw = np.sqrt(w) if w is not None else np.ones(n)
+    coef, *_ = np.linalg.lstsq(X * sw[:, None], y * sw, rcond=None)
+    r = (y - X @ coef) * sw
+    # Differences remove jumps and slow misfit; MAD of differences / sqrt(2) estimates sigma.
+    d = np.diff(r)
+    scale = 1.4826 * float(np.median(np.abs(d - np.median(d)))) / np.sqrt(2.0)
+    if not np.isfinite(scale) or scale <= 0.0:
+        return None
+    z = np.abs(r - np.median(r)) / scale
+    k = int(np.sum(z > 4.5))
+    if k >= 2 and k > 0.005 * n:
+        return WarningItem(
+            code="HEAVY_TAILS",
+            severity="warning",
+            message=(
+                f"{k} of {n} residuals ({k / n:.1%}) lie beyond 4.5 robust standard deviations: "
+                "the errors are much heavier-tailed than Gaussian, and the non-robust tests can "
+                "report false jumps / turning points."
+            ),
+            suggestion="Use robust='mm' (or 'huber').",
+        )
+    return None
