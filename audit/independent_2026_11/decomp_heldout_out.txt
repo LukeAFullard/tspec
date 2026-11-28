@@ -1,0 +1,5 @@
+ 1 R1_T1S1_N1       n=240 ols tr 0.058 se 0.141 cov 0.954 | stl_lin tr 0.077 se 0.150 | hl tr 0.061 se 0.054 (6s)
+ 2 R1_T1S2_N1       n=240 ols tr 0.063 se 0.140 cov 0.974 | stl_lin tr 0.081 se 0.148 | hl tr 0.069 se 0.198 (7s)
+ 3 R1_T1S3_N1       n=240 ols tr 0.060 se 0.143 cov 0.960 | stl_lin tr 0.076 se 0.153 | hl tr 0.061 se 0.058 (7s)
+ 4 R2_T1S1_N1       n=164 ols tr 0.080 se 0.179 cov 0.956 | stl_lin tr 0.113 se 0.157 | hl tr 0.078 se 0.064 (6s)
+ 5 R2_T1S2_N1       n=164 ols tr 0.081 se 0.180 cov 0.983 | stl_lin tr 0.120 se 0.165 | hl tr 0.087 se 0.204 (7s)
