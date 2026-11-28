@@ -33,7 +33,9 @@ def jj_job(a):
                 extra_jumps=sum(abs(x - 10.3) >= 0.5 for x in J))
 
 out = {"NREP": NREP}
+ONLY = os.environ.get("P15_ONLY")
 def run(name, fn, args):
+    if ONLY and not any(o in name for o in ONLY.split(",")): return
     t1 = time.time(); res = pmap(fn, args)
     d = {k: float(np.mean([r[k] for r in res])) for k in res[0]}
     d["wall"] = round(time.time() - t1, 1); out[name] = d; print(name, {k: round(v, 3) for k, v in d.items()}, flush=True)
@@ -46,8 +48,8 @@ for lab, kw in [("new", {}), ("old_single_scale", OLD)]:
         run(f"pipe_step{jump}_line|{lab}", pipe_job, [(s, "line", jump, 0.0, kw) for s in range(NREP)])
     run(f"pipe_step1.0_curved|{lab}", pipe_job, [(s, "curved", 1.0, 0.0, kw) for s in range(NREP)])
     run(f"pipe_bend0.6_line|{lab}", pipe_job, [(s, "line", 0.0, 0.6, kw) for s in range(NREP)])
-for lab, kw in [("default", {}), ("step_ms", dict(step_alpha=0.05, window_scales=(1, 2, 4)))]:
+for lab, kw in [("default_step", {}), ("level_or_slope", dict(jump_definition="level_or_slope"))]:
     for kind in ["line", "curved"]:
         run(f"jj_null_{kind}|{lab}", jj_job, [(s, kind, 0.0, kw) for s in range(NREP)])
     run(f"jj_ghosts_step3.35|{lab}", jj_job, [(s, "line", 3.35, kw) for s in range(NREP)])
-json.dump(out, open("p15_results.json", "w"), indent=1)
+json.dump(out, open(os.environ.get("P15_OUT", "p15_results.json"), "w"), indent=1)

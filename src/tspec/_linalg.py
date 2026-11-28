@@ -395,6 +395,17 @@ def solve_weighted_ols(
     )
 
 
+# Target size (float64 elements) of each dense (n x chunk) work matrix in the vectorized LSS
+# kernels: about 8 MB, so peak memory stays bounded for long records (AUD-12: with a fixed
+# 512-frequency chunk, n = 32 000 already needed ~440 MB and n = 1e6 would need ~14 GB).
+_CHUNK_ELEMENTS = 1_000_000
+
+
+def _adaptive_chunk(n_rows: int, requested: int) -> int:
+    """Frequency-chunk size bounding each dense work matrix to ``_CHUNK_ELEMENTS``."""
+    return int(max(8, min(int(requested), _CHUNK_ELEMENTS // max(1, n_rows))))
+
+
 def compute_lss_vectorized(
     t0: FloatArray,
     omega: FloatArray,
@@ -426,6 +437,7 @@ def compute_lss_vectorized(
     norm_res = ols.norm_res
     two_pi_t = (2.0 * np.pi) * t0
 
+    chunk_size = _adaptive_chunk(int(t0.size), chunk_size)
     for start in range(0, k_total, chunk_size):
         stop = min(start + chunk_size, k_total)
         om_chunk = omega[start:stop]
@@ -560,6 +572,7 @@ def max_lss_batch(
     best = np.zeros(int(e.shape[1]), dtype=np.float64)
     known = known_freqs if known_freqs is not None else np.empty(0, dtype=np.float64)
     two_pi_t = (2.0 * np.pi) * t0
+    chunk_size = _adaptive_chunk(int(t0.size) + int(e.shape[1]), chunk_size)
     for start in range(0, int(omega.size), chunk_size):
         om = omega[start : start + chunk_size]
         if known.size > 0:

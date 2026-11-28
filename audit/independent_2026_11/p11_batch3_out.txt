@@ -1,0 +1,2 @@
+count {'jok': 1.0, 'pok': 0.92, 'extra': 0.13, 'gap_tp': 0.03, 'cov': 0.8648732427307385, 'exact': 0.88, 'cov_when_exact': 0.9271244815361626}
+duration {'jok': 1.0, 'pok': 0.9, 'extra': 0.15, 'gap_tp': 0.02, 'cov': 0.8487867588965818, 'exact': 0.86, 'cov_when_exact': 0.932994195541001}

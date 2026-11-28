@@ -22,3 +22,5 @@ All scripts are standalone and run from this directory with `OMP_NUM_THREADS=1 M
 | `repro_confirmed_bugs.py` (re-run) | `repro_post_batch1_out.txt` | reproducers after batch 1 |
 | `p14_batch2_serial.py [NREP]` | `p14_final_ar1_out.txt` (final), `p14_none_out.txt` (independent-error comparison), `p14_pre_jumpfix_out.txt`, `p14_margin0_partial_out.txt` (earlier variants) | batch-2 validation of serial-correlation calibration (AUD-02) |
 | `p11_readme_hero.py` (re-run) | `p11_post_batch2_results.json` | README example after batch 2 |
+| `p15_batch3_scales.py [NREP]` | `p15_out.txt` | batch-3 validation: multi-scale JUST, curvature-robust step test, ghosts (AUD-04/17/18) |
+| `p10_pipeline_step.py`, `p11_readme_hero.py` (re-runs) | `p10_batch3_results.json`, `p11_batch3_results.json` | pipeline step-vs-TP and README example after batch 3 |

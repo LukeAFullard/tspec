@@ -598,6 +598,164 @@ def _allssa_core(
     )
 
 
+def _rayleigh_allssa_omega(t0: FloatArray) -> FloatArray:
+    """Default oversampled ALLSSA search grid (audit finding AUD-05).
+
+    From ``1.5 / T`` (at least 1.5 cycles in the record) to the mean-rate pseudo-Nyquist
+    ``rate / 2`` in steps of ``1 / (4 T)``, i.e. four points per Rayleigh resolution, so
+    non-integer frequencies and cycles slower than 0.5 per time unit are searched.
+    """
+    n = int(t0.size)
+    span = float(t0[-1] - t0[0])
+    if span <= 0.0:
+        raise InsufficientDataError("Time span must be strictly positive.")
+    f_lo = 1.5 / span
+    f_hi = max(0.5 * (n - 1) / span, 2.0 * f_lo)
+    step = 1.0 / (4.0 * span)
+    return np.arange(f_lo, f_hi + 0.5 * step, step, dtype=np.float64)
+
+
+def _rayleigh_allssa_core(
+    t0: FloatArray,
+    y: FloatArray,
+    pw: PreparedWeights,
+    omega: FloatArray,
+    jump_indices: IntArray,
+    alpha: float,
+    trend: str,
+    shared_slope: bool,
+    decimal: int,
+    max_iter: int,
+    *,
+    robust: RobustMethod = "none",
+    huber_k: float = 1.345,
+    significance: str = "montecarlo",
+    n_mc: int = 999,
+) -> _AllssaCoreOutput:
+    """ALLSSA with Rayleigh-band refinement (default search of :func:`allssa`, AUD-05).
+
+    Differences from the published integer-band algorithm (:func:`_allssa_core`):
+
+    * each new peak of the coarse spectrum is refined on ``peak +/- 1/T`` (``T`` = span)
+      at resolution ``min(10**-decimal, 1/(10 T))`` rather than on the unit band
+      ``[round(peak) - 0.5, round(peak) + 0.5]``;
+    * only a previously selected frequency within ``1/T`` of the new peak is temporarily
+      removed and re-refined, so several components may coexist within one cycle per unit
+      (e.g. 1.00 and 1.37 cy/yr, or tidal K1/O1 and M2/S2), which the published rule cannot
+      represent;
+    * the family-wise acceptance (``significance``) refers to a dense grid of resolution
+      ``1/(8 T)`` covering the whole searched band.
+    """
+    span = float(t0[-1] - t0[0]) if t0.size > 1 else 1.0
+    span = span if span > 0.0 else 1.0
+    res_step = min(10.0 ** (-decimal), 1.0 / (10.0 * span))
+    rayleigh = 1.0 / span
+    f_floor = max(res_step, 0.5 * float(np.min(omega)))
+    n = int(t0.size)
+    base_nc = _count_constituents(trend, int(jump_indices.size), shared_slope, 0)
+
+    if significance != "per_frequency":
+        g_lo, g_hi = float(np.min(omega)), float(np.max(omega))
+        dense_step = 1.0 / (8.0 * span)
+        search_grid = np.arange(max(f_floor, g_lo - rayleigh), g_hi + rayleigh + 0.5 * dense_step, dense_step)
+        k_eff = float(min(search_grid.size, max(1, int(np.ceil(3.0 * span * (search_grid[-1] - search_grid[0]))))))
+        alpha_sidak = float(1.0 - (1.0 - alpha) ** (1.0 / k_eff))
+
+    def _fit(freqs: list[float], om: FloatArray, cov: bool = False) -> _LssaCoreOutput:
+        return _lssa_core(
+            t0, y, pw, om, jump_indices, alpha, trend, shared_slope,
+            np.asarray(sorted(freqs), dtype=np.float64), compute_cov=cov, robust=robust, huber_k=huber_k,
+        )
+
+    selected: list[float] = []
+    visited: set[tuple[float, ...]] = set()
+    cond_max = 1.0
+    any_rank_def = False
+    converged = False
+    n_iter = 0
+    res = _fit(selected, omega)
+    cond_max = max(cond_max, res.condition_number)
+    for it in range(1, max_iter + 1):
+        n_iter = it
+        prev = list(selected)
+        visited.add(tuple(prev))
+        if res.spectrum.size == 0:
+            converged = True
+            break
+        peak = float(omega[int(np.argmax(res.spectrum))])
+        near = [f for f in selected if abs(f - peak) < rayleigh]
+        if near:
+            selected.remove(min(near, key=lambda f: abs(f - peak)))
+        nc_fine = base_nc + 2 * len(selected)
+        if n < nc_fine + 5:
+            selected = prev
+            converged = True
+            break
+        fine = np.arange(max(f_floor, peak - rayleigh), peak + rayleigh + 0.5 * res_step, res_step)
+        # keep refinement away from frequencies already in the model
+        if selected:
+            fine = fine[np.min(np.abs(fine[:, None] - np.asarray(selected)[None, :]), axis=1) > 0.5 * rayleigh]
+        if fine.size == 0:
+            selected = prev
+            converged = True
+            break
+        res_fine = _fit(selected, fine)
+        cond_max = max(cond_max, res_fine.condition_number)
+        any_rank_def = any_rank_def or res_fine.rank_deficient
+        k = int(np.argmax(res_fine.spectrum))
+        s_peak = float(res_fine.spectrum[k])
+        accept = s_peak > res_fine.critical_value
+        if accept and significance == "sidak":
+            accept = s_peak > critical_value_lss(n, nc_fine, alpha_sidak)
+        elif accept and significance == "montecarlo":
+            sel_arr = np.asarray(sorted(selected), dtype=np.float64)
+            D_cur, _ = build_design_matrix(t0, trend, jump_indices, shared_slope, sel_arr)
+            draws = max_lss_null_draws(
+                t0, search_grid, orthonormal_design_basis(D_cur, pw), pw,
+                known_freqs=sel_arr, freq_tol=0.5 * rayleigh, n_mc=n_mc,
+                seed=(20261129, it, len(selected)),
+            )
+            accept = (1.0 + float(np.sum(draws >= s_peak))) / (n_mc + 1.0) <= alpha
+        if accept:
+            f_new = float(fine[k])
+            if any(abs(f_new - fp) < 0.5 * res_step for fp in prev):
+                selected = prev
+            else:
+                selected.append(f_new)
+                selected.sort()
+        if selected == prev or tuple(selected) in visited:
+            converged = selected == prev
+            if selected != prev:
+                converged = True
+            break
+        res = _fit(selected, omega)
+        cond_max = max(cond_max, res.condition_number)
+        any_rank_def = any_rank_def or res.rank_deficient
+
+    final = _fit(selected, np.empty(0, dtype=np.float64), cov=True)
+    freq_arr = np.asarray(sorted(selected), dtype=np.float64)
+    n_freq = int(freq_arr.size)
+    if n_freq > 0:
+        n_tr = final.coeff.size - 2 * n_freq
+        tr_coeff = final.coeff[:n_tr]
+        cs_coeff = final.coeff[n_tr:].reshape(n_freq, 2)
+    else:
+        tr_coeff = final.coeff
+        cs_coeff = np.empty((0, 2), dtype=np.float64)
+    return _AllssaCoreOutput(
+        trend_coeff=tr_coeff,
+        cos_sin_coeffs=cs_coeff,
+        frequencies=freq_arr,
+        residuals=final.residuals,
+        norm_res=final.norm_res,
+        cov=final.cov,
+        n_iter=n_iter,
+        converged=converged,
+        condition_number_max=max(cond_max, final.condition_number),
+        rank_deficient=any_rank_def or final.rank_deficient,
+    )
+
+
 @dataclass(frozen=True)
 class LssaResult(BaseResult):
     """Result object returned by :func:`lssa`.
@@ -1095,6 +1253,7 @@ def allssa(
     parity_mode: bool = False,
     significance: SignificanceMethod | None = None,
     n_mc: int = 999,
+    search: Literal["rayleigh", "integer"] | None = None,
 ) -> AllssaResult:
     """Antileakage Least-Squares Spectral Analysis (ALLSSA).
 
@@ -1128,6 +1287,16 @@ def allssa(
         20% of pure-noise series at ``alpha=0.01``.
     n_mc:
         Monte Carlo draws for ``significance="montecarlo"`` (default ``999``).
+    search:
+        Frequency search (audit finding AUD-05). ``"rayleigh"`` (default): the default
+        ``omega`` is an oversampled grid from ``1.5/T`` to the mean-rate pseudo-Nyquist in
+        steps of ``1/(4T)`` (``T`` = record span); each peak is refined within ``+/- 1/T``
+        and only a previously selected frequency within ``1/T`` is re-fitted, so several
+        components may lie within one cycle per unit (e.g. tidal K1/O1, M2/S2). ``"integer"``
+        (published algorithm, forced by ``parity_mode=True``): integer default grid, refinement
+        within the unit band around the rounded peak, at most one frequency per band
+        ``[k - 0.5, k + 0.5)``; it missed a 2.37 cy/yr component 63% of the time and a cycle
+        slower than 0.5 per unit always.
     """
     trend_l = _validate_spectral_common(trend, alpha)
     robust_m = validate_robust_args(robust, huber_k)
@@ -1160,33 +1329,56 @@ def allssa(
     else:
         j_valid = np.empty(0, dtype=np.intp)
 
+    if search is not None and search not in ("rayleigh", "integer"):
+        raise ValueError(f"Unknown `search` {search!r}. Options: 'rayleigh', 'integer'.")
+    eff_search = "integer" if parity_mode else (search or "rayleigh")
+
     t0 = series.times_numeric - series.times_numeric[0]
     if omega is None or len(omega) == 0:
-        om_arr = _default_allssa_omega(t0)
+        om_arr = _rayleigh_allssa_omega(t0) if eff_search == "rayleigh" else _default_allssa_omega(t0)
     else:
         om_raw = np.asarray(omega, dtype=np.float64).ravel()
         if not np.all(np.isfinite(om_raw)) or np.any(om_raw <= 0.0):
             raise ValueError("`omega` must contain finite, strictly positive frequencies.")
         om_arr = np.sort(om_raw)
 
-    iter_cap = max_iter if max_iter is not None else max(25, 2 * int(om_arr.size))
-    core = _allssa_core(
-        t0,
-        series.values,
-        pw,
-        om_arr,
-        j_valid,
-        alpha,
-        trend_l,
-        shared_slope,
-        decimal_int,
-        iter_cap,
-        parity_mode=parity_mode,
-        robust=robust_m,
-        huber_k=huber_k,
-        significance=eff_sig,
-        n_mc=int(n_mc),
-    )
+    if eff_search == "rayleigh":
+        iter_cap = max_iter if max_iter is not None else 50
+        core = _rayleigh_allssa_core(
+            t0,
+            series.values,
+            pw,
+            om_arr,
+            j_valid,
+            alpha,
+            trend_l,
+            shared_slope,
+            decimal_int,
+            iter_cap,
+            robust=robust_m,
+            huber_k=huber_k,
+            significance=eff_sig,
+            n_mc=int(n_mc),
+        )
+    else:
+        iter_cap = max_iter if max_iter is not None else max(25, 2 * int(om_arr.size))
+        core = _allssa_core(
+            t0,
+            series.values,
+            pw,
+            om_arr,
+            j_valid,
+            alpha,
+            trend_l,
+            shared_slope,
+            decimal_int,
+            iter_cap,
+            parity_mode=parity_mode,
+            robust=robust_m,
+            huber_k=huber_k,
+            significance=eff_sig,
+            n_mc=int(n_mc),
+        )
     amps, phases = _amplitudes_and_phases(core.cos_sin_coeffs)
 
     rn_resid = whiten_vector(core.residuals, pw) if pw.kind == "matrix" else core.residuals

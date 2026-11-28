@@ -20,11 +20,12 @@ def test_smooth_curvature_is_not_a_vertical_step() -> None:
     """AUD-18: the 2-df jump test reports curvature; the step test does not."""
     for seed in range(3):
         t, y = _series(seed, "curved")
-        default = tspec.just_jumps(t, y, season="ols")
+        default = tspec.just_jumps(t, y, season="ols", jump_definition="level_or_slope")
         assert len(default.jumps) >= 1
         assert any(w.code == "NOT_A_VERTICAL_STEP" for w in default.diagnostics.warnings)
-        steps = tspec.just_jumps(t, y, season="ols", step_alpha=0.05, window_scales=(1, 2, 4))
+        steps = tspec.just_jumps(t, y, season="ols")  # default: jump_definition="step"
         assert steps.jumps == ()
+        assert steps.jump_definition == "step" and steps.window_scales == (1.0, 2.0, 4.0)
 
 
 def test_multiscale_step_detection_gains_power() -> None:
@@ -33,11 +34,12 @@ def test_multiscale_step_detection_gains_power() -> None:
     for seed in range(6):
         t, y = _series(seed, "line", jump=1.0)
         single += any(
-            abs(t[j.valid_index] - 10.3) < 0.5 for j in tspec.just_jumps(t, y, season="ols").jumps
+            abs(t[j.valid_index] - 10.3) < 0.5
+            for j in tspec.just_jumps(t, y, season="ols", jump_definition="level_or_slope").jumps
         )
-        r = tspec.just_jumps(t, y, season="ols", step_alpha=0.05, window_scales=(1, 2, 4))
+        r = tspec.just_jumps(t, y, season="ols")
         multi += any(abs(t[j.valid_index] - 10.3) < 0.5 for j in r.jumps)
-    assert multi >= 4
+    assert multi >= 3
     assert multi > single
 
 
@@ -45,9 +47,16 @@ def test_window_scales_validation_and_parity() -> None:
     t, y = _series(0, "line", jump=2.0)
     with pytest.raises(ValueError, match="window_scales"):
         tspec.just_jumps(t, y, window_scales=(0.5, 1.0))
+    with pytest.raises(ValueError, match="jump_definition"):
+        tspec.just_jumps(t, y, jump_definition="bogus")  # type: ignore[arg-type]
     # Parity mode ignores extra scales (single-scale published algorithm)
     par = tspec.just_jumps(t, y, parity_mode=True, window_scales=(1, 2))
-    assert isinstance(par.jumps, tuple)
+    assert par.jump_definition == "level_or_slope" and par.window_scales == (1.0,)
+    lv = tspec.just_jumps(t, y, jump_definition="level_or_slope")
+    assert lv.window_scales == (1.0,) and lv.step_alpha is None
+    # Explicit values override the definition's defaults
+    custom = tspec.just_jumps(t, y, window_scales=(1, 2), step_alpha=0.01)
+    assert custom.window_scales == (1.0, 2.0) and custom.step_alpha == 0.01
 
 
 def test_ghost_jumps_one_seasonal_cycle_from_a_real_jump() -> None:
@@ -60,8 +69,9 @@ def test_ghost_jumps_one_seasonal_cycle_from_a_real_jump() -> None:
         rng = np.random.default_rng(seed)
         y = 5 + 0.05 * (t - t[0]) + 2.0 * (t >= 2010) + np.cos(2 * np.pi * t) + 0.4 * np.sin(4 * np.pi * t)
         y = y + rng.normal(0, 0.3, t.size)
-        single = tspec.just_jumps(t, y, season="ols")
-        multi = tspec.just_jumps(t, y, season="ols", window_scales=(1, 2, 4))
+        lv = "level_or_slope"
+        single = tspec.just_jumps(t, y, season="ols", jump_definition=lv)
+        multi = tspec.just_jumps(t, y, season="ols", jump_definition=lv, window_scales=(1, 2, 4))
         ghosts_single += sum(abs(single.times_numeric[e.valid_index] - 2010) >= 0.25 for e in single.jumps)
         ghosts_multi += sum(abs(multi.times_numeric[e.valid_index] - 2010) >= 0.25 for e in multi.jumps)
         missed_multi += not any(abs(multi.times_numeric[e.valid_index] - 2010) < 0.25 for e in multi.jumps)

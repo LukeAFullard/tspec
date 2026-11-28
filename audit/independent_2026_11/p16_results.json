@@ -1,0 +1,62 @@
+{
+ "two_close_1.0_1.37|rayleigh": {
+  "both": 1.0,
+  "nf": 2.025,
+  "spurious": 0.025,
+  "sec_per_call": 0.25
+ },
+ "two_close_1.0_1.37|integer": {
+  "both": 0.0,
+  "nf": 1.0,
+  "spurious": 0.0,
+  "sec_per_call": 0.16
+ },
+ "solar_11.2yr_default_grid|rayleigh": {
+  "found_11": 1.0,
+  "found_1": 1.0,
+  "spurious": 0.0,
+  "sec_per_call": 1.26
+ },
+ "solar_11.2yr_default_grid|integer": {
+  "found_11": 0.0,
+  "found_1": 1.0,
+  "spurious": 0.0,
+  "sec_per_call": 0.05
+ },
+ "noninteger_2.37|rayleigh": {
+  "found_237": 1.0,
+  "spurious": 0.025,
+  "sec_per_call": 0.2
+ },
+ "noninteger_2.37|integer": {
+  "found_237": 0.375,
+  "spurious": 0.0,
+  "sec_per_call": 0.08
+ },
+ "tides_M2S2K1O1|rayleigh": {
+  "n_found": 4.0,
+  "spurious": 0.0,
+  "sec_per_call": 2.29
+ },
+ "tides_M2S2K1O1|integer": {
+  "n_found": 2.0,
+  "spurious": 0.0,
+  "sec_per_call": 2.39
+ },
+ "null_alpha0.01|rayleigh": {
+  "any": 0.0,
+  "any_ci": [
+   0.0,
+   0.0458181295355271
+  ],
+  "sec_per_call": 0.02
+ },
+ "null_alpha0.01|integer": {
+  "any": 0.0,
+  "any_ci": [
+   0.0,
+   0.0458181295355271
+  ],
+  "sec_per_call": 0.01
+ }
+}

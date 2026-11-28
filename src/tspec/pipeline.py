@@ -912,6 +912,22 @@ def _build_segment_summaries(
                         t_s, prov, seasonal_part, s0, s1, D_s, s_t, pw_s, alpha,
                         n_imputations, mi_seed + 7919 * k,
                     )
+                    cen_frac_k = float(np.mean(prov.status_codes[s0:s1] != 0))
+                    if mi is not None and cen_frac_k > 0.4 and mi_warnings is not None:
+                        # AUD-15: Rubin-pooled OLS CIs covered ~90.5-91% at 50% censoring in
+                        # simulation, Akritas-Theil-Sen ~95%.
+                        mi_warnings.append(
+                            WarningItem(
+                                code="HEAVY_CENSORING_OLS_MI",
+                                severity="caution",
+                                message=(
+                                    f"Segment {k} is {cen_frac_k:.0%} censored; multiple-imputation OLS "
+                                    "slope CIs were slightly too narrow (~91% at nominal 95%) at this "
+                                    "level of censoring in simulation."
+                                ),
+                                suggestion="Use slope_estimator='sen' (Akritas-Theil-Sen for censored data).",
+                            )
+                        )
                     if mi is not None:
                         segments.append(_make_seg(s0, s1, "ols_mi", *mi))
                         continue

@@ -41,7 +41,7 @@ What blocks unqualified publication use (details in §2):
 
 ---
 
-## 0b. Remediation status (batches 1–2, same branch)
+## 0b. Remediation status (batches 1–4, same branch)
 
 | ID | Status | Change | Verified effect |
 |---|---|---|---|
@@ -51,7 +51,21 @@ What blocks unqualified publication use (details in §2):
 | AUD-09 | **Fixed** | `just.py`: zero-variance guard relative to the window's total sum of squares | Perfect line: 1 spurious jump → 0; 2 segments → 1; noiseless steps (also at 1e-13 scale) still detected |
 | AUD-10 | **Fixed** | `monitor.py`: seasonal history needs ~one cycle and ≥ model size + 5 points for numeric time too | `start=5` → `InsufficientDataError` |
 | AUD-02 | **Fixed** (batch 2) for `just_jumps`, `stpd`, `analyze_series`; open for `just_decompose`, `just_monitor`, `lssa`/`allssa` | New `_serial.py` and `serial_correlation="ar1"` (default). Jump-robust trimmed difference estimator of ρ, pre-test plus one-SE margin; AR(1)/OU Monte Carlo nulls; F/κ² for analytical references; exact sandwich VIF for OLS segment slopes and the trend band | False jumps at nominal 5%: 34% / 95% / 100% → **4.3% / 4.0% / 7.0%** (ρ = 0.3 / 0.6 / 0.8). STPD false TPs at nominal 1%: 28% / 88% → **0.7% / 3.0%** (ρ = 0.5 / 0.8). OLS slope Type-I at 5%: 22–50% → **1.3–8.7%**. White-noise power: 4σ jump 51% → 46%, bend 43% → 38% |
-| AUD-04, 05, 07, 08, 11–17 | Open | — (next: JUST power, ALLSSA grid, ghost jumps, docs) | — |
+| AUD-04 | **Fixed in `analyze_series`** (batch 3); opt-in for standalone `just_jumps` | `window_scales` (multiples of the base window, one Holm family); `analyze_series` default `(1, 2, 4)` with `step_alpha=0.05` | Pipeline: 2σ step found 0% → **54.5%**, 4σ 9.5% → **100%**; false jumps 0–2% (line, curved, AR(1)); runtime ~3× |
+| AUD-17 | **Mitigated** (batch 3) | Root cause: in a 3-cycle window a step one seasonal period from the split is nearly indistinguishable from ramp + seasonal sawtooth. Conditional re-test against stronger accepted jumps (`known_jumps`); multi-scale windows resolve the alias | Ghosts in the S2 design: 7 → 1 per 60 series with `window_scales=(1, 2, 4)`; single-scale aliasing disclosed |
+| AUD-18 *(new, batch 3)* | **Fixed for the step test**; standalone default disclosed | Found while testing AUD-04: the 2-df JUST jump test reports smooth curvature as "jumps" (9-yr cycle, amplitude 3σ / 6σ: **37% / 89%** false jumps at default settings, ~100% in longer windows). `step_pvalue` now uses a quadratic term and fixed harmonics in both models (ALLSSA-selected harmonics had biased it to 11%); new `NOT_A_VERTICAL_STEP` warning | Step test under curvature: 0–2% false jumps; pipeline 1–2% |
+| AUD-03 (update) | Largely resolved by batch 3 | Multi-scale JUST stage catches steps before STPD | Pipeline: 4σ step misreported as TP 59% → 38% (batch 2) → **0.5%** (batch 3) |
+| AUD-05 | **Fixed** (batch 4) | `allssa(search="rayleigh")` default: oversampled grid from 1.5/T, refinement within ±1/T, only frequencies within 1/T re-fitted; `"integer"` = published | 1.00+1.37 cy/yr 0% → **100%**; 11.2-yr cycle 0% → **100%**; 2.37 cy/yr 37.5% → **100%**; blind tides 2/4 → **4/4**; null rate unchanged (0/80) |
+| AUD-02 (rest) | `just_decompose` **fixed** (batch 4); `just_monitor`, `lssa`/`allssa` open (disclosed) | `just_decompose(serial_correlation="ar1")`: trend band × κ, seasonal band × AR(1) spectral factor | Trend-band coverage at ρ = 0.5 / 0.8: 73% / 44% → **97% / 95%**; seasonal 89% / 86% → 98% / 91% |
+| AUD-11 | **Fixed** (batch 4) | ≥ 1 999 draws, one-sided 80% lower confidence bound on the α-quantile | see validation `p17_out.txt` |
+| AUD-12 | **Fixed** (batch 4) | Frequency chunk adapts to n (~8 MB per work matrix) | n = 32 000: 443 MB → **49 MB** |
+| AUD-13 | **Fixed** (batch 4) | Default OLS harmonics reduced to fit the smallest window (`HARMONICS_REDUCED`) | 50%-missing and 70%-gap records now run (jump still found) |
+| AUD-14 | **Fixed** (docs) | Runtime claims re-measured; "lite" NumPy + SciPy install already documented in README | — |
+| AUD-15 | **Mitigated** (batch 4) | `HEAVY_CENSORING_OLS_MI` caution for segments > 40% censored; ATS recommended | — |
+| AUD-16 | **Fixed** (docs) | `hamed_rao` Type-I under AR(1) documented (15–29%) | — |
+| AUD-07, 08 | Under re-measurement | see §0c | — |
+
+Batch-3 evidence: `audit/independent_2026_11/p15_batch3_scales.py` (`p15_out.txt`), `p10_batch3_results.json`, `p11_batch3_results.json`; tests in `tests/test_jump_scales_and_ghosts.py`.
 
 Batch-2 evidence: `audit/independent_2026_11/p14_batch2_serial.py` (`p14_final_ar1_out.txt`, `p14_none_out.txt`), `p11_post_batch2_results.json` (README example: jump and TP still found in 100% of 100 seeds, exact events 95–97%, band coverage 92%), regression tests in `tests/test_serial_correlation.py`. Full suite: 201 passed, 1 skipped. Known residual: on very precise records with structure the smooth global fit cannot follow, misfit can inflate ρ̂ (disclosed in `limitations.md` §3).
 

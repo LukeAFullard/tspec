@@ -645,7 +645,11 @@ def _calibrate_consecutive_k(
     run_level = np.full(n_mc, np.inf)
     for d in range(k - 1, horizon):
         run_level = np.minimum(run_level, np.max(pvals[d - k + 1 : d + 1], axis=0))
-    j = int(np.floor(alpha * (n_mc + 1)))
+    # Order statistic for the level: a one-sided 80% lower confidence bound on the
+    # alpha-quantile (binomial normal approximation) rather than its point estimate, so the
+    # Monte Carlo error of the plug-in calibration errs on the conservative side (AUD-11:
+    # the point estimate gave 5.8% pooled false alarms at nominal 5%).
+    j = int(np.floor(alpha * (n_mc + 1) - 0.8416 * np.sqrt(n_mc * alpha * (1.0 - alpha))))
     if j < 1:
         return None
     thr = float(np.sort(run_level)[j - 1])
@@ -1298,7 +1302,7 @@ def just_monitor(
                 eff_freq_corr,
                 int(consecutive_k),
                 alpha,
-                int(n_mc),
+                max(int(n_mc), 1999),
                 v_out_all is not None,
                 allssa_cs_coeff=allssa_cs_coeff if season_norm == "allssa" else None,
             )

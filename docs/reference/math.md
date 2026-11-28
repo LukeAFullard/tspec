@@ -36,6 +36,14 @@ ALLSSA iteratively extracts significant sinusoids simultaneously with the trend 
    - `"sidak"`: accept if $s(\omega_{\text{new}}) > s_{\text{crit}}(\alpha_K)$ with $\alpha_K = 1 - (1 - \alpha)^{1/K_{\text{eff}}}$ and $K_{\text{eff}} = \min\!\bigl(|G|,\, \max(1, \lceil 3\, T \cdot \text{bandwidth}\rceil)\bigr)$ (oversampled periodogram effective trials, Horne & Baliunas 1986; Baluev 2008).
    - `"per_frequency"` (published rule; forced by `parity_mode=True`): $s(\omega_{\text{new}}) > s_{\text{crit}}(\alpha)$. This ignores the search and selects spurious cycles in roughly 20% of pure-noise series at $\alpha = 0.01$.
 
+**Rayleigh-band search (`search="rayleigh"`, default since 2026-11; AUD-05).** The published steps 2–3 keep at most one frequency per unit band $[k-\tfrac12, k+\tfrac12)$ and search only integer coarse frequencies from 1. The default search of `allssa()` instead:
+- uses a coarse grid from $1.5/T$ to the mean-rate pseudo-Nyquist in steps of $1/(4T)$ ($T$ = record span);
+- refines each new peak on $[\omega^* - 1/T,\, \omega^* + 1/T]$ at resolution $\min(10^{-d}, 1/(10T))$;
+- temporarily removes only a previously selected frequency within $1/T$ of the peak;
+- refers the Monte Carlo / Šidák acceptance to a dense grid of resolution $1/(8T)$ over the searched band.
+
+`search="integer"` (forced by `parity_mode=True`) keeps the published algorithm; JUST windows and monitoring histories continue to use it.
+
 `lssa()` reports `peak_fap`, the family-wise false-alarm probability of the highest peak over the supplied grid: with `peak_fap="sidak"` (default), $p_{\text{FW}} = 1 - (1 - p_{\min})^{K_{\text{eff}}}$ where $K_{\text{eff}} = \min(|\Omega|, \max(1, \lceil 3\, T (\max\Omega - \min\Omega)\rceil))$; with `peak_fap="montecarlo"`, exact Monte Carlo draws of $\max_{\omega \in \Omega} s(\omega)$ are used. Per-frequency `pvalues` are unchanged.
 
 ---

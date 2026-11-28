@@ -365,14 +365,18 @@ def _censored_bend_series(seed: int) -> tuple[np.ndarray, np.ndarray]:
 
 def test_detection_pvalues_pooled_over_imputations() -> None:
     t, ys = _censored_jump_series(11)
-    assert tspec.just_jumps(t, ys, season="none").n_imputations == 1  # default: single
+    # Pooling mechanics under the published level-or-slope definition (a 2.5-sigma step in a
+    # 40%-censored record is below the power of the default step test in 3-cycle windows).
+    lv = "level_or_slope"
+    assert tspec.just_jumps(t, ys, season="none", jump_definition=lv).n_imputations == 1
     mi = tspec.CensoredConfig(detection_imputations=20)
-    res = tspec.just_jumps(t, ys, season="none", censoring=mi)
+    res = tspec.just_jumps(t, ys, season="none", censoring=mi, jump_definition=lv)
     assert res.n_imputations == 20
     assert any(abs(j.time_year - (2000 + 150 / 48)) < 0.5 for j in res.jumps)
     assert "pooled over 20 imputations" in res.explain()
     unc = tspec.just_jumps(
-        t, np.array([float(v) if not isinstance(v, str) else 0.0 for v in ys]), season="none", censoring=mi
+        t, np.array([float(v) if not isinstance(v, str) else 0.0 for v in ys]), season="none", censoring=mi,
+        jump_definition=lv,
     )
     assert unc.n_imputations == 1
     # STPD pools its turning-point p-values on a censored *bend* (a step is now correctly

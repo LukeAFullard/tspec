@@ -98,11 +98,13 @@ def test_just_jumps_controls_false_jumps_under_ar1() -> None:
     fp_ar = fp_none = 0
     for seed in range(12):
         t, y = _null_ar_series(seed, 0.6)
-        r = tspec.just_jumps(t, y, season="ols")
+        r = tspec.just_jumps(t, y, season="ols", jump_definition="level_or_slope")
         assert r.serial_correlation == "ar1" and r.serial_rho > 0.3 and r.serial_rho_used >= r.serial_rho
         assert any(w.code == "SERIAL_CORRELATION_ADJUSTED" for w in r.diagnostics.warnings)
         fp_ar += len(r.jumps) > 0
-        fp_none += len(tspec.just_jumps(t, y, season="ols", serial_correlation="none").jumps) > 0
+        fp_none += len(
+            tspec.just_jumps(t, y, season="ols", serial_correlation="none", jump_definition="level_or_slope").jumps
+        ) > 0
     assert fp_ar <= 2
     assert fp_none >= 8
 

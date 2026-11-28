@@ -1,0 +1,219 @@
+{
+ "NREP": 200,
+ "pipe_null_line|new": {
+  "any_jump": 0.01,
+  "any_tp": 0.015,
+  "jump_hit": 0.0,
+  "tp_hit": 0.0,
+  "extra_jumps": 0.01,
+  "sec": 3.1028657269477846,
+  "wall": 165.8
+ },
+ "pipe_null_curved|new": {
+  "any_jump": 0.02,
+  "any_tp": 0.99,
+  "jump_hit": 0.0,
+  "tp_hit": 0.645,
+  "extra_jumps": 0.02,
+  "sec": 2.9256134212017058,
+  "wall": 155.1
+ },
+ "pipe_null_curved_strong|new": {
+  "any_jump": 0.01,
+  "any_tp": 1.0,
+  "jump_hit": 0.0,
+  "tp_hit": 0.625,
+  "extra_jumps": 0.01,
+  "sec": 2.5142240464687347,
+  "wall": 134.7
+ },
+ "pipe_null_ar0.5|new": {
+  "any_jump": 0.0,
+  "any_tp": 0.015,
+  "jump_hit": 0.0,
+  "tp_hit": 0.0,
+  "extra_jumps": 0.0,
+  "sec": 3.1832350158691405,
+  "wall": 170.6
+ },
+ "pipe_null_ar0.8|new": {
+  "any_jump": 0.0,
+  "any_tp": 0.045,
+  "jump_hit": 0.0,
+  "tp_hit": 0.01,
+  "extra_jumps": 0.0,
+  "sec": 3.4644953978061674,
+  "wall": 186.1
+ },
+ "pipe_step0.5_line|new": {
+  "any_jump": 0.075,
+  "any_tp": 0.015,
+  "jump_hit": 0.07,
+  "tp_hit": 0.005,
+  "extra_jumps": 0.005,
+  "sec": 3.08023402094841,
+  "wall": 164.8
+ },
+ "pipe_step1.0_line|new": {
+  "any_jump": 0.57,
+  "any_tp": 0.055,
+  "jump_hit": 0.545,
+  "tp_hit": 0.025,
+  "extra_jumps": 0.03,
+  "sec": 2.8438706386089323,
+  "wall": 152.9
+ },
+ "pipe_step2.0_line|new": {
+  "any_jump": 1.0,
+  "any_tp": 0.025,
+  "jump_hit": 1.0,
+  "tp_hit": 0.005,
+  "extra_jumps": 0.0,
+  "sec": 2.726073306798935,
+  "wall": 146.4
+ },
+ "pipe_step1.0_curved|new": {
+  "any_jump": 0.09,
+  "any_tp": 1.0,
+  "jump_hit": 0.08,
+  "tp_hit": 0.675,
+  "extra_jumps": 0.01,
+  "sec": 2.694155262708664,
+  "wall": 144.2
+ },
+ "pipe_bend0.6_line|new": {
+  "any_jump": 0.05,
+  "any_tp": 0.055,
+  "jump_hit": 0.015,
+  "tp_hit": 0.04,
+  "extra_jumps": 0.035,
+  "sec": 2.990347319841385,
+  "wall": 159.8
+ },
+ "pipe_null_line|old_single_scale": {
+  "any_jump": 0.005,
+  "any_tp": 0.01,
+  "jump_hit": 0.0,
+  "tp_hit": 0.0,
+  "extra_jumps": 0.005,
+  "sec": 0.8589785420894622,
+  "wall": 46.2
+ },
+ "pipe_null_curved|old_single_scale": {
+  "any_jump": 0.005,
+  "any_tp": 0.99,
+  "jump_hit": 0.0,
+  "tp_hit": 0.645,
+  "extra_jumps": 0.005,
+  "sec": 0.9978213262557983,
+  "wall": 53.2
+ },
+ "pipe_null_curved_strong|old_single_scale": {
+  "any_jump": 0.005,
+  "any_tp": 1.0,
+  "jump_hit": 0.0,
+  "tp_hit": 0.63,
+  "extra_jumps": 0.005,
+  "sec": 0.9870511698722839,
+  "wall": 52.6
+ },
+ "pipe_null_ar0.5|old_single_scale": {
+  "any_jump": 0.0,
+  "any_tp": 0.015,
+  "jump_hit": 0.0,
+  "tp_hit": 0.0,
+  "extra_jumps": 0.0,
+  "sec": 0.9998894572257996,
+  "wall": 52.3
+ },
+ "pipe_null_ar0.8|old_single_scale": {
+  "any_jump": 0.0,
+  "any_tp": 0.045,
+  "jump_hit": 0.0,
+  "tp_hit": 0.01,
+  "extra_jumps": 0.0,
+  "sec": 1.1997293317317963,
+  "wall": 64.7
+ },
+ "pipe_step0.5_line|old_single_scale": {
+  "any_jump": 0.005,
+  "any_tp": 0.02,
+  "jump_hit": 0.0,
+  "tp_hit": 0.01,
+  "extra_jumps": 0.005,
+  "sec": 0.8719059503078461,
+  "wall": 46.4
+ },
+ "pipe_step1.0_line|old_single_scale": {
+  "any_jump": 0.005,
+  "any_tp": 0.13,
+  "jump_hit": 0.0,
+  "tp_hit": 0.11,
+  "extra_jumps": 0.005,
+  "sec": 0.9017439305782318,
+  "wall": 48.2
+ },
+ "pipe_step2.0_line|old_single_scale": {
+  "any_jump": 0.1,
+  "any_tp": 0.485,
+  "jump_hit": 0.095,
+  "tp_hit": 0.425,
+  "extra_jumps": 0.005,
+  "sec": 0.8638054752349853,
+  "wall": 45.8
+ },
+ "pipe_step1.0_curved|old_single_scale": {
+  "any_jump": 0.0,
+  "any_tp": 1.0,
+  "jump_hit": 0.0,
+  "tp_hit": 0.72,
+  "extra_jumps": 0.0,
+  "sec": 1.0071192705631256,
+  "wall": 53.8
+ },
+ "pipe_bend0.6_line|old_single_scale": {
+  "any_jump": 0.0,
+  "any_tp": 0.045,
+  "jump_hit": 0.0,
+  "tp_hit": 0.03,
+  "extra_jumps": 0.0,
+  "sec": 0.8867975461483002,
+  "wall": 47.5
+ },
+ "jj_null_line|default": {
+  "any_jump": 0.055,
+  "jump_hit": 0.0,
+  "extra_jumps": 0.055,
+  "wall": 8.4
+ },
+ "jj_null_curved|default": {
+  "any_jump": 0.365,
+  "jump_hit": 0.015,
+  "extra_jumps": 0.47,
+  "wall": 8.7
+ },
+ "jj_ghosts_step3.35|default": {
+  "any_jump": 0.96,
+  "jump_hit": 0.93,
+  "extra_jumps": 0.15,
+  "wall": 9.0
+ },
+ "jj_null_line|step_ms": {
+  "any_jump": 0.015,
+  "jump_hit": 0.005,
+  "extra_jumps": 0.01,
+  "wall": 26.4
+ },
+ "jj_null_curved|step_ms": {
+  "any_jump": 0.03,
+  "jump_hit": 0.005,
+  "extra_jumps": 0.025,
+  "wall": 28.5
+ },
+ "jj_ghosts_step3.35|step_ms": {
+  "any_jump": 1.0,
+  "jump_hit": 1.0,
+  "extra_jumps": 0.005,
+  "wall": 23.1
+ }
+}

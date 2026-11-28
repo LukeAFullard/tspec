@@ -241,6 +241,9 @@ class JustJumpResult(BaseResult):
     serial_correlation: str = "none"
     serial_rho: float = 0.0
     serial_rho_used: float = 0.0
+    jump_definition: str = "level_or_slope"
+    window_scales: tuple[float, ...] = (1.0,)
+    step_alpha: float | None = None
 
     @property
     def jump_indices(self) -> IntArray:
@@ -960,6 +963,11 @@ def _jump_split_count(n_win: int, robust: str) -> int:
     return max(1, n_win - 5)
 
 
+# Half-width (samples) of the split neighbourhood scanned by the step test around the split
+# chosen by the jump scan (non-parity mode; Bonferroni over the splits scanned).
+STEP_NEIGHBOURHOOD = 2
+
+
 def _nested_jump_ftests(
     t_win: FloatArray,
     y_win: FloatArray,
@@ -1245,6 +1253,29 @@ def _nested_jump_ftests(
     rss1 = res_full_ols.norm_res
     rss0 = res_null_ols.norm_res
     rss1_step = res_full_step_ols.norm_res
+    n_step_splits = 1
+    if not parity_mode:
+        # Step test around the split chosen by the 2-df jump scan: that split is selected
+        # partly for its level component among nearby splits (at a sharp, precise bend
+        # several splits compete), which inflated false steps to 7-9%. Taking the best
+        # discontinuous split within +/- STEP_NEIGHBOURHOOD samples and a Bonferroni
+        # factor for that local search accounts for it. (Anchoring at the best hinge knot
+        # instead lost the steps: a hinge approximating a step puts its knot elsewhere.)
+        rss1_step = np.inf
+        n_step_splits = 0
+        for j_s in range(int(local_jump_idx) - STEP_NEIGHBOURHOOD, int(local_jump_idx) + STEP_NEIGHBOURHOOD + 1):
+            if j_s < 3 or j_s > n_win - 3 or j_s in set(known.tolist()):
+                continue
+            idx_s = np.array(sorted({*known.tolist(), int(j_s)}), dtype=np.intp)
+            r_s = _lssa_core(
+                t0, y_win, pw_win, np.empty(0, dtype=np.float64), idx_s, 0.05, trend_step,
+                False, step_freqs, compute_cov=False,
+            ).norm_res
+            n_step_splits += 1
+            rss1_step = min(rss1_step, r_s)
+        if n_step_splits == 0:
+            rss1_step = res_full_step_ols.norm_res
+            n_step_splits = 1
 
     # Scale-invariant noiseless guard (handles scaled noiseless jumps down to 1e-13 cleanly).
     tol = 1e-26 * max(rss0, float(np.finfo(np.float64).tiny))
@@ -1287,7 +1318,7 @@ def _nested_jump_ftests(
         if parity_mode:
             step_mult = 1.0 if raw_step else (float(n_cands) if calib == "montecarlo" else mult)
         else:
-            step_mult = 1.0
+            step_mult = float(n_step_splits)
         p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step / k2, 1, dof2_step))))
     return p_jump, p_step
 
@@ -1705,6 +1736,38 @@ def _finalize_jump_candidates(
     return accepted
 
 
+def _fit_harmonics_to_windows(
+    om_arr: FloatArray,
+    windows: list[tuple[int, int]],
+    season: str,
+    omega_given: bool,
+    parity_mode: bool,
+) -> tuple[FloatArray, WarningItem | None]:
+    """Drop the highest default OLS harmonics that the smallest window cannot support (AUD-13).
+
+    A JUST window fits two linear pieces plus two columns per harmonic; with sparse records
+    (e.g. half the values missing, or a long gap) the default four annual harmonics no longer
+    fit and every call failed with ``InsufficientDataError``. Only applies to the default
+    ``omega`` of ``season="ols"`` outside parity mode.
+    """
+    if season != "ols" or omega_given or parity_mode or not windows or om_arr.size == 0:
+        return om_arr, None
+    n_min = min(b - a for a, b in windows)
+    n_fit = max(0, (n_min - 4 - 5) // 2)
+    if n_fit >= om_arr.size:
+        return om_arr, None
+    kept = om_arr[:n_fit]
+    return kept, WarningItem(
+        code="HARMONICS_REDUCED",
+        severity="caution",
+        message=(
+            f"The smallest window has {n_min} observations; the default seasonal model was reduced "
+            f"from {om_arr.size} to {kept.size} harmonic(s) so it can be fitted."
+        ),
+        suggestion="Pass `omega` explicitly or use a larger window (`size` / `window_duration`).",
+    )
+
+
 def _run_jump_scales(
     t_valid: FloatArray,
     y_valid: FloatArray,
@@ -1795,7 +1858,7 @@ def just_jumps(
     dir_th: float | None = None,
     jump_th: float = 0.75,
     jump_alpha: float | None | Literal["auto"] = "auto",
-    step_alpha: float | None = None,
+    step_alpha: float | None | Literal["auto"] = "auto",
     bonferroni_window: bool = False,
     jump_calibration: JumpCalibration | None = None,
     n_mc: int = 999,
@@ -1807,6 +1870,7 @@ def just_jumps(
     parity_mode: bool = False,
     serial_correlation: SerialMode = "ar1",
     window_scales: Sequence[float] | None = None,
+    jump_definition: Literal["step", "level_or_slope"] = "step",
 ) -> JustJumpResult:
     """Detect abrupt jumps and trend slope shifts via JUST (Ghaderpour & Vujadinovic, 2020).
 
@@ -1856,9 +1920,20 @@ def just_jumps(
         parity) when ``parity_mode=True``. Pass ``None`` explicitly to disable the
         filter; ``jump_pvalue`` is always computed and stored on every
         :class:`JumpEvent`.
+    jump_definition:
+        What counts as a jump. ``"step"`` (default since the 2026-11 audit): an abrupt
+        vertical discontinuity, i.e. a significant ``jump_pvalue`` *and* ``step_pvalue``
+        (``step_alpha="auto"`` -> 0.05) searched with windows of 1, 2 and 4 times the base
+        size (``window_scales=None`` -> ``(1, 2, 4)``). Pure slope changes and smooth
+        curvature are not reported (use :func:`stpd` / :func:`analyze_series`).
+        ``"level_or_slope"``: the published JUST definition (Ghaderpour & Vujadinovic,
+        2020): any significant change in level and/or slope within a single window scale
+        (``step_alpha="auto"`` -> ``None``, ``window_scales=None`` -> ``(1,)``); forced by
+        ``parity_mode=True``. Explicit ``step_alpha`` / ``window_scales`` override either.
     step_alpha:
-        Optional additional cutoff on ``step_pvalue``, isolating vertical steps from
-        smooth bends and curvature. ``step_pvalue`` tests the discontinuous two-piece model
+        Additional cutoff on ``step_pvalue``, isolating vertical steps from
+        smooth bends and curvature (``"auto"``: 0.05 for ``jump_definition="step"``,
+        ``None`` for ``"level_or_slope"``). ``step_pvalue`` tests the discontinuous two-piece model
         against the best *continuous* hinge, both with a global quadratic term (so smooth
         curvature in the window is not mistaken for a step, AUD-18), at the split chosen by
         the jump scan, Holm-adjusted across candidate locations. ``jump_pvalue`` alone (the
@@ -1909,13 +1984,14 @@ def just_jumps(
         and used when a 2D ``weights`` covariance is supplied). Independent-error tests
         reported 34% / 95% family-wise false jumps at AR(1) ``rho = 0.3 / 0.6``.
     window_scales:
-        Additional window sizes as multiples of the base window (``size``/``step`` or
+        Window sizes as multiples of the base window (``size``/``step`` or
         ``window_duration``/``step_duration``), e.g. ``(1, 2, 4)`` (AUD-04). Longer windows
         detect much smaller steps (single 3-cycle windows found a 2-sigma step in only ~6% of
-        240-point series). All scales form one Holm family. Default ``None`` = ``(1,)``
-        (single scale; forced by ``parity_mode``). Because longer windows fit a straight line
-        per piece, combine multiple scales with ``step_alpha`` (curvature-robust step test) to
-        avoid reporting smooth curvature as jumps.
+        240-point series). All scales form one Holm family. Default ``None`` resolves to
+        ``(1, 2, 4)`` for ``jump_definition="step"`` and ``(1,)`` for ``"level_or_slope"``
+        (forced by ``parity_mode``). Because longer windows fit a straight line per piece,
+        combine several scales with the step test (``step_alpha``), otherwise smooth
+        curvature is reported as jumps.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -1933,8 +2009,19 @@ def just_jumps(
         eff_jump_alpha = jump_alpha
     if eff_jump_alpha is not None and not (0.0 < eff_jump_alpha < 1.0):
         raise ValueError(f"`jump_alpha` must lie in (0, 1); got {eff_jump_alpha}.")
+    if jump_definition not in ("step", "level_or_slope"):
+        raise ValueError(
+            f"Unknown `jump_definition` {jump_definition!r}. Options: 'step', 'level_or_slope'."
+        )
+    eff_definition = "level_or_slope" if parity_mode else jump_definition
+    if isinstance(step_alpha, str):
+        if step_alpha != "auto":
+            raise ValueError(f"`step_alpha` must be a float in (0, 1), None, or 'auto'; got {step_alpha!r}.")
+        step_alpha = 0.05 if eff_definition == "step" else None
     if step_alpha is not None and not (0.0 < step_alpha < 1.0):
         raise ValueError(f"`step_alpha` must lie in (0, 1); got {step_alpha}.")
+    if window_scales is None:
+        window_scales = (1.0, 2.0, 4.0) if eff_definition == "step" else (1.0,)
     mag_th = (0.05 if parity_mode else 0.0) if mag_th is None else float(mag_th)
     dir_th = (0.01 if parity_mode else 0.0) if dir_th is None else float(dir_th)
     if mag_th < 0.0 or dir_th < 0.0 or jump_th < 0.0:
@@ -1948,7 +2035,7 @@ def just_jumps(
     eff_robust: RobustMethod = "none" if parity_mode else validate_robust_args(robust, huber_k)
     eff_season_sig = _resolve_season_significance(season_significance, parity_mode)
     eff_scales: tuple[float, ...] = (
-        (1.0,) if (parity_mode or window_scales is None) else tuple(float(x) for x in window_scales)
+        (1.0,) if parity_mode else tuple(float(x) for x in window_scales)
     )
     if any((not np.isfinite(x)) or x < 1.0 for x in eff_scales):
         raise ValueError("`window_scales` must contain finite multiples >= 1 of the base window.")
@@ -2096,6 +2183,11 @@ def just_jumps(
                 )
             )
 
+    om_arr, harm_warn = _fit_harmonics_to_windows(
+        om_arr, windows, season_l, omega is not None and len(omega) > 0, parity_mode
+    )
+    if harm_warn is not None:
+        warnings_list.append(harm_warn)
     sw_warn = _short_seasonal_window_warning(series.times_numeric, windows, om_arr, season_l, eff_season_sig)
     if sw_warn is not None:
         warnings_list.append(sw_warn)
@@ -2490,7 +2582,7 @@ def just_jumps(
         warnings=tuple(warnings_list),
     )
 
-    if not parity_mode and step_alpha is None:
+    if not parity_mode and step_alpha is None and eff_definition == "level_or_slope":
         slope_only = [e for e in events if not (np.isfinite(e.step_pvalue) and e.step_pvalue < 0.05)]
         if slope_only:
             diag = replace(
@@ -2506,8 +2598,8 @@ def just_jumps(
                             "rather than abrupt level shifts."
                         ),
                         suggestion=(
-                            "For abrupt steps only use step_alpha=0.05 (optionally with "
-                            "window_scales=(1, 2, 4)); use stpd()/analyze_series() for bends."
+                            "For abrupt steps only use jump_definition='step' (the default); "
+                            "use stpd()/analyze_series() for bends."
                         ),
                     ),
                 ),
@@ -2534,6 +2626,9 @@ def just_jumps(
         serial_correlation=serial_spec.mode,
         serial_rho=float(serial_spec.rho_hat),
         serial_rho_used=float(serial_spec.rho),
+        jump_definition=eff_definition,
+        window_scales=eff_scales,
+        step_alpha=step_alpha,
     )
 
 
@@ -2806,6 +2901,7 @@ def just_decompose(
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
+    serial_correlation: SerialMode = "ar1",
 ) -> JustDecomposeResult:
     """Decompose an unevenly sampled time series into trend, seasonal, and remainder via JUST.
 
@@ -2888,6 +2984,12 @@ def just_decompose(
     parity_mode:
         Reproduce Ghaderpour's upstream JUST decomposition exactly (seasonal
         sample-mean centering, legacy rounding, model-based trend band).
+    serial_correlation:
+        Error model for the bands (audit finding AUD-02): ``"ar1"`` (default) estimates a
+        lag-1 residual autocorrelation and widens the trend band by
+        ``sqrt((1 + rho) / (1 - rho))`` and the seasonal band by the AR(1) spectral factor at
+        the annual frequency; ``"ou"`` uses continuous-time correlation; ``"none"`` (forced by
+        ``parity_mode``) assumes independent errors.
 
     Returns
     -------
@@ -3000,6 +3102,12 @@ def just_decompose(
                 )
             )
 
+    if not has_eval:
+        om_arr, harm_warn_d = _fit_harmonics_to_windows(
+            om_arr, windows_tt, season_l, omega is not None and len(omega) > 0, parity_mode
+        )
+        if harm_warn_d is not None:
+            warnings_list.append(harm_warn_d)
     sw_warn = _short_seasonal_window_warning(tt_num, windows_tt, om_arr, season_l, eff_season_sig)
     if sw_warn is not None:
         warnings_list.append(sw_warn)
@@ -3374,6 +3482,47 @@ def just_decompose(
             trend_reg_ci_high = None
             seasonal_reg_ci_low = None
             seasonal_reg_ci_high = None
+
+    # Serial correlation (AUD-02): the window bands assume independent errors. Widen the
+    # trend band by the long-run factor kappa = sqrt((1 + rho) / (1 - rho)) and the seasonal
+    # band by the AR(1) spectral factor at the fundamental seasonal frequency (never narrower).
+    serial_spec_d = resolve_serial_spec(
+        serial_correlation,
+        parity_mode=parity_mode,
+        t=series.times_numeric,
+        y=series.values,
+        weight_kind=pw.kind,
+        weight_vector=pw.vector,
+        season=season_l,
+        omega=om_arr,
+    )
+    if serial_spec_d.active:
+        f_tr = float(np.sqrt(serial_spec_d.kappa2))
+        rho_d = serial_spec_d.rho
+        dt_d = serial_spec_d.median_dt
+        # AR(1) spectral density at 1 cycle per unit relative to white noise; rho is the
+        # correlation per median sampling step (also for the OU model).
+        spec_fac = (1.0 - rho_d**2) / (1.0 - 2.0 * rho_d * np.cos(2.0 * np.pi * dt_d) + rho_d**2)
+        f_se = float(np.sqrt(max(1.0, spec_fac)))
+
+        def _widen(lo: FloatArray | None, hi: FloatArray | None, f: float) -> tuple[Any, Any]:
+            if lo is None or hi is None:
+                return lo, hi
+            mid = 0.5 * (lo + hi)
+            return mid - f * (mid - lo), mid + f * (hi - mid)
+
+        trend_ci_low, trend_ci_high = _widen(trend_ci_low, trend_ci_high, f_tr)
+        seasonal_ci_low, seasonal_ci_high = _widen(seasonal_ci_low, seasonal_ci_high, f_se)
+        trend_reg_ci_low, trend_reg_ci_high = _widen(trend_reg_ci_low, trend_reg_ci_high, f_tr)
+        seasonal_reg_ci_low, seasonal_reg_ci_high = _widen(seasonal_reg_ci_low, seasonal_reg_ci_high, f_se)
+        warnings_list.append(
+            WarningItem(
+                code="SERIAL_CORRELATION_ADJUSTED",
+                severity="info",
+                message=serial_warning_message(serial_spec_d)
+                + f" Trend bands widened x{f_tr:.2f}, seasonal bands x{f_se:.2f}.",
+            )
+        )
 
     if bc_on and bc_fallbacks > 0:
         warnings_list.append(
