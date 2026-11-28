@@ -28,6 +28,15 @@ from ._robust import (
     tukey_weight,
     validate_robust_args,
 )
+from ._serial import (
+    SerialMode,
+    SerialSpec,
+    deflate_t_pvalue,
+    resolve_serial_spec,
+    sandwich_vif,
+    serial_warning_message,
+    validate_serial_mode,
+)
 from ._time import format_timestamp
 from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike, WeightLike
 from .censored import (
@@ -181,6 +190,9 @@ class PipelineResult(BaseResult):
     slope_fan_high: FloatArray | None = None
     band_method: str = "conditional"
     requested_band_method: str = "bootstrap"
+    serial_correlation: str = "none"
+    serial_rho: float = 0.0
+    serial_rho_used: float = 0.0
 
     def summary(self) -> str:
         n_j = len(self.jumps.jumps) if self.jumps is not None else 0
@@ -1408,6 +1420,59 @@ def _pipeline_bootstrap(
     return band_lo, band_hi, tuple(new_segments)
 
 
+def _inflate_for_serial_correlation(
+    segments: tuple[SegmentSummary, ...],
+    t_valid: FloatArray,
+    w: FloatArray | None,
+    serial: SerialSpec,
+    combined_trend: FloatArray,
+    band_lo: FloatArray | None,
+    band_hi: FloatArray | None,
+) -> tuple[tuple[SegmentSummary, ...], FloatArray | None, FloatArray | None]:
+    """Scale OLS-type segment CIs/p-values and the trend band for AR(1)/OU errors (AUD-02).
+
+    For each segment the exact sandwich variance of the weighted straight-line fit under
+    the fitted correlation (:func:`tspec._serial.sandwich_vif`) gives a variance inflation
+    factor ``VIF`` for the slope and for every fitted value. Slope CI half-widths (about
+    the estimate, preserving any bootstrap asymmetry) and band half-widths (about the
+    combined trend) are multiplied by ``sqrt(VIF)``; p-values are recomputed with the
+    t statistic divided by ``sqrt(VIF)``. Theil-Sen / ATS segments carry their own AR(1)
+    Mann-Kendall correction and are left unchanged.
+    """
+    new_segments = list(segments)
+    lo = band_lo.copy() if band_lo is not None else None
+    hi = band_hi.copy() if band_hi is not None else None
+    for k, seg in enumerate(segments):
+        a, b = int(seg.start_valid_index), int(seg.end_valid_index) + 1
+        n_s = b - a
+        if n_s < 4:
+            continue
+        t_s = t_valid[a:b]
+        span = float(t_s[-1] - t_s[0]) if t_s[-1] > t_s[0] else 1.0
+        X = np.column_stack([np.ones(n_s), (t_s - t_s[0]) / span])
+        w_s = w[a:b] if w is not None else None
+        vif_c, vif_f = sandwich_vif(t_s, X, w_s, serial)
+        if seg.estimator in ("ols", "ols_mi", "huber") and seg.slope_ci_low is not None:
+            f = float(np.sqrt(max(vif_c[1], 1.0)))
+            seg_new = replace(
+                seg,
+                slope_ci_low=seg.slope - f * (seg.slope - float(seg.slope_ci_low)),
+                slope_ci_high=seg.slope + f * (float(seg.slope_ci_high) - seg.slope)
+                if seg.slope_ci_high is not None
+                else None,
+                pvalue=deflate_t_pvalue(float(seg.pvalue), n_s - 2, float(max(vif_c[1], 1.0)))
+                if seg.pvalue is not None
+                else None,
+            )
+            new_segments[k] = seg_new
+        if lo is not None and hi is not None:
+            g = np.sqrt(np.maximum(vif_f, 1.0))
+            c = combined_trend[a:b]
+            lo[a:b] = c - g * (c - lo[a:b])
+            hi[a:b] = c + g * (hi[a:b] - c)
+    return tuple(new_segments), lo, hi
+
+
 def analyze_series(
     t: TimeLike,
     y: ValueLike,
@@ -1429,6 +1494,7 @@ def analyze_series(
     stpd_kwargs: dict[str, Any] | None = None,
     band_method: Literal["bootstrap", "conditional"] = "bootstrap",
     n_boot: int = 499,
+    serial_correlation: SerialMode = "ar1",
 ) -> PipelineResult:
     """Run the guided two-stage JUST -> STPD change-detection and decomposition pipeline.
 
@@ -1517,6 +1583,15 @@ def analyze_series(
         no turning point is found, the analytical intervals are used.
     n_boot : int, default 499
         Bootstrap replicates for ``band_method="bootstrap"``.
+    serial_correlation : {"ar1", "ou", "none"}, default "ar1"
+        Error model for calibrating the stages (audit finding AUD-02). It is passed to
+        ``just_jumps`` and ``stpd`` (unless set in their kwargs). The OLS / ``ols_mi`` /
+        Huber segment-slope CIs and p-values and the trend band are scaled by the exact
+        sandwich variance inflation of a straight-line fit under the fitted AR(1)
+        (``"ar1"``, observation order) or Ornstein-Uhlenbeck (``"ou"``, continuous time)
+        correlation. ``"none"`` assumes independent errors: the OLS slope test then
+        rejected 24% (rho = 0.5) and 49% (rho = 0.8) of trend-free AR(1) series at a
+        nominal 5%. Theil-Sen/ATS segments use ``mk_correction`` instead.
 
     Returns
     -------
@@ -1577,6 +1652,9 @@ def analyze_series(
     s_kw: dict[str, Any] = dict(stpd_kwargs or {})
 
     # Propagate robust & CI configuration unless explicitly overridden in stage kwargs
+    serial_mode = validate_serial_mode(serial_correlation)
+    j_kw.setdefault("serial_correlation", serial_mode)
+    s_kw.setdefault("serial_correlation", serial_mode)
     j_kw.setdefault("robust", rob_method)
     j_kw.setdefault("huber_k", huber_k)
     d_kw.setdefault("robust", rob_method)
@@ -2138,6 +2216,41 @@ def analyze_series(
             trend_ci_low, trend_ci_high, segments = boot_out
             band_used = "bootstrap"
 
+    # Serial-correlation adjustment of OLS segment inference and the trend band (AUD-02):
+    # the analytical and bootstrap intervals above assume independent errors; scale them
+    # by the exact sandwich variance inflation under the fitted AR(1)/OU model.
+    serial_spec = resolve_serial_spec(
+        serial_mode,
+        parity_mode=bool(j_kw.get("parity_mode", False) or s_kw.get("parity_mode", False)),
+        t=t_valid,
+        y=y_deseas - step_offsets,
+        weight_kind="vector" if (w_stpd is not None and np.ndim(w_stpd) == 1) else (
+            "matrix" if (w_stpd is not None and np.ndim(w_stpd) == 2) else "none"
+        ),
+        weight_vector=w_stpd if (w_stpd is not None and np.ndim(w_stpd) == 1) else None,
+        season="none",
+        omega=None,
+    )
+    if serial_spec.active:
+        segments, trend_ci_low, trend_ci_high = _inflate_for_serial_correlation(
+            segments,
+            t_valid,
+            w_stpd if (w_stpd is not None and np.ndim(w_stpd) == 1) else None,
+            serial_spec,
+            combined_trend,
+            trend_ci_low,
+            trend_ci_high,
+        )
+        all_warnings.append(
+            WarningItem(
+                code="SERIAL_CORRELATION_ADJUSTED",
+                severity="info",
+                message=serial_warning_message(serial_spec)
+                + " OLS segment-slope CIs/p-values and the trend band include the variance "
+                "inflation of the fitted AR(1) errors.",
+            )
+        )
+
     # Replace intermediate-stage autocorrelation warnings with one clean final check
     # on the combined residuals (after both JUST jumps/seasonality and STPD trend).
     final_residuals = y_work_valid - combined_trend - seasonal_part
@@ -2146,7 +2259,22 @@ def analyze_series(
         w
         for w in all_warnings
         if w.code not in ("MODERATE_AUTOCORRELATION", "STRONG_AUTOCORRELATION")
+        and not (w.code == "SERIAL_CORRELATION_ADJUSTED" and "OLS segment-slope" not in w.message)
     ]
+    if serial_spec.active:
+        final_rn_warns = tuple(
+            replace(
+                w,
+                suggestion=(
+                    f"Jump, turning-point and OLS segment-slope tests were already calibrated for "
+                    f"AR(1) errors (rho = {serial_spec.rho:.2f}); other dependence structures "
+                    "(long memory, seasonal correlation) are not covered."
+                ),
+            )
+            if w.code in ("MODERATE_AUTOCORRELATION", "STRONG_AUTOCORRELATION")
+            else w
+            for w in final_rn_warns
+        )
     filtered_warnings.extend(final_rn_warns)
     filtered_warnings.extend(mi_warns)
 
@@ -2184,4 +2312,7 @@ def analyze_series(
         slope_fan_high=slope_fan_high,
         band_method=band_used,
         requested_band_method=band_method,
+        serial_correlation=serial_spec.mode,
+        serial_rho=float(serial_spec.rho_hat),
+        serial_rho_used=float(serial_spec.rho),
     )

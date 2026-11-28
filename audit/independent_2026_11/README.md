@@ -20,3 +20,5 @@ All scripts are standalone and run from this directory with `OMP_NUM_THREADS=1 M
 | `p13_batch1_stpd.py` | `p13_final_out.txt` | batch-1 validation: STPD step-vs-bend gate vs NDRI |
 | `p10_pipeline_step.py` (re-run) | `p10_post_out.txt` | batch-1 validation through `analyze_series` |
 | `repro_confirmed_bugs.py` (re-run) | `repro_post_batch1_out.txt` | reproducers after batch 1 |
+| `p14_batch2_serial.py [NREP]` | `p14_final_ar1_out.txt` (final), `p14_none_out.txt` (independent-error comparison), `p14_pre_jumpfix_out.txt`, `p14_margin0_partial_out.txt` (earlier variants) | batch-2 validation of serial-correlation calibration (AUD-02) |
+| `p11_readme_hero.py` (re-run) | `p11_post_batch2_results.json` | README example after batch 2 |

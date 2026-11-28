@@ -33,6 +33,15 @@ from ._robust import (
     tukey_weight,
     validate_robust_args,
 )
+from ._serial import (
+    NO_SERIAL,
+    SerialMode,
+    SerialSpec,
+    correlated_normals,
+    deflate_t_pvalue,
+    resolve_serial_spec,
+    serial_warning_message,
+)
 from ._time import format_timestamp, prepare_numeric_series
 from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike
 from .censored import (
@@ -334,6 +343,9 @@ class StpdResult(BaseResult):
     band_method: str = "conditional"
     robust: str = "none"
     jump_test: str = "ndri"
+    serial_correlation: str = "none"
+    serial_rho: float = 0.0
+    serial_rho_used: float = 0.0
 
     @property
     def tp_indices(self) -> IntArray:
@@ -1011,9 +1023,10 @@ def _stpd_mc_pvalue(
     w: FloatArray | None,
     n_mc: int,
     seed: tuple[int, ...],
+    serial: SerialSpec = NO_SERIAL,
 ) -> float:
     """Single-series wrapper of :func:`_stpd_mc_pvalues`."""
-    return float(_stpd_mc_pvalues(t, y[:, None], margin, w, n_mc, seed)[0])
+    return float(_stpd_mc_pvalues(t, y[:, None], margin, w, n_mc, seed, serial=serial)[0])
 
 
 def _stpd_mc_pvalues(
@@ -1024,6 +1037,7 @@ def _stpd_mc_pvalues(
     n_mc: int,
     seed: tuple[int, ...],
     skip_above: float | None = None,
+    serial: SerialSpec = NO_SERIAL,
 ) -> FloatArray:
     """Exact Monte Carlo p-value of the STPD window test against the max-over-knots null.
 
@@ -1036,6 +1050,10 @@ def _stpd_mc_pvalues(
     shared across columns. With ``skip_above``, if every column's raw (fixed-knot)
     p-value is at least ``skip_above``, ones are returned without simulating (each
     calibrated p-value would exceed its raw value).
+
+    With an active ``serial`` model the errors are simulated with AR(1)/OU correlation
+    (parametric bootstrap under the fitted correlation, AUD-02), the Bonferroni tail bound
+    uses ``t / kappa`` and the raw-p skip is disabled.
     """
     n = int(t.size)
     t_fwd = t - t[0]
@@ -1047,6 +1065,8 @@ def _stpd_mc_pvalues(
     if skip_above is not None and bool(
         np.all(2.0 * student_t.sf(t_obs, df=n - 3) >= skip_above)
     ):
+        # A calibrated p-value can only exceed its raw value (also under positive
+        # serial correlation, which widens the null).
         return np.ones(t_obs.size, dtype=np.float64)
     rng = np.random.default_rng(seed)
     scale = 1.0 / np.sqrt(w) if w is not None else np.ones(n)
@@ -1054,13 +1074,15 @@ def _stpd_mc_pvalues(
     done = 0
     while done < n_mc:
         m = min(256, n_mc - done)
-        E = rng.standard_normal((n, m)) * scale[:, None]
+        E = correlated_normals(rng, t, m, serial) * scale[:, None]
         null_t = _stpd_window_tstats(t, E, margin, w, vf_f, vf_b)
         exceed += np.sum(null_t[None, :] >= t_obs[:, None], axis=1)
         done += m
     p_mc = (1.0 + exceed) / (n_mc + 1.0)
     n_knots = 2 * max(1, min(n - 2, n - margin) - max(2, margin))
-    p_bonf = np.minimum(1.0, n_knots * 2.0 * student_t.sf(t_obs, df=n - 3))
+    p_bonf = np.minimum(
+        1.0, n_knots * 2.0 * student_t.sf(t_obs / np.sqrt(serial.kappa2), df=n - 3)
+    )
     return np.asarray(np.where(exceed == 0, np.minimum(p_mc, p_bonf), p_mc), dtype=np.float64)
 
 
@@ -1282,6 +1304,7 @@ def _step_vs_hinge_pvalue(
     margin: int,
     *,
     n_grid: int = 17,
+    kappa2: float = 1.0,
 ) -> tuple[float, float]:
     """p-value that a window's break is a vertical step rather than a continuous bend.
 
@@ -1369,7 +1392,8 @@ def _step_vs_hinge_pvalue(
         return 1.0, share
     dof = n - 4
     den = max(rd, 1e-28 * max(sst, 1e-300)) / dof
-    f_stat = num / den
+    # Under serially correlated errors the F statistic is deflated by kappa^2 (AUD-02)
+    f_stat = num / den / max(kappa2, 1.0)
     from scipy.stats import f as f_dist
 
     p_raw = float(f_dist.sf(f_stat, 1, dof))
@@ -1385,8 +1409,12 @@ def _tpd_window(
     parity_mode: bool = False,
     robust: RobustMethod = "none",
     huber_k: float = 1.345,
+    kappa2: float = 1.0,
 ) -> _WindowTpdStats:
-    """Run forward and backward sequential turning-point detection on one window."""
+    """Run forward and backward sequential turning-point detection on one window.
+
+    ``kappa2`` deflates the step-vs-bend F statistic under serial correlation (AUD-02).
+    """
     n = int(t.size)
     t_fwd = t - t[0]
     eff_robust: RobustMethod = "none" if parity_mode else robust
@@ -1511,7 +1539,9 @@ def _tpd_window(
 
     ndri_l2 = abs(nr1 - nr2) / (nr1 + nr2) if (nr1 + nr2) > zero_tol else 0.0
     ndri_rmse = abs(rmse1 - rmse2) / (rmse1 + rmse2) if (rmse1 + rmse2) > zero_tol else 0.0
-    step_p, step_share = _step_vs_hinge_pvalue(t, y, w_stat, int(tp), int(margin))
+    step_p, step_share = _step_vs_hinge_pvalue(
+        t, y, w_stat, int(tp), int(margin), kappa2=kappa2
+    )
 
     return _WindowTpdStats(
         local_tp=tp,
@@ -1971,6 +2001,7 @@ def _run_stpd_windows(
     mi_counter: list[int] | None = None,
     jump_test: str = "ndri",
     step_alpha: float | None = None,
+    serial: SerialSpec = NO_SERIAL,
 ) -> tuple[
     list[tuple[int, float, _WindowTpdStats, int, int]],
     list[tuple[int, _WindowTpdStats]],
@@ -1996,6 +2027,7 @@ def _run_stpd_windows(
     a jump when either does.
     """
     eff_step_alpha = 0.05 if step_alpha is None else float(step_alpha)
+    k2 = serial.kappa2
     accepted_raw: list[tuple[int, float, _WindowTpdStats, int, int]] = []
     flagged_raw: list[tuple[int, _WindowTpdStats]] = []
     density_imbalanced = False
@@ -2025,7 +2057,8 @@ def _run_stpd_windows(
             continue
 
         stats = _tpd_window(
-            t_w, y_w, m_eff, w_w, parity_mode=parity_mode, robust=robust, huber_k=huber_k
+            t_w, y_w, m_eff, w_w, parity_mode=parity_mode, robust=robust, huber_k=huber_k,
+            kappa2=k2,
         )
         ratio_lr = max(stats.n_left, stats.n_right) / max(1, min(stats.n_left, stats.n_right))
         if ratio_lr > 1.5:
@@ -2103,15 +2136,20 @@ def _run_stpd_windows(
                         p_m = _stpd_mc_pvalues(
                             t_w, np.column_stack(imps), m_eff, w_w, n_mc,
                             (20261125, int(w_start), int(w_stop)), skip_above=alpha,
+                            serial=serial,
                         )
                         p_cal = pool_pvalues(p_m) if bool(np.any(p_m < 1.0)) else 1.0
                     else:
                         # Pool the fixed-knot p-values, then apply the Bonferroni factor
                         raw = [
-                            _tpd_window(
-                                t_w, y_m, m_eff, w_w,
-                                parity_mode=parity_mode, robust=robust, huber_k=huber_k,
-                            ).pval
+                            deflate_t_pvalue(
+                                _tpd_window(
+                                    t_w, y_m, m_eff, w_w,
+                                    parity_mode=parity_mode, robust=robust, huber_k=huber_k,
+                                ).pval,
+                                n_w - 3,
+                                k2,
+                            )
                             for y_m in imps
                         ]
                         p_cal = float(min(1.0, n_knots * pool_pvalues(np.asarray(raw))))
@@ -2119,10 +2157,11 @@ def _run_stpd_windows(
                     p_cal = 1.0  # a calibrated p-value can only be larger
                 elif tp_calibration == "montecarlo" and robust == "none":
                     p_cal = _stpd_mc_pvalue(
-                        t_w, y_w, m_eff, w_w, n_mc, (20261125, int(w_start), int(w_stop))
+                        t_w, y_w, m_eff, w_w, n_mc, (20261125, int(w_start), int(w_stop)),
+                        serial=serial,
                     )
                 else:
-                    p_cal = float(min(1.0, n_knots * stats.pval))
+                    p_cal = float(min(1.0, n_knots * deflate_t_pvalue(stats.pval, n_w - 3, k2)))
                 dist_center = abs(stats.local_tp - (n_w - 1) / 2.0)
                 accepted_raw.append(
                     (g_idx, dist_center, replace(stats, pval=p_cal), w_start, w_stop)
@@ -2235,6 +2274,7 @@ def detect_turning_points(
     ndri_mode: NdriMode = "rmse",
     jump_test: JumpTest | None = None,
     step_alpha: float | None = None,
+    serial_correlation: SerialMode = "ar1",
     alpha: float = 0.01,
     dir_th: float = 0.0,
     tp_th: float = 1.0,
@@ -2302,6 +2342,15 @@ def detect_turning_points(
         "jump". ``'ndri'`` uses the published NDRI threshold
         (forced by ``parity_mode=True``); it fails to recognise most pure steps and
         rejects very precise bends. ``'both'`` flags a jump if either rule does.
+    serial_correlation:
+        Error model used to calibrate the slope-change and step tests (audit finding
+        AUD-02): ``"ar1"`` (default) estimates a lag-1 residual autocorrelation ``rho``
+        (difference-based, insensitive to jumps), simulates the Monte Carlo knot-search
+        null with AR(1) errors and deflates analytical t/F references by
+        ``kappa^2 = (1 + rho) / (1 - rho)``; ``"ou"`` uses continuous-time correlation
+        ``rho ** (dt / median_dt)``; ``"none"`` assumes independent errors (forced by
+        ``parity_mode=True``). With independent-error calibration, 27.5% of straight-line
+        series with AR(1) ``rho = 0.5`` noise gave a false turning point at ``alpha=0.01``.
     step_alpha:
         Level of the (Bonferroni-corrected, conservative) step-vs-bend test for
         ``jump_test='step'``/``'both'`` (default ``0.05``). Reporting a step as a smooth
@@ -2451,6 +2500,27 @@ def detect_turning_points(
     span = float(series.times_numeric[-1] - series.times_numeric[0])
     if span <= 0.0:
         raise InsufficientDataError("Time span must be strictly positive.")
+    # Residual serial correlation (AUD-02). The smooth global fit includes annual
+    # harmonics when the record spans >= 2 time units so that residual seasonality in a
+    # non-deseasonalized input is not mistaken for autocorrelation.
+    serial_spec = resolve_serial_spec(
+        serial_correlation,
+        parity_mode=parity_mode,
+        t=series.times_numeric,
+        y=series.values,
+        weight_kind="vector" if w_valid is not None else "none",
+        weight_vector=w_valid,
+        season="ols" if span >= 2.0 else "none",
+        omega=np.array([1.0, 2.0, 3.0, 4.0]),
+    )
+    if serial_spec.active:
+        warnings_list.append(
+            WarningItem(
+                code="SERIAL_CORRELATION_ADJUSTED",
+                severity="info",
+                message=serial_warning_message(serial_spec),
+            )
+        )
 
     if window_mode == "count":
         rate = max(1, int(n / span))
@@ -2588,6 +2658,7 @@ def detect_turning_points(
         mi_counter=mi_counter,
         jump_test=eff_jump_test,
         step_alpha=step_alpha,
+        serial=serial_spec,
     )
     if mi_counter[1] > 0:
         warnings_list.append(
@@ -2693,6 +2764,7 @@ def detect_turning_points(
                 n_mc=int(n_mc),
                 jump_test=eff_jump_test,
                 step_alpha=step_alpha,
+                serial=serial_spec,
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted_raw:
@@ -2887,6 +2959,9 @@ def detect_turning_points(
         band_method=band_used,
         robust=eff_robust,
         jump_test=eff_jump_test,
+        serial_correlation=serial_spec.mode,
+        serial_rho=float(serial_spec.rho_hat),
+        serial_rho_used=float(serial_spec.rho),
     )
 
 

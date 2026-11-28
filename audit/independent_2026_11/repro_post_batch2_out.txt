@@ -1,0 +1,9 @@
+AUD-01 datetime M2 best normalized LSS = 1.000 (numeric-hours control = 1.000; expected ~1.0): ok
+       decimal-year step ratio across 2023/2024 boundary = 1.00000 (expected 1.0)
+AUD-05 allssa selected [1.37] for true {1.00, 1.37} at SNR~25: BUG CONFIRMED
+       default-grid allssa on 11.2-yr + annual cycle selected [1.0] (11.2-yr cycle missing, no warning: ['STRONG_AUTOCORRELATION']): BUG CONFIRMED
+AUD-06 hinge (slope +0.5 -> -0.5 at t=10), noise sd=0.0: turning points [9.94], flagged as jumps []: ok
+AUD-06 hinge (slope +0.5 -> -0.5 at t=10), noise sd=0.001: turning points [9.94], flagged as jumps []: ok
+AUD-09 noiseless line: jumps [], analyze_series segments = 1: ok
+AUD-10 just_monitor(start=5) refused: Insufficient stable historical period (n_history=5, need at least 11 observations).: ok
+AUD-02 AR(1) rho=0.3 null: false-jump series 5/60 (nominal <= 5%), of which 1 carried an autocorrelation warning: ok

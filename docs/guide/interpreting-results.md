@@ -27,6 +27,7 @@ How `tspec` handles this:
 | :--- | :--- | :--- |
 | `DL_SHIFT_COINCIDENCE` | Warning | A jump, turning point, or NRT alarm landed right next to a laboratory detection-limit change. Re-run with `CensoredConfig(recensor_check=True)` and check lab metadata! |
 | `DL_ARTIFACT_LIKELY` | Warning | The detected jump vanished once data were recensored to a common detection limit — this suggests a lab artifact, but recensoring discards information, so a real but weak shift can also vanish; check lab metadata. |
+| `SERIAL_CORRELATION_ADJUSTED` | Info | Jump / turning-point / OLS segment-slope tests were calibrated for AR(1) (or OU) errors with the reported `rho` (`serial_correlation="ar1"`, default). Power is lower than for independent errors. |
 | `STRONG_AUTOCORRELATION` | Warning | Residual lag-1 or continuous-time OU correlation $\ge 0.60$. Nominal $p$-values are unreliable; tighten `alpha` or supply correlated inverse-covariance `weights = C_f^{-1}`. |
 | `MODERATE_AUTOCORRELATION` | Caution | Residual autocorrelation $\in [0.30, 0.60)$. False-positive rates are modestly elevated; consider `alpha=0.005`. |
 | `STEP_JUMP_CANDIDATE` | Caution | STPD rejected a significant break as a turning point because a vertical step explains it significantly better than any continuous bend (`jump_test="step"`, default). Run `just_jumps()` (possibly with a longer `size`) or `analyze_series()` to test for an abrupt vertical jump. |

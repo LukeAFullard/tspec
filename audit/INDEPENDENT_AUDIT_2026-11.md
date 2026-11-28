@@ -41,7 +41,7 @@ What blocks unqualified publication use (details in §2):
 
 ---
 
-## 0b. Remediation status (batch 1, same branch)
+## 0b. Remediation status (batches 1–2, same branch)
 
 | ID | Status | Change | Verified effect |
 |---|---|---|---|
@@ -50,7 +50,10 @@ What blocks unqualified publication use (details in §2):
 | AUD-06 | **Fixed** | same | Noiseless and σ = 1e-3 hinges: 0 → 1 TP (at 9.94), no jump flag |
 | AUD-09 | **Fixed** | `just.py`: zero-variance guard relative to the window's total sum of squares | Perfect line: 1 spurious jump → 0; 2 segments → 1; noiseless steps (also at 1e-13 scale) still detected |
 | AUD-10 | **Fixed** | `monitor.py`: seasonal history needs ~one cycle and ≥ model size + 5 points for numeric time too | `start=5` → `InsufficientDataError` |
-| AUD-02, 04, 05, 07, 08, 11–17 | Open | — (batch 2: autocorrelation-aware calibration, JUST power, ALLSSA grid, docs) | — |
+| AUD-02 | **Fixed** (batch 2) for `just_jumps`, `stpd`, `analyze_series`; open for `just_decompose`, `just_monitor`, `lssa`/`allssa` | New `_serial.py` and `serial_correlation="ar1"` (default). Jump-robust trimmed difference estimator of ρ, pre-test plus one-SE margin; AR(1)/OU Monte Carlo nulls; F/κ² for analytical references; exact sandwich VIF for OLS segment slopes and the trend band | False jumps at nominal 5%: 34% / 95% / 100% → **4.3% / 4.0% / 7.0%** (ρ = 0.3 / 0.6 / 0.8). STPD false TPs at nominal 1%: 28% / 88% → **0.7% / 3.0%** (ρ = 0.5 / 0.8). OLS slope Type-I at 5%: 22–50% → **1.3–8.7%**. White-noise power: 4σ jump 51% → 46%, bend 43% → 38% |
+| AUD-04, 05, 07, 08, 11–17 | Open | — (next: JUST power, ALLSSA grid, ghost jumps, docs) | — |
+
+Batch-2 evidence: `audit/independent_2026_11/p14_batch2_serial.py` (`p14_final_ar1_out.txt`, `p14_none_out.txt`), `p11_post_batch2_results.json` (README example: jump and TP still found in 100% of 100 seeds, exact events 95–97%, band coverage 92%), regression tests in `tests/test_serial_correlation.py`. Full suite: 201 passed, 1 skipped. Known residual: on very precise records with structure the smooth global fit cannot follow, misfit can inflate ρ̂ (disclosed in `limitations.md` §3).
 
 Evidence: `audit/independent_2026_11/p13_batch1_stpd.py` (`p13_final_out.txt`), `p10_post_out.txt`, `repro_post_batch1_out.txt`. New regression tests are in `tests/test_independent_audit_2026_11.py` and `tests/test_time_adapter.py`. The full suite passes: 192 passed, 1 skipped. AUD-03 is *mitigated* rather than fixed: small steps (≲ 4σ) can still be mistaken for bends, because the per-window step test has limited power. That residual is disclosed in `limitations.md` §7, and improving JUST's power (AUD-04) is the main lever.
 

@@ -5,6 +5,21 @@
 Statistical-calibration and hardening release. Several defaults change results. `parity_mode=True` keeps reproducing the upstream Ghaderpour implementations.
 
 ### Fixed (independent audit, 2026-11; see `audit/INDEPENDENT_AUDIT_2026-11.md`)
+- **Change-point and OLS trend tests are calibrated for serially correlated errors (AUD-02).** New `serial_correlation="ar1"` (default; `"ou"` continuous-time; `"none"`, also forced by `parity_mode` and by a 2D `weights` covariance) on `just_jumps`, `stpd`/`detect_turning_points` and `analyze_series`.
+  - A lag-1 residual autocorrelation is estimated robustly to jumps from difference variances (Chakar et al., 2017), using trimmed means after a smooth global fit (quadratic, four hinges, annual harmonics, and a level-shift column for every step larger than six robust SDs of the differences). It is treated as zero unless distinguishable from zero; otherwise one standard error is added.
+  - Monte Carlo nulls (JUST max-F, STPD max-t) simulate AR(1)/OU errors. Analytical references are deflated by `(1+rho)/(1-rho)`.
+  - `analyze_series` OLS/`ols_mi`/Huber segment-slope CIs, p-values and the trend band use an exact O(n) sandwich variance.
+  - New result fields `serial_correlation`, `serial_rho` (estimate) and `serial_rho_used` (calibration value), and the info warning `SERIAL_CORRELATION_ADJUSTED`.
+  - Effects in simulation (300 series per row; nominal level in brackets):
+
+    | Test | white | AR(1) ρ = 0.3 | ρ = 0.6 | ρ = 0.8 |
+    |---|---|---|---|---|
+    | `just_jumps` family-wise false jumps [5%] | 5.7% (was 5.7%) | 4.3% (was 34%) | 4.0% (was 95%) | 7.0% (was 100%) |
+    | `stpd` false turning points [1%] | 0.3% (was 0.3%) | — | 0.7% at ρ = 0.5 (was 28%) | 3.0% (was 88%) |
+    | `analyze_series` OLS slope, Type-I [5%] | 3.7–4.0% (was 4.3–4.7%) | — | 1.3–6.7% at ρ = 0.5 (was 22–25%) | 2.0–8.7% (was 47–50%) |
+
+    OU noise with `serial_correlation="ou"`: 2.3% false jumps (was 100%). Slope-CI coverage under ρ = 0.5–0.8 is 91–99% (was 50–78%).
+  - **Cost:** on white noise, `just_jumps` power for a 4σ step is 46% (was 51%) and `stpd` bend recall 38% (was 43%), because ρ̂ occasionally looks significant by chance. On red noise, power drops by design, since correlated data carry less information. `just_decompose`, `just_monitor` and `lssa`/`allssa` are not yet adjusted.
 - **Datetime inputs use a uniform time axis (AUD-01).** Datetimes were converted to *calendar* decimal years (each year divided by its own 365 or 366 days), compressing leap years by 0.27%. A noiseless M2 tide on hourly datetimes reached a normalized LSS of only 0.25 instead of 1.00. Datetimes now map to `2000 + (t − 2000-01-01) / 365.2425 days` (the mean Gregorian year), which is within about ±2 days of the calendar decimal year. **Decimal-year values of datetime inputs change slightly.**
 - **STPD no longer reports abrupt steps as smooth turning points (AUD-03, AUD-06).** New `jump_test="step"` (default; `"ndri"` in parity mode, `"both"` available) and `step_alpha=0.05`. A significant break is classified as a jump when a discontinuous two-line fit beats the best *continuous* hinge, with the knot optimized between samples (nested F-test, Bonferroni over splits), and the step captures ≥ 25% of the break's explained variance. Turning points within `tp_th` of a flagged step are dropped. New fields `step_pvalue`/`step_share` on `TurningPointEvent` and `FlaggedJumpCandidate`, `StpdResult.jump_test`, and the warning `STEP_JUMP_CANDIDATE`. Effects in simulation:
   - a 4σ step was reported as a turning point in 29% of series (was 69%); a 6σ step in 18% (was 63%);

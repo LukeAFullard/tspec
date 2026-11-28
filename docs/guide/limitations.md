@@ -23,11 +23,22 @@ When `stpd()` or `analyze_series()` first *detect* turning points and then fit a
 
 STPD tests each sliding window separately. Its power depends on how much information one window contains (by default about five seasonal cycles), not on the length of the whole record. For example, a change in slope from +0.5 to −0.5 per year with noise σ = 1.5 was detected in only about 6% of simulated series of 500 observations. A non-detection is not evidence that the trend is straight.
 
-## 3. Trend tests assume a simple form of serial correlation
+## 3. Tests assume a simple form of serial correlation
+
+- **Change-point and OLS trend tests (`serial_correlation="ar1"`, default since 2026-11).** `just_jumps`, `stpd` and `analyze_series` estimate a lag-1 autocorrelation of the residuals from a smooth global fit. The estimator is difference-based, so genuine jumps hardly affect it. The tests are then calibrated under AR(1) errors:
+  - Monte Carlo nulls are simulated with AR(1) noise;
+  - analytical F/t references are deflated by $(1+\rho)/(1-\rho)$;
+  - OLS segment slopes and the trend band of `analyze_series` use an exact sandwich variance.
+  - The calibration uses $\hat\rho$ plus one standard error ($2/\sqrt{n}$) once $\hat\rho$ exceeds twice its null standard error, because under-estimating $\rho$ is the costlier error; below that the errors are treated as independent.
+  - Before this, the family-wise false-jump rate of `just_jumps` at a nominal 5% was 34% (AR(1) $\rho = 0.3$) and 95% ($\rho = 0.6$); STPD gave false turning points in 27.5% of straight-line series at $\rho = 0.5$; the OLS segment-slope test rejected 24–49% of trend-free series at $\rho = 0.5$–$0.8$. See the CHANGELOG for the rates after the change.
+  - **Cost:** detection power drops when the noise is red, because correlated data carry less information (e.g. a 4σ step at $\rho = 0.5$ was found in 10% instead of 26% of series). Power on white noise is essentially unchanged.
+  - **Misfit can look like correlation:** on very precise records (small noise) with sharp structure the smooth global fit cannot follow (a bend between its knots, gaps), the estimate can be inflated by model misfit. For example, one test record with σ = 0.15 gave $\hat\rho \approx 0.2$ on independent noise and lost a 16σ jump at `jump_alpha=0.01`. Compare `serial_rho` with the residual diagnostics, and use `serial_correlation="none"` only when you have independent evidence that the errors are uncorrelated. On the README example (σ = 0.16) the jump and turning point were still found in 100% of 100 simulated records.
+  - **Not covered:** long memory, seasonal or regime-dependent correlation, and AR orders above one. `serial_correlation="ou"` uses a continuous-time (Ornstein–Uhlenbeck) model for strongly irregular sampling. `"none"` restores independent-error tests.
+  - **Not yet adjusted:** `just_decompose` bands, `just_monitor` and `lssa`/`allssa` still assume independent errors unless you supply a full inverse-covariance `weights` matrix.
 
 - The Mann–Kendall / Sen / Akritas–Theil–Sen correction (`mk_correction="ar1"`, default) assumes first-order autoregressive (AR(1)) residuals and uses a rank-based AR(1) bootstrap whenever $n \le 1000$ and $n_{\text{eff}} < 150$. Under AR(1) up to $\rho = 0.9$ (including isolated spikes and left/right censoring), the Type-I error stays near 3–7% at $\alpha = 0.05$. Other dependence structures (long memory, seasonal correlation, regime changes) are not covered and may give more false trends.
 - `mk_correction="hamed_rao"` was liberal (7–10%) even for independent data in simulation. `"none"` is strongly anti-conservative for autocorrelated data (about 25% at $\rho = 0.5$).
-- The OLS trend tests, jump tests and spectral tests assume independent residuals unless you supply a full inverse-covariance weight matrix. Check the red-noise diagnostics in `.explain()`.
+- Check the red-noise diagnostics in `.explain()`. A residual autocorrelation far above the calibrated `serial_rho` suggests a dependence structure the AR(1) model does not capture.
 
 ## 4. Censored (`<DL`) data
 

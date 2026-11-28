@@ -262,16 +262,22 @@ def test_stpd_calibrated_null_rate_and_power() -> None:
         fp += len(tspec.stpd(t, y).turning_points) > 0
     assert fp <= 2  # nominal 1% family-wise; Monte Carlo design gave 0.6%
     # The previous SNR > 1 gate missed this clear turning point; the calibrated test finds it.
-    hits = legacy = 0
+    hits = hits_iid = legacy = 0
     for seed in range(10):
         t, y, ttp = _tp_series(200 + seed, 500, 0.6, bend=True)
         hits += any(abs(float(x) - ttp) < 0.5 for x in tspec.stpd(t, y).tp_times)
+        # Same comparison as originally designed (independent-error calibration vs SNR gate);
+        # the default AR(1) calibration (AUD-02) may give up a borderline detection.
+        hits_iid += any(
+            abs(float(x) - ttp) < 0.5
+            for x in tspec.stpd(t, y, serial_correlation="none").tp_times
+        )
         legacy += any(
             abs(float(x) - ttp) < 0.5
             for x in tspec.stpd(t, y, tp_calibration="none", snr_th=1.0).tp_times
         )
     assert hits >= 6
-    assert hits > legacy
+    assert hits_iid > legacy
 
 
 # ---------------------------------------------------------------------------

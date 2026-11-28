@@ -35,6 +35,14 @@ from ._robust import (
     tukey_rho,
     validate_robust_args,
 )
+from ._serial import (
+    NO_SERIAL,
+    SerialMode,
+    SerialSpec,
+    correlated_normals,
+    resolve_serial_spec,
+    serial_warning_message,
+)
 from ._time import convert_eval_times, format_timestamp
 from ._types import ArrayLike, FloatArray, IntArray, TimeLike, ValueLike, WeightLike
 from .censored import (
@@ -230,6 +238,9 @@ class JustJumpResult(BaseResult):
     diagnostics: DiagnosticReport
     jump_calibration: str = "none"
     n_imputations: int = 1
+    serial_correlation: str = "none"
+    serial_rho: float = 0.0
+    serial_rho_used: float = 0.0
 
     @property
     def jump_indices(self) -> IntArray:
@@ -781,8 +792,13 @@ def _mc_maxf_null(
     j_hi: int,
     n_mc: int,
     seed: int | Sequence[int],
+    serial: SerialSpec = NO_SERIAL,
 ) -> tuple[FloatArray, int, int] | None:
     """Monte Carlo draws of the null maximum jump F over splits ``j_lo <= j < j_hi``.
+
+    With an active ``serial`` model the whitened errors are simulated as AR(1)/OU series
+    (a parametric bootstrap of the statistic under the fitted serial correlation, AUD-02)
+    instead of white noise.
 
     Returns ``(max_f_draws, n_splits, dof2)`` or ``None`` when the design is degenerate.
     The draws depend only on the window design, weights, harmonics and seed, so they
@@ -826,7 +842,7 @@ def _mc_maxf_null(
     chunk = 256
     while done < n_mc:
         m = min(chunk, n_mc - done)
-        e = rng.standard_normal((n, m))
+        e = correlated_normals(rng, t0, m, serial)
         r = e - q0 @ (q0.T @ e)
         rss0 = np.sum(r * r, axis=0)
         g1 = a.T @ r
@@ -895,6 +911,7 @@ def _mc_maxf_pvalue(
     n_mc: int,
     seed: int | Sequence[int],
     cache: dict[Any, Any] | None = None,
+    serial: SerialSpec = NO_SERIAL,
 ) -> float:
     """Exact Monte Carlo p-value of an observed jump F statistic against the null
     distribution of the **maximum** F over all candidate splits ``j_lo <= j < j_hi``.
@@ -912,10 +929,11 @@ def _mc_maxf_pvalue(
     key = (
         tuple(seed) if isinstance(seed, Sequence) else seed,
         int(t0.size), j_lo, j_hi, int(n_mc), test_freqs.tobytes(),
+        serial.mode, round(serial.rho, 12),
     )
     null = cache.get(key) if cache is not None else None
     if null is None:
-        null = _mc_maxf_null(t0, pw_win, test_freqs, j_lo, j_hi, n_mc, seed)
+        null = _mc_maxf_null(t0, pw_win, test_freqs, j_lo, j_hi, n_mc, seed, serial)
         if cache is not None:
             cache[key] = null
     if null is None:
@@ -927,7 +945,9 @@ def _mc_maxf_pvalue(
         # Below Monte Carlo resolution: report the (valid) Bonferroni bound over the
         # scanned splits, capped at 1/(n_mc+1). The test is unchanged for any
         # alpha >= 1/(n_mc+1) and Bonferroni-valid below it.
-        p_bonf = float(min(1.0, n_j * f_dist.sf(f_obs, 2, dof2)))
+        # Under serial correlation the F statistic is deflated by the long-run variance
+        # factor kappa^2 before the (otherwise iid) analytical bound is applied.
+        p_bonf = float(min(1.0, n_j * f_dist.sf(f_obs / serial.kappa2, 2, dof2)))
         return min(p_mc, p_bonf)
     return p_mc
 
@@ -960,6 +980,7 @@ def _nested_jump_ftests(
     season_significance: str = "per_frequency",
     mc_cache: dict[Any, Any] | None = None,
     raw_step: bool = False,
+    serial: SerialSpec = NO_SERIAL,
 ) -> tuple[float, float]:
     """Nested partial F-tests comparing discontinuous 2-piece vs null & continuous hinge.
 
@@ -983,7 +1004,12 @@ def _nested_jump_ftests(
     non-robust fits only), ``"bonferroni"`` (multiply raw p-values by the number of
     candidate splits), or ``"none"`` (raw fixed-split p-values). ``bonferroni=True`` is
     the legacy spelling of ``calibration="bonferroni"``.
+
+    ``serial`` (AUD-02): with an active AR(1)/OU model, the Monte Carlo null is simulated
+    with correlated errors and every analytical F reference (Bonferroni, robust, step)
+    uses ``F / kappa^2`` with ``kappa^2 = (1 + rho) / (1 - rho)``.
     """
+    k2 = serial.kappa2
     from ._linalg import solve_weighted_ols
 
     eff_robust: RobustMethod = "none" if parity_mode else robust
@@ -1075,7 +1101,7 @@ def _nested_jump_ftests(
         D_null, cs_null = build_design_matrix(
             t0, "linear", np.empty(0, dtype=np.intp), False, test_freqs
         )
-        _, p_jump_raw, res_full, _ = huber_nested_ftest(
+        f_jump_rob, p_jump_raw, res_full, _ = huber_nested_ftest(
             D_null,
             D_full,
             y_win,
@@ -1087,6 +1113,8 @@ def _nested_jump_ftests(
         )
         if np.isnan(p_jump_raw):
             return float("nan"), float("nan")
+        if k2 > 1.0 and np.isfinite(f_jump_rob):
+            p_jump_raw = float(f_dist.sf(f_jump_rob / k2, 2, dof2))
         if same_step_freqs:
             res_full_step = res_full
         else:
@@ -1134,7 +1162,7 @@ def _nested_jump_ftests(
                 max(0.0, 2.0 * (loss_hinge - res_full_step.loss))
                 / res_full_step.lambda_scale
             )
-            p_step_raw = float(f_dist.sf(f_step, 1, dof2_step))
+            p_step_raw = float(f_dist.sf(f_step / k2, 1, dof2_step))
         return float(min(1.0, mult * p_jump_raw)), float(min(1.0, mult * p_step_raw))
 
     res_full_ols = _lssa_core(
@@ -1207,11 +1235,12 @@ def _nested_jump_ftests(
         if calib == "montecarlo":
             p_jump = float(
                 _mc_maxf_pvalue(
-                    t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed, cache=mc_cache
+                    t0, pw_win, test_freqs, f_jump, 3, n_win - 2, n_mc, mc_seed, cache=mc_cache,
+                    serial=serial,
                 )
             )
         else:
-            p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
+            p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump / k2, 2, dof2))))
 
     if rss_hinge <= tol_zero:
         p_step = 1.0
@@ -1225,9 +1254,9 @@ def _nested_jump_ftests(
             # data-chosen split; its null (an unknown-knot hinge) is not pivotal, so use the
             # analytical Bonferroni correction over the scanned splits.
             step_mult = 1.0 if raw_step else float(n_cands)
-            p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step, 1, dof2_step))))
+            p_step = float(min(1.0, step_mult * float(f_dist.sf(f_step / k2, 1, dof2_step))))
         else:
-            p_step = float(min(1.0, mult * float(f_dist.sf(f_step, 1, dof2_step))))
+            p_step = float(min(1.0, mult * float(f_dist.sf(f_step / k2, 1, dof2_step))))
     return p_jump, p_step
 
 
@@ -1286,6 +1315,7 @@ def _run_just_jumps_array(
     rng: np.random.Generator | None = None,
     mi_spec: tuple[int, str] | None = None,
     mi_counter: list[int] | None = None,
+    serial: SerialSpec = NO_SERIAL,
 ) -> tuple[
     list[tuple[int, int, float, float, float, float, float, WindowCandidate]],
     list[WindowCandidate],
@@ -1418,6 +1448,7 @@ def _run_just_jumps_array(
             mc_seed=(20261125, int(best_c.window_start), int(best_c.window_stop)),
             season_significance=season_significance,
             mc_cache=mc_cache,
+            serial=serial,
         )
         ws_c, we_c = int(best_c.window_start), int(best_c.window_stop)
         if (
@@ -1489,6 +1520,7 @@ def _run_just_jumps_array(
                         season_significance=season_significance,
                         mc_cache=mc_cache,
                         raw_step=True,
+                        serial=serial,
                     )
                     pj.append(pj_m)
                     ps.append(ps_m)
@@ -1544,6 +1576,7 @@ def just_jumps(
     censor_status: ArrayLike | None = None,
     censoring: CensoredConfig | None = None,
     parity_mode: bool = False,
+    serial_correlation: SerialMode = "ar1",
 ) -> JustJumpResult:
     """Detect abrupt jumps and trend slope shifts via JUST (Ghaderpour & Vujadinovic, 2020).
 
@@ -1629,6 +1662,16 @@ def just_jumps(
     parity_mode:
         If ``True``, matches legacy upstream rounding and window-termination
         semantics for Tier 1 numerical parity verification.
+    serial_correlation:
+        Error model used to calibrate the jump tests (audit finding AUD-02).
+        ``"ar1"`` (default) estimates a lag-1 autocorrelation ``rho`` of the residuals
+        from a smooth global fit (difference-based, insensitive to jumps), simulates the
+        Monte Carlo null with AR(1)-correlated errors and deflates analytical F
+        references by ``(1 + rho) / (1 - rho)``. ``"ou"`` uses a continuous-time
+        (Ornstein-Uhlenbeck) correlation ``rho ** (dt / median_dt)`` for irregular
+        sampling. ``"none"`` assumes independent errors (forced by ``parity_mode=True``,
+        and used when a 2D ``weights`` covariance is supplied). Independent-error tests
+        reported 34% / 95% family-wise false jumps at AR(1) ``rho = 0.3 / 0.6``.
     """
     season_l = season.lower()
     if season_l not in ("allssa", "ols", "none"):
@@ -1697,6 +1740,24 @@ def just_jumps(
     warnings_list.extend(time_unit_warning(series.times_numeric, series.is_datetime))
     if calib_warn is not None:
         warnings_list.append(calib_warn)
+    serial_spec = resolve_serial_spec(
+        serial_correlation,
+        parity_mode=parity_mode,
+        t=series.times_numeric,
+        y=series.values,
+        weight_kind=pw.kind,
+        weight_vector=pw.vector,
+        season=season_l,
+        omega=om_arr,
+    )
+    if serial_spec.active:
+        warnings_list.append(
+            WarningItem(
+                code="SERIAL_CORRELATION_ADJUSTED",
+                severity="info",
+                message=serial_warning_message(serial_spec),
+            )
+        )
     if not parity_mode and eff_jump_alpha is None:
         warnings_list.append(
             WarningItem(
@@ -1854,6 +1915,7 @@ def just_jumps(
         rng=rng,
         mi_spec=mi_spec,
         mi_counter=mi_counter,
+        serial=serial_spec,
     )
     if mi_counter[1] > 0:
         warnings_list.append(
@@ -1942,6 +2004,7 @@ def just_jumps(
                 provenance=prov if cfg.scope == "windowed" else None,
                 censor_cfg=draw_cfg,
                 rng=win_rngs[idx_d] if win_rngs is not None else None,
+                serial=serial_spec,
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted:
@@ -2026,6 +2089,7 @@ def just_jumps(
                     n_mc=int(n_mc),
                     mc_seed=(20261128, int(best_c.window_start), int(best_c.window_stop)),
                     season_significance=eff_season_sig,
+                    serial=serial_spec,
                 )
                 recen_alpha = eff_jump_alpha if eff_jump_alpha is not None else 0.05
                 vanished = (abs(mag_r) < mag_th and abs(dir_r) < dir_th) or (p_r >= recen_alpha)
@@ -2168,6 +2232,9 @@ def just_jumps(
         diagnostics=diag,
         jump_calibration=eff_calib,
         n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
+        serial_correlation=serial_spec.mode,
+        serial_rho=float(serial_spec.rho_hat),
+        serial_rho_used=float(serial_spec.rho),
     )
 
 

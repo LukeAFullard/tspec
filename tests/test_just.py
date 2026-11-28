@@ -220,7 +220,12 @@ def test_just_jumps_allssa_step_pvalue_ignores_continuous_turning_point() -> Non
     seasonal = 0.8 * np.cos(2 * np.pi * t) + 0.35 * np.sin(2 * np.pi * 2.0 * t)
     y = trend + seasonal + rng.normal(0.0, 0.15, size=t.size)
 
-    res = just_jumps(t, y, season="allssa", jump_alpha=0.01, step_alpha=0.01, n_mc=199)
+    # This test targets the step_pvalue harmonic basis, not serial calibration. On this
+    # high-SNR record (sigma = 0.15, gap + jump + sharp bend) the default AR(1) estimate is
+    # inflated by model misfit (rho_hat ~ 0.2, see limitations.md section 3).
+    res = just_jumps(
+        t, y, season="allssa", jump_alpha=0.01, step_alpha=0.01, n_mc=199, serial_correlation="none"
+    )
     assert len(res.jumps) == 1
     assert abs(res.jumps[0].time_year - 2017.5) <= 0.3
 
