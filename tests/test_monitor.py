@@ -223,3 +223,48 @@ def test_monitor_explain_and_warnings_for_unadjusted_and_exceeded_horizon() -> N
     )
     assert r_par is not None
 
+
+def test_monitor_robust_mm_historical_spikes_effective_dof() -> None:
+    """Biweight-rejected historical spikes must not be counted as full DOF in monitoring critical values."""
+    rng = np.random.default_rng(4003)
+    t = np.sort(rng.uniform(0.0, 10.0, size=180))
+    wear = 1.0 + 0.05 * t + np.where(t > 6.5, 0.90 * (t - 6.5), 0.0)
+    noise = rng.normal(0.0, 0.12, size=t.size)
+    y_clean = wear + noise
+    y_spiky = y_clean.copy()
+    glitch_idx = rng.choice(np.arange(10, 170), size=14, replace=False)
+    y_spiky[glitch_idx] += rng.choice([-3.2, 3.2], size=14)
+
+    mon_clean = just_monitor(
+        t,
+        y_clean,
+        start=5.0,
+        season="none",
+        robust="mm",
+        alpha=0.05,
+        sequential_control="consecutive_k",
+        consecutive_k=2,
+        horizon=90,
+        monitor_omega=np.linspace(0.1, 1.5, 25),
+        n_mc=199,
+    )
+    mon_spiky = just_monitor(
+        t,
+        y_spiky,
+        start=5.0,
+        season="none",
+        robust="mm",
+        alpha=0.05,
+        sequential_control="consecutive_k",
+        consecutive_k=2,
+        horizon=90,
+        monitor_omega=np.linspace(0.1, 1.5, 25),
+        n_mc=199,
+    )
+    # Critical value with 3 biweight-rejected historical spikes must be strictly higher (fewer DOF)
+    assert mon_spiky.steps[0].critical_value > mon_clean.steps[0].critical_value
+    # Must not false-alarm before the 6.5 degradation onset, and must catch degradation cleanly
+    assert mon_spiky.detected
+    assert mon_spiky.disturbance_time_year is not None
+    assert 6.4 <= mon_spiky.disturbance_time_year <= 8.5
+

@@ -1085,6 +1085,7 @@ def just_monitor(
 
     # Under robust='huber' or 'mm', down-weight historical baseline spikes in [history:start]
     # while keeping all incoming monitoring observations at full weight 1.0 (zero masking).
+    rob_dropped_his = np.zeros(n_his, dtype=bool)
     if eff_robust != "none":
         rw_his = whiten_vector(his_residuals, pw_his)
         s_his = float(1.482602218505602 * np.median(np.abs(rw_his)))
@@ -1095,6 +1096,7 @@ def just_monitor(
                 if eff_robust == "mm"
                 else np.where(u_his <= huber_k, 1.0, huber_k / np.maximum(u_his, huber_k))
             )
+            rob_dropped_his = w_his_h <= 1e-6
             act_factors = np.concatenate(
                 [w_his_h, np.ones(int(t_act.size) - n_his, dtype=np.float64)]
             )
@@ -1282,7 +1284,7 @@ def just_monitor(
         if horizon is not None:
             consec_alpha = _calibrate_consecutive_k(
                 t_act[:n_his],
-                pw_act.subset(his_local),
+                pw_his_base,
                 his_freqs,
                 float(t_act[n_his]),
                 eff_horizon,
@@ -1368,7 +1370,13 @@ def just_monitor(
         )
         cond_max = max(cond_max, res_step.condition_number)
         spec = res_step.spectrum
-        crit = float(critical_value_lss(int(t_w.size), 1, alpha_adj))
+        n_rob_zero = (
+            int(np.sum(rob_dropped_his[win_start : min(win_end, n_his)]))
+            if win_start < n_his
+            else 0
+        )
+        n_eff_w = max(4, int(t_w.size) - n_rob_zero)
+        crit = float(critical_value_lss(n_eff_w, 1, alpha_adj))
 
         max_low = float(np.max(spec[low_mask])) if np.any(low_mask) else 0.0
         max_high = float(np.max(spec[high_mask])) if np.any(high_mask) else 0.0

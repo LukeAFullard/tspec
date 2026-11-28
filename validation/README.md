@@ -24,8 +24,11 @@ python validation/bench_mc.py
 # 3b. Tier 2b: Post-hardening literature-inspired (L1-L6) & compositional sub-component (SC1-SC3) benchmarks
 OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_literature_and_components.py
 
-# 3c. Tier 2c: Real-world public-domain scientific datasets (Nile 1871-1970, NOAA Mauna Loa CO2, Sunspots)
+# 3c. Tier 2c: Real-world public-domain scientific & economic datasets (Nile, Mauna Loa CO2, Sunspots, NASA GISTEMP, US Macro CPI, El Nino)
 OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_public_datasets.py
+
+# 3d. Tier 2d: External library oracles (statsmodels/scipy), cross-domain signals & adversarial edge cases
+OMP_NUM_THREADS=1 MPLBACKEND=Agg python3 validation/bench_cross_domain_and_edge_cases.py
 
 # 4. Tier 3: Unit, invariance, edge-case & Hypothesis property tests
 pytest -v

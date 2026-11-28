@@ -52,6 +52,6 @@ The calibrated jump test, ALLSSA frequency selection, STPD turning-point test, a
 
 ## 8. Validation status
 
-- The repository's `validation/reports/` tier predates the calibration and hardening changes and is labelled historical.
-- High-replicate Monte Carlo calibration scripts live in `audit/`, while faster regression and calibration gates run in the continuous-integration `pytest` suite.
-- Independent domain verification of key assumptions (serial correlation, censoring distribution, seasonal structure) is recommended before publication-critical use.
+- All four validation tiers under `validation/reports/` — Tier 1 upstream parity (41/41), refreshed Tier 2 Monte Carlo benchmarks (26/26), Tier 2b literature & compositional stress tests (9/9), Tier 2c real-world public-domain scientific/economic datasets (6/6), and Tier 2d external oracles (`statsmodels`/`scipy`), cross-domain signals & adversarial edge cases (15/15) — have been executed and verified against the current hardened codebase.
+- High-replicate Monte Carlo calibration sweeps live in `audit/`, while 182 unit, property-based, calibration-regression, and executable-documentation tests run on every push in GitHub Actions CI.
+- Independent domain verification of key assumptions (serial correlation, censoring distribution, seasonal structure) is still recommended before publication-critical use.

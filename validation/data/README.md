@@ -11,3 +11,12 @@ All datasets in this directory are classic public-domain scientific records used
 3. **`sunspots_annual_1700_2008.csv`** ($n = 309$, 1700–2008)
    - Yearly mean sunspot activity numbers.
    - Classic geophysical spectral benchmark for the ~11-year Schwabe solar cycle (`f ≈ 0.091` cy/yr). Public domain (Wolf / SILSO / `statsmodels.datasets.sunspots`).
+4. **`nasa_gistemp_global_annual.csv`** ($n = 146$, 1880–2025)
+   - Annual Land-Ocean Global Mean Surface Temperature Anomaly (°C, relative to 1951–1980).
+   - Source: NASA Goddard Institute for Space Studies (`https://data.giss.nasa.gov/gistemp/tabledata_v4/GLB.Ts+dSST.csv`, GISTEMP Team / Lenssen et al., 2019). US Government public domain.
+5. **`us_macrodata_quarterly.csv`** ($n = 203$, 1959Q1–2009Q3)
+   - US quarterly macroeconomic indicators (`realgdp`, `cpi`, `infl`, `unemp`).
+   - Classic econometrics benchmark capturing the 1972 Great Inflation onset, 1981 Volcker disinflation turning point, and 1991 Great Moderation. Public domain (US BEA / BLS / `statsmodels.datasets.macrodata`).
+6. **`elnino_sst_monthly.csv`** ($n = 732$, Jan 1950 – Dec 2010)
+   - Monthly Pacific Niño 1+2 Sea Surface Temperature (°C).
+   - Classic oceanography / climate oscillation benchmark combining annual seasonality with the 3–6 year irregular ENSO cycle. Public domain (NOAA CPC / `statsmodels.datasets.elnino`).

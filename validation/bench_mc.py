@@ -249,12 +249,16 @@ def run_stpd_matrix(n_rep: int = 50) -> list[dict[str, Any]]:
     for _ in range(n_rep):
         t = np.linspace(0.0, 6.0, 73)
         y0 = np.where(t <= 3.0, -1.0 * t, -3.0 - 6.0 * (t - 3.0))
-        rw = detect_turning_points(t, y0 + rng.normal(0.0, 0.8, size=73), size=60, step=12, margin=10)
+        rw = detect_turning_points(
+            t, y0 + rng.normal(0.0, 0.8, size=73), size=60, step=12, margin=10, band_method="conditional"
+        )
         mw = [tp for tp in rw.turning_points if abs(tp.time_year - 3.0) <= 0.5]
         if mw:
             hits_w += 1
             t_errs_w.append(abs(mw[0].time_year - 3.0))
-        rt = detect_turning_points(t, y0 + 0.6 * rng.standard_t(df=5, size=73), size=60, step=12, margin=10)
+        rt = detect_turning_points(
+            t, y0 + 0.6 * rng.standard_t(df=5, size=73), size=60, step=12, margin=10, band_method="conditional"
+        )
         if any(abs(tp.time_year - 3.0) <= 0.5 for tp in rt.turning_points):
             hits_t5 += 1
     mae_t = float(np.mean(t_errs_w)) if t_errs_w else float("inf")
@@ -273,7 +277,7 @@ def run_stpd_matrix(n_rep: int = 50) -> list[dict[str, Any]]:
     for _ in range(n_rep):
         t = np.linspace(0.0, 6.0, 73)
         y = 2.0 - 1.5 * t + rng.normal(0.0, 0.8, size=73)
-        rs = detect_turning_points(t, y, size=60, step=12, margin=10, alpha=0.01)
+        rs = detect_turning_points(t, y, size=60, step=12, margin=10, alpha=0.01, band_method="conditional")
         if len(rs.turning_points) > 0:
             fp += 1
     rows.append(
@@ -281,7 +285,7 @@ def run_stpd_matrix(n_rep: int = 50) -> list[dict[str, Any]]:
             "id": "S2",
             "scenario": "STPD Null Constant-Slope Calibration (0 TPs)",
             "pass": fp / n_rep <= 0.08,
-            "summary": f"Empirical FPR={fp/n_rep:.1%} at alpha=0.01, SNR>1, NDRI<0.3",
+            "summary": f"Empirical FPR={fp/n_rep:.1%} at alpha=0.01, calibrated MC, NDRI<0.3",
         }
     )
 
@@ -294,8 +298,8 @@ def run_stpd_matrix(n_rep: int = 50) -> list[dict[str, Any]]:
         t = np.linspace(0.0, 6.0, 73)
         y_tp = np.where(t <= 3.0, -1.0 * t, -3.0 - 7.0 * (t - 3.0)) + rng.normal(0.0, 0.7, size=73)
         y_jp = np.where(t < 3.0, 0.0, -14.0) + rng.normal(0.0, 0.7, size=73)
-        rtp = detect_turning_points(t, y_tp, size=60, step=12, margin=10)
-        rjp = detect_turning_points(t, y_jp, size=60, step=12, margin=10)
+        rtp = detect_turning_points(t, y_tp, size=60, step=12, margin=10, band_method="conditional")
+        rjp = detect_turning_points(t, y_jp, size=60, step=12, margin=10, band_method="conditional")
         if rtp.turning_points:
             ndri_tps.append(rtp.turning_points[0].ndri_rmse)
         if rjp.flagged_jumps:
@@ -327,8 +331,12 @@ def run_stpd_matrix(n_rep: int = 50) -> list[dict[str, Any]]:
     for _ in range(n_rep):
         t = np.concatenate([np.linspace(0.0, 3.0, 60), np.linspace(3.15, 6.0, 20)])
         y = np.where(t <= 3.0, -1.0 * t, -3.0 - 6.0 * (t - 3.0)) + rng.normal(0.0, 0.7, size=t.size)
-        r_l2 = detect_turning_points(t, y, size=80, step=10, margin=8, ndri_mode="l2", snr_mode="centered")
-        r_rm = detect_turning_points(t, y, size=80, step=10, margin=8, ndri_mode="rmse", snr_mode="centered")
+        r_l2 = detect_turning_points(
+            t, y, size=80, step=10, margin=8, ndri_mode="l2", snr_mode="centered", band_method="conditional"
+        )
+        r_rm = detect_turning_points(
+            t, y, size=80, step=10, margin=8, ndri_mode="rmse", snr_mode="centered", band_method="conditional"
+        )
         if len(r_l2.turning_points) == 0:
             rej_l2 += 1
         if len(r_rm.turning_points) == 0:
@@ -350,7 +358,7 @@ def run_stpd_matrix(n_rep: int = 50) -> list[dict[str, Any]]:
     for _ in range(n_rep):
         t = np.linspace(0.0, 6.0, 73)
         y = np.where(t <= 3.0, -1.0 * t, -3.0 - 4.0 * (t - 3.0)) + rng.normal(0.0, 1.2, size=73)
-        rs = detect_turning_points(t, y, size=60, step=12, margin=10)
+        rs = detect_turning_points(t, y, size=60, step=12, margin=10, band_method="conditional")
         rj = just_jumps(t, y, season="none", size=60, step=12, mag_th=0.0, dir_th=0.0, jump_alpha=0.05, bonferroni_window=True)
         if rs.turning_points:
             t_err_stpd.append(abs(rs.turning_points[0].time_year - 3.0))
@@ -627,6 +635,7 @@ def run_rednoise_and_pipeline(n_rep: int = 40) -> list[dict[str, Any]]:
             just_kwargs={"season": "ols", "jump_alpha": 0.01},
             decompose_kwargs={"season": "ols"},
             stpd_kwargs={"size": 80, "step": 15, "margin": 12, "alpha": 0.01},
+            band_method="conditional",
         )
         if res.jumps and any(abs(j.time_year - 2017.5) <= 0.35 for j in res.jumps.jumps):
             jump_hits += 1
@@ -658,15 +667,15 @@ def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
         if just_monitor(t, y, start=120, season="ols", alpha=0.05, parity_mode=True).detected:
             fp_unadj += 1
         if just_monitor(
-            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="pocock"
+            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="pocock", horizon=25
         ).detected:
             fp_poc += 1
         if just_monitor(
-            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="obrien_fleming"
+            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="obrien_fleming", horizon=25
         ).detected:
             fp_obf += 1
         if just_monitor(
-            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="consecutive_k", consecutive_k=2
+            t, y, start=120, season="ols", alpha=0.05, freq_correction="sidak", sequential_control="consecutive_k", consecutive_k=2, horizon=25, n_mc=199
         ).detected:
             fp_con += 1
 
@@ -691,7 +700,7 @@ def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
         t = np.linspace(2016.0, 2022.5, 160)
         base = 1.0 + 0.02 * (t - 2016.0) + 0.25 * np.cos(2 * np.pi * t)
         y_ab = base + np.where(t >= 2021.4, -0.45, 0.0) + rng.normal(0.0, 0.04, size=t.size)
-        r_ab = just_monitor(t, y_ab, start=2021.0, season="ols", alpha=0.01)
+        r_ab = just_monitor(t, y_ab, start=2021.0, season="ols", alpha=0.01, horizon=40)
         if r_ab.detected and r_ab.disturbance_type == "abrupt" and r_ab.disturbance_time_year is not None:
             delay = r_ab.disturbance_time_year - 2021.4
             if -0.05 <= delay <= 0.45:
@@ -699,7 +708,7 @@ def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
                 abrupt_delays.append(max(0.0, delay))
 
         y_ph = base + np.where(t >= 2021.2, 0.22 * np.sin(2 * np.pi * 3.0 * t), 0.0) + rng.normal(0.0, 0.03, size=t.size)
-        r_ph = just_monitor(t, y_ph, start=2021.0, season="ols", alpha=0.01)
+        r_ph = just_monitor(t, y_ph, start=2021.0, season="ols", alpha=0.01, horizon=40)
         if r_ph.detected and r_ph.disturbance_type == "phenological":
             pheno_hits += 1
 
@@ -720,8 +729,8 @@ def run_monitor_matrix(n_rep: int = 40) -> list[dict[str, Any]]:
     for _ in range(n_rep):
         t = np.linspace(2010.0, 2022.0, 144)  # 48 historical + 96 monitoring
         y = 1.0 + 0.2 * (t - 2010.0) + 0.5 * np.cos(2 * np.pi * t) + rng.normal(0.0, 0.2, size=144)
-        r_no = just_monitor(t, y, start=48, season="ols", alpha=0.05, account_for_forecast_uncertainty=False)
-        r_yes = just_monitor(t, y, start=48, season="ols", alpha=0.05, account_for_forecast_uncertainty=True)
+        r_no = just_monitor(t, y, start=48, season="ols", alpha=0.05, horizon=96, account_for_forecast_uncertainty=False)
+        r_yes = just_monitor(t, y, start=48, season="ols", alpha=0.05, horizon=96, account_for_forecast_uncertainty=True)
         if r_no.detected:
             fp_no_cov += 1
         if r_yes.detected:
@@ -804,8 +813,12 @@ def run_robust_matrix(n_rep: int = 25) -> list[dict[str, Any]]:
         sp = rng.choice(t.size, size=9, replace=False)
         y_tp[sp] += rng.choice([-1.0, 1.0], size=9) * 8.0
 
-        r_ols = detect_turning_points(t, y_tp, size=60, step=20, robust="none", refit_mode="sequential")
-        r_rob = detect_turning_points(t, y_tp, size=60, step=20, robust="mm", refit_mode="l1")
+        r_ols = detect_turning_points(
+            t, y_tp, size=60, step=20, robust="none", refit_mode="sequential", band_method="conditional"
+        )
+        r_rob = detect_turning_points(
+            t, y_tp, size=60, step=20, robust="mm", refit_mode="l1", band_method="conditional"
+        )
         if any(abs(tp.time_year - 5.0) <= 0.5 for tp in r_rob.turning_points):
             tp_hit_rob += 1
         if len(r_ols.piecewise_trend.slopes) >= 2:
@@ -818,7 +831,7 @@ def run_robust_matrix(n_rep: int = 25) -> list[dict[str, Any]]:
             )
 
         y_step = 1.0 + 0.1 * t + np.where(t >= 5.0, 3.5, 0.0) + rng.normal(0.0, 0.15, size=t.size)
-        r_st = detect_turning_points(t, y_step, size=60, step=20, robust="mm")
+        r_st = detect_turning_points(t, y_step, size=60, step=20, robust="mm", band_method="conditional")
         if len(r_st.flagged_jumps) >= 1 and all(abs(tp.time_year - 5.0) > 0.5 for tp in r_st.turning_points):
             ndri_jump_flagged += 1
 
@@ -860,9 +873,15 @@ def run_robust_matrix(n_rep: int = 25) -> list[dict[str, Any]]:
         kw_d = {"size": 60, "step": 25, "season": "ols"}
         kw_s = {"size": 60, "step": 15}
 
-        ro = analyze_series(t, y, robust="none", slope_estimator="ols", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s)
-        rs = analyze_series(t, y, robust="mm", slope_estimator="sen", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s)
-        rh = analyze_series(t, y, robust="mm", slope_estimator="huber", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s)
+        ro = analyze_series(
+            t, y, robust="none", slope_estimator="ols", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s, band_method="conditional"
+        )
+        rs = analyze_series(
+            t, y, robust="mm", slope_estimator="sen", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s, band_method="conditional"
+        )
+        rh = analyze_series(
+            t, y, robust="mm", slope_estimator="huber", just_kwargs=kw_j, decompose_kwargs=kw_d, stpd_kwargs=kw_s, band_method="conditional"
+        )
 
         if len(ro.segments) >= 2:
             mae_p_ols.append(0.5 * (abs(ro.segments[0].slope - 0.6) + abs(ro.segments[-1].slope - (-0.8))))
@@ -909,11 +928,11 @@ def run_robust_matrix(n_rep: int = 25) -> list[dict[str, Any]]:
         cfg = CensoredConfig(method="ros", dist="normal", impute_type="stochastic", n_stability_draws=0, random_state=s)
         ro = analyze_series(
             t, y_obs, remove_seasonality=False, detect_jumps=False, detect_turning_points=False,
-            censor_status=cen, censoring=cfg, robust="none", slope_estimator="ols",
+            censor_status=cen, censoring=cfg, robust="none", slope_estimator="ols", band_method="conditional",
         )
         ra = analyze_series(
             t, y_obs, remove_seasonality=False, detect_jumps=False, detect_turning_points=False,
-            censor_status=cen, censoring=cfg, robust="huber", slope_estimator="sen",
+            censor_status=cen, censoring=cfg, robust="huber", slope_estimator="sen", band_method="conditional",
         )
         err_c_ols.append(abs(ro.segments[0].slope - 0.5))
         err_c_ats.append(abs(ra.segments[0].slope - 0.5))
@@ -934,14 +953,22 @@ def run_robust_matrix(n_rep: int = 25) -> list[dict[str, Any]]:
 
 
 def main() -> int:
+    from concurrent.futures import ProcessPoolExecutor
+
     t0 = time.perf_counter()
+    runners = [
+        run_just_matrix,
+        run_stpd_matrix,
+        run_censored_matrix,
+        run_rednoise_and_pipeline,
+        run_monitor_matrix,
+        run_robust_matrix,
+    ]
     all_rows: list[dict[str, Any]] = []
-    all_rows.extend(run_just_matrix())
-    all_rows.extend(run_stpd_matrix())
-    all_rows.extend(run_censored_matrix())
-    all_rows.extend(run_rednoise_and_pipeline())
-    all_rows.extend(run_monitor_matrix())
-    all_rows.extend(run_robust_matrix())
+    with ProcessPoolExecutor(max_workers=len(runners)) as pool:
+        futs = [pool.submit(fn) for fn in runners]
+        for fut in futs:
+            all_rows.extend(fut.result())
     elapsed = time.perf_counter() - t0
 
     n_pass = sum(1 for r in all_rows if r["pass"])

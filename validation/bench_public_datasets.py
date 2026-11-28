@@ -192,6 +192,81 @@ def bench_rw3_sunspots_gapped_solar_cycle() -> tuple[bool, str]:
     )
 
 
+def bench_rw4_nasa_gistemp_global_temp() -> tuple[bool, str]:
+    """RW4: NASA GISTEMP v4 Global Temperature Anomaly (1880-2025) — 1970s warming acceleration."""
+    data = _load_csv_columns(
+        DATA_DIR / "nasa_gistemp_global_annual.csv", ["year", "temp_anomaly_c"]
+    )
+    t = data["year"]
+    y = data["temp_anomaly_c"]
+
+    tp = detect_turning_points(
+        t,
+        y,
+        size=80,
+        step=15,
+        margin=12,
+        tp_th=10.0,
+        alpha=0.01,
+        n_mc=199,
+        band_method="conditional",
+    )
+    years = [p.time_year for p in tp.turning_points]
+    has_1970s = any(1965.0 <= yr <= 1980.0 for yr in years)
+    modern_rate_decade = float(tp.piecewise_trend.slopes[-1]) * 10.0
+    ok = has_1970s and (0.15 <= modern_rate_decade <= 0.28)
+    return (
+        ok,
+        f"TPs={[int(round(x)) for x in years]}, modern_rate={modern_rate_decade:+.3f} °C/decade",
+    )
+
+
+def bench_rw5_us_macrodata_cpi_regimes() -> tuple[bool, str]:
+    """RW5: US Macrodata log(CPI) (1959-2009) — Great Inflation (1972), Volcker (1981), Great Moderation (1991)."""
+    data = _load_csv_columns(DATA_DIR / "us_macrodata_quarterly.csv", ["decimal_year", "cpi"])
+    t = data["decimal_year"]
+    log_cpi = np.log(data["cpi"])
+
+    tp = detect_turning_points(
+        t, log_cpi, size=80, step=12, margin=12, alpha=0.01, n_mc=199, band_method="conditional"
+    )
+    years = [p.time_year for p in tp.turning_points]
+    slopes_pct = [float(s) * 100.0 for s in tp.piecewise_trend.slopes]
+    has_70s = any(1971.0 <= yr <= 1974.0 for yr in years)
+    has_volcker = any(1980.0 <= yr <= 1983.0 for yr in years)
+    has_90s = any(1990.0 <= yr <= 1993.0 for yr in years)
+    ok = has_70s and has_volcker and has_90s and max(slopes_pct) > 7.5 and slopes_pct[-1] < 3.5
+    return (
+        ok,
+        f"TPs={[round(x, 2) for x in years]}, infl_regimes={[round(s, 2) for s in slopes_pct]} %/yr",
+    )
+
+
+def bench_rw6_elnino_enso_oceanography() -> tuple[bool, str]:
+    """RW6: NOAA/CPC El Nino SST (1950-2010, 25% gapped) — irregular 3-6 yr ENSO cycle."""
+    data = _load_csv_columns(DATA_DIR / "elnino_sst_monthly.csv", ["decimal_year", "sst_c"])
+    rng = np.random.default_rng(7)
+    keep = rng.uniform(size=data["decimal_year"].size) > 0.25
+    t = data["decimal_year"][keep]
+    y = data["sst_c"][keep]
+
+    sp = lssa(
+        t,
+        y,
+        known_freqs=np.array([1.0, 2.0]),
+        omega=np.linspace(0.10, 0.50, 201),
+        trend="linear",
+        peak_fap="sidak",
+    )
+    pk_f = float(sp.frequencies[int(np.argmax(sp.spectrum))])
+    period_yr = 1.0 / pk_f
+    ok = (3.0 <= period_yr <= 6.0) and sp.peak_fap < 1e-8
+    return (
+        ok,
+        f"n_kept={t.size}/{data['decimal_year'].size}, ENSO peak={pk_f:.4f} cy/yr (period={period_yr:.2f} yr), FAP={sp.peak_fap:.2e}",
+    )
+
+
 def main() -> int:
     print(f"Running tspec v{tspec.__version__} Tier 2c Real-World Public Dataset Validation Suite...")
     t_start = time.perf_counter()
@@ -200,6 +275,9 @@ def main() -> int:
         _run_gate("RW1", "Nile River at Aswan (1871-1970, Cobb 1978)", bench_rw1_nile_aswan_1871_1970),
         _run_gate("RW2", "NOAA Mauna Loa CO2 (1958-2026, 20% gapped)", bench_rw2_mauna_loa_co2),
         _run_gate("RW3", "Sunspots (1700-2008, 30% + 10-yr blackout)", bench_rw3_sunspots_gapped_solar_cycle),
+        _run_gate("RW4", "NASA GISTEMP Global Temp (1880-2025)", bench_rw4_nasa_gistemp_global_temp),
+        _run_gate("RW5", "US Macrodata log(CPI) (1959-2009, Economics)", bench_rw5_us_macrodata_cpi_regimes),
+        _run_gate("RW6", "El Nino SST (1950-2010, 25% gapped, Ocean)", bench_rw6_elnino_enso_oceanography),
     ]
 
     total_s = time.perf_counter() - t_start
@@ -214,7 +292,7 @@ def main() -> int:
         f"- **tspec version:** `{tspec.__version__}`",
         f"- **Result:** **{n_pass} / {len(gates)} gates PASSED** ({total_s:.1f} s single-threaded runtime)",
         "",
-        "| Gate | Public Dataset & Literature Reference | Status | Measured Metrics | Runtime |",
+        "| Gate | Public Dataset & Domain | Status | Measured Metrics | Runtime |",
         "| :--- | :--- | :---: | :--- | ---: |",
     ]
     for g in gates:
