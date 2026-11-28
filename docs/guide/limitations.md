@@ -31,7 +31,7 @@ STPD tests each sliding window separately. Its power depends on how much informa
 - When the seasonal shape really is fixed, one seasonal fit pooled over the whole record is more precise (1.3–2.4× lower seasonal error in the test). Pass a longer `seasonal_window` (up to the record length) if you have reason to believe the shape is stable. A 7-year window adapts to shapes that change over the years.
 - On two real nitrate records, held-out prediction errors of `tspec`, STL and a pooled harmonic baseline were within one split standard deviation of each other; the pooled baseline was marginally best.
 - Seasonal bands under-cover shapes that change quickly within the seasonal window (86–89% in the test).
-- **Censored data:** the separate seasonal window is not yet available; the single-window fallback can still be unstable when a window covers only a short burst of samples (use `window_mode="duration"`). `analyze_series` also still uses the single window.
+- **Censored data:** values are imputed once (global Tobit imputation) and then decomposed with the seasonal window. With `CensoredConfig(scope="windowed")` or a full weight matrix the single window is used, which can be unstable when a window covers only a short burst of samples (use `window_mode="duration"`). `analyze_series` still uses the single window.
 - `seasonal_window=None` reproduces the published single-window JUST decomposition, which should be avoided for clustered sampling (storm sampling, field campaigns) with `season="ols"`.
 
 ## 2b. JUST jumps: what they are and how small a step can be found

@@ -11,7 +11,7 @@ Statistical-calibration and hardening release. Several defaults change results. 
   - With `eval_times`, windows are now always built on the observations, so results at the observation times no longer change and are never NaN (AUD-19b).
   - New warning `UNCOVERED_OBSERVATIONS` (AUD-19c).
   - Storm-burst or seasonally clustered sampling no longer makes windows ill-conditioned (AUD-19a). The legacy single window blew up on up to 10% of observations with real sampling dates.
-  - Not yet available with censored data (falls back to the single window, with the info message `SEASONAL_WINDOW_UNAVAILABLE`). `analyze_series` keeps the single window until validated.
+  - Censored data: values are imputed once with the usual global censoring imputation and then decomposed with the seasonal window. Windowed imputation (`scope="windowed"`) and full weight matrices fall back to the single window (info message `SEASONAL_WINDOW_UNAVAILABLE`). `analyze_series` keeps the single window until validated.
 - **`allssa` resolves close and non-integer frequencies (AUD-05).**
   - New `search="rayleigh"` (default; `"integer"` = published algorithm, forced by `parity_mode`). The default grid runs from `1.5/T` to the mean-rate pseudo-Nyquist in steps of `1/(4T)` (it was integers only, starting at 0.5 cycles/unit).
   - Each peak is refined within `±1/T`, and only a selected frequency within `1/T` is re-fitted, so several components may lie within one cycle per unit. Monte Carlo acceptance uses a matching dense grid.

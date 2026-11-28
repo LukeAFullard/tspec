@@ -2907,14 +2907,35 @@ def _just_decompose_two_stage(
     except (TypeError, ValueError):
         numeric = False
     if not numeric:
-        res = just_decompose(t, y, weights=weights, jump_indices=jump_indices,
-                             censor_status=censor_status, censoring=censoring, **single)
-        info = WarningItem(
-            code="SEASONAL_WINDOW_UNAVAILABLE", severity="info",
-            message="`seasonal_window` is not yet available with censored data; the trend windows "
-                    "were used for the seasonal component as well.",
+        # Censored input: impute once with the same censoring machinery as the single-window
+        # path (global scope), then run the two-stage decomposition on the imputed values.
+        prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
+        w_arr = None if weights is None else np.asarray(weights, dtype=np.float64)
+        supported = (prep.config is None or prep.config.scope == "global") and (w_arr is None or w_arr.ndim == 1)
+        if not supported:
+            res = just_decompose(t, y, weights=weights, jump_indices=jump_indices,
+                                 censor_status=censor_status, censoring=censoring, **single)
+            info = WarningItem(
+                code="SEASONAL_WINDOW_UNAVAILABLE", severity="info",
+                message="`seasonal_window` is not available with windowed censoring imputation or a "
+                        "full weight matrix; the trend windows were used for the seasonal component.",
+            )
+            return replace(res, diagnostics=res.diagnostics.with_warnings([info]))
+        v2o = np.asarray(prep.series.valid_to_orig, dtype=np.intp)
+        w_c: WeightLike | None = None if w_arr is None else w_arr[v2o]
+        if prep.weight_factors is not None:
+            base = np.ones(prep.series.n_valid) if w_c is None else np.asarray(w_c)
+            w_c = base * prep.weight_factors
+        ji_c = None
+        if jump_indices is not None:
+            ji_c = sorted({int(np.searchsorted(v2o, int(j))) for j in jump_indices})
+            ji_c = [j for j in ji_c if j < prep.series.n_valid]
+        res = _just_decompose_two_stage(
+            prep.series.times_raw, prep.series.values, seasonal_window=seasonal_window, weights=w_c,
+            eval_times=eval_times, jump_indices=ji_c, censor_status=None, censoring=None, **kw,
         )
-        return replace(res, diagnostics=res.diagnostics.with_warnings([info]))
+        return replace(res, censoring=prep.provenance,
+                       diagnostics=res.diagnostics.with_warnings(list(prep.warnings)))
 
     t_arr = np.asarray(t)
     mask = np.isfinite(y_arr)
@@ -3105,8 +3126,9 @@ def just_decompose(
         local linear trend), the trend in the trend windows on the de-seasonalized series
         (``season="none"``), and both are re-estimated once. A seasonal cycle estimated from
         three years of data is noisy (about ``sigma * sqrt(2K / n_window)``); a longer
-        seasonal window pools more years while the trend windows stay short. Not yet
-        available with censored data (falls back to ``None`` with an info message).
+        seasonal window pools more years while the trend windows stay short. Censored values
+        are imputed once (global scope) before the two stages; windowed censoring imputation and
+        full weight matrices fall back to ``None`` with an info message.
 
     Returns
     -------

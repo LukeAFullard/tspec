@@ -148,3 +148,17 @@ def test_storm_burst_sampling_does_not_blow_up() -> None:
     y = tr + 0.8 * np.cos(2 * np.pi * t) + rng.normal(0, 0.3, t.size)
     d = tspec.just_decompose(t, y, season="ols")
     assert np.max(np.abs(d.trend - tr)) < 1.0
+
+
+def test_seasonal_window_with_censored_values() -> None:
+    """Censored input: imputed once (global scope), then decomposed with the seasonal window."""
+    rng = np.random.default_rng(13)
+    t = np.sort(rng.uniform(2000, 2016, 180))
+    y = 1.0 + 0.02 * (t - 2000) + 0.6 * np.cos(2 * np.pi * t) + rng.normal(0, 0.25, t.size)
+    dl = float(np.quantile(y, 0.2))
+    status = np.where(y < dl, -1, 0)
+    d = tspec.just_decompose(t, np.where(status == -1, dl, y), censor_status=status, season="ols")
+    codes = {w.code for w in d.diagnostics.warnings}
+    assert "SEASONAL_WINDOW" in codes and "SEASONAL_WINDOW_UNAVAILABLE" not in codes
+    assert d.censoring is not None and d.censoring.n_censored == int((status == -1).sum())
+    assert np.all(np.isfinite(d.trend)) and np.allclose(d.trend + d.seasonal + d.remainder, d.values)
