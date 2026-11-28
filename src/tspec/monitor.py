@@ -968,10 +968,13 @@ def just_monitor(
     total_span = float(t0_full[-1] - t0_full[0])
     if parity_mode:
         min_his = n / total_span if total_span > 0.0 else 4.0
-    elif series.is_datetime and season_norm != "none" and total_span >= 1.0:
-        min_his = n / total_span
+    elif season_norm != "none" and total_span >= 1.0:
+        # A seasonal history model needs about one seasonal cycle (one time unit, i.e. one
+        # year for decimal-year axes) of observations, whatever the time representation
+        # (AUD-10: numeric time previously accepted a 4-observation history).
+        min_his = max(n / total_span, (2.0 if trend_norm == "linear" else 1.0) + 2.0 + 5.0)
     else:
-        min_his = 4.0
+        min_his = (2.0 if trend_norm == "linear" else 1.0) + 5.0
     if n_his < min_his or n_his < 4:
         raise InsufficientDataError(
             f"Insufficient stable historical period (n_history={n_his}, need at least "

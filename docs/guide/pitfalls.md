@@ -22,7 +22,7 @@ Avoid these eight classic traps when analyzing irregular or environmental time s
 
 ## 5. Thinking STPD "Missed" a Change When `flagged_jumps` Is Non-Empty
 - **What goes wrong:** A practitioner sees `len(result.turning_points) == 0` on a series with an obvious shift and assumes STPD failed.
-- **What to do instead:** Read `result.explain()` and inspect `result.flagged_jumps`. If STPD rejected a candidate due to **high NDRI**, it is telling you that the change is a **sudden vertical jump** rather than a smooth turning point — switch to `just_jumps()` or `analyze_series()`.
+- **What to do instead:** Read `result.explain()` and inspect `result.flagged_jumps`. If STPD rejected a candidate because a **vertical step fits significantly better than any continuous bend** (`step_pvalue`, `step_share`), it is telling you that the change is a **sudden vertical jump** rather than a smooth turning point — switch to `just_jumps()` or `analyze_series()`. In `analyze_series()`, `.explain()` warns when STPD flags a step that Stage 1 (JUST) missed; consider a longer JUST window or supplying the known jump date.
 
 ## 6. Ignoring Red-Noise (Autocorrelation) Warnings
 - **What goes wrong:** Daily streamflow, high-frequency groundwater, or closely spaced sensor readings are strongly correlated from one point to the next. Standard white-noise $p$-values treat 100 correlated points as 100 independent draws, inflating false positives dramatically.

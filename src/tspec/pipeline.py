@@ -284,12 +284,24 @@ class PipelineResult(BaseResult):
                     t_str = format_timestamp(tp.time, self.is_datetime)
                     lines.append(
                         f"  - Around {t_str}: slope shifted from {tp.slope_before:+.4g} "
-                        f"to {tp.slope_after:+.4g}/unit time (NDRI={tp.ndri_rmse:.2f}, "
-                        f"p={tp.pvalue:.2e})."
+                        f"to {tp.slope_after:+.4g}/unit time (p={tp.pvalue:.2e}, "
+                        f"step-vs-bend p={tp.step_pvalue:.2g}, NDRI={tp.ndri_rmse:.2f})."
                     )
             else:
                 lines.append(
                     "Stage 2 (STPD) found no additional continuous trend turning points."
+                )
+            if self.turning_points.flagged_jumps:
+                fl = ", ".join(
+                    format_timestamp(fj.time, self.is_datetime)
+                    for fj in self.turning_points.flagged_jumps[:4]
+                )
+                lines.append(
+                    f"WARNING: STPD found {len(self.turning_points.flagged_jumps)} significant "
+                    f"break(s) that look like abrupt vertical steps rather than smooth bends ({fl}) "
+                    "but were not detected by Stage 1 (JUST). They are NOT reported as turning "
+                    "points; the trend and segment slopes do not account for them. Consider a longer "
+                    "JUST window (just_kwargs=dict(size=...)) or supplying known jump dates."
                 )
 
         if self.segments:
@@ -1954,6 +1966,9 @@ def analyze_series(
                 diagnostics=seg_diag,
                 tp_calibration=eff_seg_tp_cal,
                 robust=rob_method,
+                jump_test=(
+                    "ndri" if s_kw.get("parity_mode") else str(s_kw.get("jump_test") or "step")
+                ),
             )
         else:
             try:

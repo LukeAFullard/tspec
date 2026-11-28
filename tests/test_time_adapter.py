@@ -15,24 +15,55 @@ from tspec._time import (
 )
 from tspec.exceptions import InsufficientDataError
 
+# Calendar decimal years differ from the uniform mean-Gregorian-year scale by at most ~2 days.
+TWO_DAYS_YR = 2.0 / 365.2425
 
-def test_datetime64_leap_year_decimal_years() -> None:
-    t = np.array(["2020-01-01", "2020-07-02", "2021-01-01"], dtype="datetime64[D]")
+
+def _uniform_year(iso: str) -> float:
+    """Reference uniform decimal year: 2000 + days since 2000-01-01 / 365.2425."""
+    days = (np.datetime64(iso, "ns") - np.datetime64("2000-01-01", "ns")) / np.timedelta64(1, "D")
+    return 2000.0 + float(days) / 365.2425
+
+
+def test_datetime64_uniform_decimal_years() -> None:
+    """AUD-01: datetimes map to a *uniform* decimal-year axis (mean Gregorian year)."""
+    t = np.array(["2000-01-01", "2020-01-01", "2020-07-02", "2021-01-01"], dtype="datetime64[D]")
     t_num, t_raw, is_dt = coerce_times(t)
     assert is_dt is True
     assert t_raw.dtype == np.dtype("datetime64[ns]")
-    assert np.isclose(t_num[0], 2020.0, atol=1e-12)
-    # 2020 is a leap year (366 days): Jan 1 + 183 days = July 2 -> exact midpoint 2020.5
-    assert np.isclose(t_num[1], 2020.5, atol=1e-12)
-    assert np.isclose(t_num[2], 2021.0, atol=1e-12)
+    assert t_num[0] == 2000.0
+    for k, iso in enumerate(["2000-01-01", "2020-01-01", "2020-07-02", "2021-01-01"]):
+        assert np.isclose(t_num[k], _uniform_year(iso), rtol=0.0, atol=1e-12)
+    # Stays close to the calendar decimal year
+    assert np.allclose(t_num[1:], [2020.0, 2020.5, 2021.0], atol=TWO_DAYS_YR)
+
+
+def test_datetime_axis_is_uniform_across_leap_years() -> None:
+    """AUD-01 regression: equal durations map to equal decimal-year increments."""
+    dt = np.arange("2023-01-01T00", "2025-01-01T00", 3, dtype="datetime64[h]")
+    t_num, _, _ = coerce_times(dt)
+    steps = np.diff(t_num)
+    assert np.max(steps) / np.min(steps) < 1.0 + 1e-9
+
+
+def test_datetime_non_annual_frequency_is_phase_coherent() -> None:
+    """AUD-01 regression: a noiseless M2 tide on datetime input is fitted exactly."""
+    from tspec import lssa
+
+    dt = np.arange("2023-01-01T00", "2025-01-01T00", 3, dtype="datetime64[h]")
+    hours = (dt - dt[0]).astype(float)
+    y = np.cos(2 * np.pi * hours / 12.4206012)
+    f_cpy = 365.2425 * 24.0 / 12.4206012  # cycles per (mean) year
+    r = lssa(dt, y, omega=[f_cpy], trend="constant")
+    assert r.spectrum[0] > 0.999999
 
 
 def test_python_datetime_and_date_inputs() -> None:
     dates = [date(2021, 1, 1), date(2021, 7, 2), date(2022, 1, 1)]
     t_num, _, is_dt = coerce_times(dates)
     assert is_dt is True
-    assert t_num[0] == pytest.approx(2021.0)
-    assert t_num[-1] == pytest.approx(2022.0)
+    assert t_num[0] == pytest.approx(2021.0, abs=TWO_DAYS_YR)
+    assert t_num[-1] == pytest.approx(2022.0, abs=TWO_DAYS_YR)
 
     dts = [datetime(2021, 1, 1, 0, 0), datetime(2021, 1, 1, 12, 0)]
     t_num2, _, is_dt2 = coerce_times(dts)
@@ -103,7 +134,7 @@ def test_datetime_edge_cases_range_2262_iso_and_tz() -> None:
     t_2262 = np.array(["2262-01-01", "2262-02-01", "2262-03-01"], dtype="datetime64[D]")
     t_num, _, is_dt = coerce_times(t_2262)
     assert is_dt is True
-    assert np.isclose(t_num[0], 2262.0, atol=1e-12)
+    assert np.isclose(t_num[0], _uniform_year("2262-01-01"), atol=1e-12)
     assert np.all(np.diff(t_num) > 0)
 
     # Tz-aware Python datetimes normalize cleanly to UTC
@@ -113,18 +144,18 @@ def test_datetime_edge_cases_range_2262_iso_and_tz() -> None:
     ]
     t_tz, _, is_dt_tz = coerce_times(tz_dts)
     assert is_dt_tz is True
-    assert np.isclose(t_tz[0], 2020.0, atol=1e-12)
-    assert np.isclose(t_tz[1], 2020.5, atol=1e-12)
+    assert np.isclose(t_tz[0], _uniform_year("2020-01-01"), atol=1e-12)
+    assert np.isclose(t_tz[1], _uniform_year("2020-07-02"), atol=1e-12)
 
     # Object array of ISO date strings and pandas Series of ISO date strings
     iso_obj = np.array(["2020-01-01", "2020-07-02", "2021-01-01"], dtype=object)
     t_obj, _, is_dt_obj = coerce_times(iso_obj)
     assert is_dt_obj is True
-    assert np.allclose(t_obj, [2020.0, 2020.5, 2021.0], atol=1e-12)
+    assert np.allclose(t_obj, [_uniform_year(d) for d in ("2020-01-01", "2020-07-02", "2021-01-01")], atol=1e-12)
 
     pd = pytest.importorskip("pandas")
     s_iso = pd.Series(["2020-01-01", "2020-07-02", "2021-01-01"])
     t_s, _, is_dt_s = coerce_times(s_iso)
     assert is_dt_s is True
-    assert np.allclose(t_s, [2020.0, 2020.5, 2021.0], atol=1e-12)
+    assert np.allclose(t_s, [_uniform_year(d) for d in ("2020-01-01", "2020-07-02", "2021-01-01")], atol=1e-12)
 

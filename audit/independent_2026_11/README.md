@@ -17,3 +17,6 @@ All scripts are standalone and run from this directory with `OMP_NUM_THREADS=1 M
 | `p8_imports.sh` | `p8_out.txt` | minimal NumPy+SciPy environment |
 | `p9_pipeline_combos.py`, `p10_pipeline_step.py`, `p11_readme_hero.py` | `p9_*`, `p10_*`, `p11_*` | `analyze_series` composition |
 | `p12_followups.py` | `p12_results.json` | follow-ups from the STL benchmark |
+| `p13_batch1_stpd.py` | `p13_final_out.txt` | batch-1 validation: STPD step-vs-bend gate vs NDRI |
+| `p10_pipeline_step.py` (re-run) | `p10_post_out.txt` | batch-1 validation through `analyze_series` |
+| `repro_confirmed_bugs.py` (re-run) | `repro_post_batch1_out.txt` | reproducers after batch 1 |

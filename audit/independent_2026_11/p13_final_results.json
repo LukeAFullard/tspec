@@ -1,0 +1,122 @@
+{
+ "null_white|step": {
+  "any_tp": 0.0,
+  "tp_near": 0.0,
+  "flag_near": 0.0
+ },
+ "null_white|ndri": {
+  "any_tp": 0.0,
+  "tp_near": 0.0,
+  "flag_near": 0.0
+ },
+ "null_t3|step": {
+  "any_tp": 0.0,
+  "tp_near": 0.0,
+  "flag_near": 0.0
+ },
+ "null_t3|ndri": {
+  "any_tp": 0.0,
+  "tp_near": 0.0,
+  "flag_near": 0.005
+ },
+ "null_hetero4x_unweighted|step": {
+  "any_tp": 0.01,
+  "tp_near": 0.01,
+  "flag_near": 0.01
+ },
+ "null_hetero4x_unweighted|ndri": {
+  "any_tp": 0.01,
+  "tp_near": 0.01,
+  "flag_near": 0.09
+ },
+ "bend1.0|step": {
+  "any_tp": 0.465,
+  "tp_near": 0.46,
+  "flag_near": 0.01
+ },
+ "bend1.0|ndri": {
+  "any_tp": 0.47,
+  "tp_near": 0.47,
+  "flag_near": 0.015
+ },
+ "bend1.0_uneven|step": {
+  "any_tp": 0.595,
+  "tp_near": 0.58,
+  "flag_near": 0.005
+ },
+ "bend1.0_uneven|ndri": {
+  "any_tp": 0.605,
+  "tp_near": 0.59,
+  "flag_near": 0.025
+ },
+ "bend2.0|step": {
+  "any_tp": 0.99,
+  "tp_near": 0.99,
+  "flag_near": 0.005
+ },
+ "bend2.0|ndri": {
+  "any_tp": 0.995,
+  "tp_near": 0.995,
+  "flag_near": 0.025
+ },
+ "bend1.0_hetero4x_unweighted|step": {
+  "any_tp": 0.04,
+  "tp_near": 0.04,
+  "flag_near": 0.015
+ },
+ "bend1.0_hetero4x_unweighted|ndri": {
+  "any_tp": 0.03,
+  "tp_near": 0.025,
+  "flag_near": 0.265
+ },
+ "bend1.0_sd0.05|step": {
+  "any_tp": 1.0,
+  "tp_near": 1.0,
+  "flag_near": 0.0
+ },
+ "bend1.0_sd0.05|ndri": {
+  "any_tp": 0.995,
+  "tp_near": 0.995,
+  "flag_near": 0.585
+ },
+ "step1.0|step": {
+  "any_tp": 0.11,
+  "tp_near": 0.09,
+  "flag_near": 0.09
+ },
+ "step1.0|ndri": {
+  "any_tp": 0.08,
+  "tp_near": 0.06,
+  "flag_near": 0.0
+ },
+ "step2.0|step": {
+  "any_tp": 0.345,
+  "tp_near": 0.29,
+  "flag_near": 0.79
+ },
+ "step2.0|ndri": {
+  "any_tp": 0.76,
+  "tp_near": 0.685,
+  "flag_near": 0.19
+ },
+ "step2.0_uneven|step": {
+  "any_tp": 0.46,
+  "tp_near": 0.365,
+  "flag_near": 0.38
+ },
+ "step2.0_uneven|ndri": {
+  "any_tp": 0.9,
+  "tp_near": 0.565,
+  "flag_near": 0.09
+ },
+ "step3.0|step": {
+  "any_tp": 0.2,
+  "tp_near": 0.18,
+  "flag_near": 0.86
+ },
+ "step3.0|ndri": {
+  "any_tp": 0.71,
+  "tp_near": 0.63,
+  "flag_near": 0.725
+ }
+}

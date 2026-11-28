@@ -37,7 +37,7 @@ print(res.explain())
 print(res.to_dataframe())
 ```
 
-## Step 2: How NDRI Catches a Disguised Vertical Jump
+## Step 2: How the Step-vs-Bend Test Catches a Disguised Vertical Jump
 
 Watch what happens when you feed a **sudden datum jump** (e.g., an earthquake or unwrapping error) into STPD instead of a smooth bend:
 
@@ -47,8 +47,10 @@ disp_jump += rng.normal(0.0, 1.0, size=t.size)
 
 res_jump = tspec.detect_turning_points(t, disp_jump, size=60, step=12, margin=10)
 print(res_jump.explain())
-# STPD rejects the cliff due to high NDRI and flags it in `res_jump.flagged_jumps`,
-# advising you to run `just_jumps()` or `analyze_series()`!
+# A vertical step fits the cliff significantly better than any continuous bend, so STPD
+# rejects it as a turning point and flags it in `res_jump.flagged_jumps` (see `step_pvalue`
+# and `step_share`), advising you to run `just_jumps()` or `analyze_series()`!
+# `jump_test="ndri"` (the published NDRI rule) misses most such steps.
 ```
 
 ## Step 3: Sequential (TPTR) vs. Joint Global Piecewise Trend Refit

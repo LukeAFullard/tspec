@@ -30,7 +30,9 @@ A plain-English translation of every key parameter in `tspec`, its default value
 
 | Parameter | Plain-English Meaning | Default | Make It Larger | Make It Smaller | Rule of Thumb |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `ndri_th` | Maximum residual imbalance allowed ("jump alarm bell"). | `0.30` | Accepts slightly jump-like bends. | Rejects anything even mildly asymmetric as a jump. | `0.25–0.35` is well calibrated (Ghaderpour et al., 2024). |
+| `jump_test` | How `stpd()` decides a significant break is an abrupt jump rather than a bend: `"step"` (nested step-vs-continuous-hinge test), `"ndri"` (published NDRI threshold), `"both"`. | `"step"` (`"ndri"` in parity) | — | — | Keep `"step"`; NDRI misses most pure steps and rejects very precise bends. |
+| `step_alpha` | Level of the step-vs-bend test. | `0.05` | Flags more breaks as jumps (fewer steps mislabelled as bends, slightly more bends lost). | Flags fewer breaks as jumps. | `0.01–0.05`. |
+| `ndri_th` | Maximum residual imbalance allowed (used only with `jump_test="ndri"`/`"both"`). | `0.30` | Accepts slightly jump-like bends. | Rejects anything even mildly asymmetric as a jump. | `0.25–0.35` (Ghaderpour et al., 2024). |
 | `ndri_mode` | How NDRI compares left vs. right residuals. | `"rmse"` (`"l2"` in parity) | — | — | Keep `"rmse"` for uneven sampling and weighted heteroscedastic series; use `parity_mode=True` for Ghaderpour (2024) exact parity. |
 | `tp_calibration` | How `stpd()` corrects turning-point p-values for searching every knot in a window (`"montecarlo"`, `"bonferroni"`, `"none"`). | `"montecarlo"` (`"bonferroni"` for robust fits, `"none"` in parity) | — | — | Keep the default; `"none"` gives raw screening p-values with no false-positive control. |
 | `band_method` / `n_boot` | How the post-detection trend band (`stpd`, `analyze_series`) and OLS segment-slope CIs (`analyze_series`) are computed. | `"bootstrap"` / `499` (`"conditional"` in parity) | — | — | Keep `"bootstrap"`: it includes turning-point location uncertainty and, in `analyze_series`, seasonal and jump-step estimation. `"conditional"` treats the detected structure as known and is faster. |

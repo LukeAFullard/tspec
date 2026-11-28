@@ -1,0 +1,26 @@
+{
+ "step1.0_sd0.5_seasTrue": {
+  "jump_reported": 0.06,
+  "tp_reported_instead": 0.12
+ },
+ "step1.0_sd0.5_seasFalse": {
+  "jump_reported": 0.07,
+  "tp_reported_instead": 0.09
+ },
+ "step2.0_sd0.5_seasTrue": {
+  "jump_reported": 0.28,
+  "tp_reported_instead": 0.38
+ },
+ "step2.0_sd0.5_seasFalse": {
+  "jump_reported": 0.64,
+  "tp_reported_instead": 0.14
+ },
+ "step3.0_sd0.5_seasTrue": {
+  "jump_reported": 0.71,
+  "tp_reported_instead": 0.17
+ },
+ "step3.0_sd0.5_seasFalse": {
+  "jump_reported": 0.98,
+  "tp_reported_instead": 0.01
+ }
+}

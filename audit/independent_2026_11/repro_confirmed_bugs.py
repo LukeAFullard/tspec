@@ -64,9 +64,12 @@ print(f"AUD-09 noiseless line: jumps {[(e.index, f'{e.magnitude:.1e}', f'{e.jump
 # just_monitor accepts a 5-observation history for a trend + ALLSSA-seasonal model and
 # raises an alarm, with no InsufficientData error or minimum-history warning.
 y = 0.1 * t + np.cos(2 * np.pi * t) + rng.normal(0, .3, t.size) + 2.0 * (t > 10)
-m = tspec.just_monitor(t, y, start=5)
-print(f"AUD-10 just_monitor(start=5): detected={m.detected} at t={m.disturbance_time} (true break t=10); warnings "
-      f"{[w.code for w in m.diagnostics.warnings]}: {verdict(m.detected and m.disturbance_time < 9)}")
+try:
+    m = tspec.just_monitor(t, y, start=5)
+    print(f"AUD-10 just_monitor(start=5): detected={m.detected} at t={m.disturbance_time} (true break t=10); warnings "
+          f"{[w.code for w in m.diagnostics.warnings]}: {verdict(m.detected and m.disturbance_time < 9)}")
+except tspec.InsufficientDataError as exc:
+    print(f"AUD-10 just_monitor(start=5) refused: {exc}: ok")
 
 # ---------------------------------------------------------------- AUD-02 (Critical, statistical)
 # just_jumps family-wise false-jump rate under mild AR(1) serial correlation; does the

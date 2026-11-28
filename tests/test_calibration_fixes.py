@@ -348,6 +348,15 @@ def _censored_jump_series(seed: int) -> tuple[np.ndarray, np.ndarray]:
     return t, np.array([f"<{dl:.6g}" if v < dl else float(v) for v in y], dtype=object)
 
 
+def _censored_bend_series(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    rng = np.random.default_rng(seed)
+    n = 150
+    t = np.sort(rng.uniform(2000, 2000 + n / 24, n))
+    y = 2 + 0.6 * (t - 2000) - 1.2 * np.maximum(t - (2000 + n / 48), 0) + rng.normal(0, 0.15, n)
+    dl = float(np.quantile(y, 0.4))
+    return t, np.array([f"<{dl:.6g}" if v < dl else float(v) for v in y], dtype=object)
+
+
 def test_detection_pvalues_pooled_over_imputations() -> None:
     t, ys = _censored_jump_series(11)
     assert tspec.just_jumps(t, ys, season="none").n_imputations == 1  # default: single
@@ -360,7 +369,13 @@ def test_detection_pvalues_pooled_over_imputations() -> None:
         t, np.array([float(v) if not isinstance(v, str) else 0.0 for v in ys]), season="none", censoring=mi
     )
     assert unc.n_imputations == 1
-    assert tspec.stpd(t, ys, censoring=mi).n_imputations == 20
+    # STPD pools its turning-point p-values on a censored *bend* (a step is now correctly
+    # rejected as a turning point by the step-vs-bend test, AUD-03, so nothing is pooled).
+    tb, ysb = _censored_bend_series(11)
+    st_mi = tspec.stpd(tb, ysb, censoring=mi)
+    assert st_mi.n_imputations == 20
+    assert any(abs(tp.time_year - (2000 + 150 / 48)) < 0.5 for tp in st_mi.turning_points)
+    assert tspec.stpd(t, ys, censoring=mi).turning_points == ()
     with pytest.raises(ValueError):
         tspec.CensoredConfig(detection_imputations=0)
 

@@ -28,14 +28,21 @@ Non-statisticians sometimes worry that a straight line is "too simple" for curve
 
 ---
 
-## 3. NDRI: The "Jump-Detector Alarm Bell"
+## 3. The "Jump-Detector Alarm Bell": step test (default) and NDRI
 
-What happens if you feed a series containing a sudden vertical jump into **STPD** (which expects smooth bends)?
+What happens if you feed a series containing a sudden vertical jump into **STPD** (which expects smooth bends)? A connected hinge can partly imitate a step, so STPD needs a separate check before it calls a break a *turning point*.
 
-Because STPD forces the two lines to stay connected, a vertical cliff forces one side of the fit to absorb huge errors while the other side fits relatively tightly. **NDRI** (*Normalized Difference Residual Index*) measures how lop-sided the residuals are between the left and right sides of the bend:
+**Step-vs-bend test (`jump_test="step"`, default).** For each significant candidate, STPD compares the best *discontinuous* two-line fit (separate intercepts and slopes) with the best *continuous* hinge, whose knot may sit anywhere between two samples. The candidate is treated as an abrupt jump, rejected as a turning point and recorded in `result.flagged_jumps`, when both of these hold:
 
-- **`NDRI ≈ 0` (below 0.30):** Residuals look evenly balanced on both sides → **genuine smooth turning point**.
-- **`NDRI → 1` (above 0.30):** One side's errors blow up compared to the other → **alarm bell!** STPD rejects the candidate as a turning point and records it in `result.flagged_jumps`, telling you in `.explain()` to run `just_jumps()` or `analyze_series()`.
+- the step improves the fit significantly (nested F-test, Bonferroni over the scanned splits, `step_alpha=0.05`), and
+- the step captures at least 25% of the break's explained variance (`step_share`). Genuine steps give about 0.6–0.9; genuine bends give below about 0.1.
+
+A turning point near a flagged step is also dropped, because overlapping windows see the same break.
+
+**NDRI** (*Normalized Difference Residual Index*, Ghaderpour et al. 2024) measures how lop-sided the residuals are between the left and right sides of the bend (`NDRI → 1` is lop-sided). It is always reported. It gates turning points only with `jump_test="ndri"` (forced by `parity_mode=True`) or `"both"`.
+
+!!! warning "Why NDRI is no longer the default gate"
+    In an independent audit (2026-11), a pure 4σ step with no change of slope was accepted as a smooth turning point in 69–76% of series under the NDRI gate, and NDRI flagged it as a jump in only 19%. NDRI also rejected very precise bends (noise σ ≤ 10⁻³) as "jumps". With the step test, the same 4σ step is reported as a turning point in about 29% of series (18% at 6σ). Through `analyze_series` the rates are 38% (4σ) and 17% (6σ) with seasonality, and 14% and 1% without. Genuine bends keep their power (46–99%), with 0.5–1.5% wrongly flagged. Small steps can still look like bends: the test has limited power, so treat a turning point next to a suspected datum change with care.
 
 ??? note "Mathematical details: `ndri_mode='rmse'` vs. `ndri_mode='l2'`"
     Ghaderpour et al. (2024) define $\text{NDRI}_{L_2} = \frac{|\|r_1\|_P - \|r_2\|_P|}{\|r_1\|_P + \|r_2\|_P}$. On unevenly sampled series where $n_1 \neq n_2$, the side with more points naturally accumulates a larger raw $L_2$ norm even under identical noise variance. `tspec` therefore defaults to the whitened, density-invariant RMSE form:

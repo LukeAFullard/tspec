@@ -1192,6 +1192,13 @@ def _nested_jump_ftests(
     # Scale-invariant noiseless guard (handles scaled noiseless jumps down to 1e-13 cleanly).
     tol = 1e-26 * max(rss0, float(np.finfo(np.float64).tiny))
     tol_step = 1e-26 * max(rss_hinge, float(np.finfo(np.float64).tiny))
+    # Zero-variance guard (AUD-09): when even the null model fits to rounding error relative
+    # to the window's spread (e.g. a perfectly straight noiseless line), there is no evidence
+    # of a jump; rounding noise must not produce an "infinitely significant" F statistic.
+    sst_w = float(np.sum((y_win - np.mean(y_win)) ** 2))
+    tol_zero = 1e-24 * max(sst_w, float(np.finfo(np.float64).tiny))
+    if rss0 <= tol_zero:
+        return 1.0, 1.0
     if rss1 <= tol:
         p_jump = 0.0 if rss0 > tol else 1.0
     else:
@@ -1206,7 +1213,9 @@ def _nested_jump_ftests(
         else:
             p_jump = float(min(1.0, mult * float(f_dist.sf(f_jump, 2, dof2))))
 
-    if rss1_step <= tol_step:
+    if rss_hinge <= tol_zero:
+        p_step = 1.0
+    elif rss1_step <= tol_step:
         p_step = 0.0 if rss_hinge > tol_step else 1.0
     else:
         den_step = rss1_step / dof2_step

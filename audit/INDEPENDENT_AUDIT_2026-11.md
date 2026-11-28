@@ -41,6 +41,19 @@ What blocks unqualified publication use (details in §2):
 
 ---
 
+## 0b. Remediation status (batch 1, same branch)
+
+| ID | Status | Change | Verified effect |
+|---|---|---|---|
+| AUD-01 | **Fixed** | `_time.py`: datetimes map to a uniform axis, `2000 + (t − 2000-01-01)/365.2425 d` | Noiseless M2 tide on datetimes: LSS 0.25 → **1.000**; step ratio across a leap year 1.00274 → 1.00000 |
+| AUD-03 | **Mitigated** | `stpd.py`: new default `jump_test="step"`. Nested discontinuous-vs-*continuous*-hinge F-test (knot optimized between samples, Bonferroni over splits, `step_alpha=0.05`) plus step share ≥ 0.25; TPs within `tp_th` of any step flag dropped; `analyze_series().explain()` warns about steps JUST missed | TP reported at a pure step: 4σ 68.5% → **29%**, 6σ 63% → **18%**, 4σ uneven density 56.5% → 36.5%. Through `analyze_series`: 4σ 59% → **38%** (seasonal) and 23% → **14%** (no seasonality); 6σ 24% → 17% and 2% → 1%. Bends: recall unchanged (46–100%), wrongly flagged 0.5–1.5% (NDRI gate: 1.5–58.5%); null FPR unchanged (0–1%) |
+| AUD-06 | **Fixed** | same | Noiseless and σ = 1e-3 hinges: 0 → 1 TP (at 9.94), no jump flag |
+| AUD-09 | **Fixed** | `just.py`: zero-variance guard relative to the window's total sum of squares | Perfect line: 1 spurious jump → 0; 2 segments → 1; noiseless steps (also at 1e-13 scale) still detected |
+| AUD-10 | **Fixed** | `monitor.py`: seasonal history needs ~one cycle and ≥ model size + 5 points for numeric time too | `start=5` → `InsufficientDataError` |
+| AUD-02, 04, 05, 07, 08, 11–17 | Open | — (batch 2: autocorrelation-aware calibration, JUST power, ALLSSA grid, docs) | — |
+
+Evidence: `audit/independent_2026_11/p13_batch1_stpd.py` (`p13_final_out.txt`), `p10_post_out.txt`, `repro_post_batch1_out.txt`. New regression tests are in `tests/test_independent_audit_2026_11.py` and `tests/test_time_adapter.py`. The full suite passes: 192 passed, 1 skipped. AUD-03 is *mitigated* rather than fixed: small steps (≲ 4σ) can still be mistaken for bends, because the per-window step test has limited power. That residual is disclosed in `limitations.md` §7, and improving JUST's power (AUD-04) is the main lever.
+
 ## 1. Methodology
 
 | Probe | Script | What it tests (independently) |

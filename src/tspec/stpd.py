@@ -59,6 +59,10 @@ SnrMode = Literal["raw", "centered"]
 SNR_TH_DEFAULT = 0.0
 NdriMode = Literal["l2", "rmse"]
 RefitMode = Literal["sequential", "joint", "l1", "huber"]
+JumpTest = Literal["step", "ndri", "both"]
+# Minimum share of a break's explained variance that only a vertical step captures before
+# a significant step test classifies the break as a jump (see _step_vs_hinge_pvalue).
+STEP_SHARE_MIN = 0.25
 
 
 @dataclass(frozen=True)
@@ -111,11 +115,13 @@ class TurningPointEvent:
     coincides_with_dl_shift: bool = False
     stability_rate: float | None = None
     detection_window: tuple[int, int, int] | None = None
+    step_pvalue: float = float("nan")
+    step_share: float = float("nan")
 
 
 @dataclass(frozen=True)
 class FlaggedJumpCandidate:
-    """High-NDRI window candidate rejected as a turning point (likely a datum jump).
+    """Significant break rejected as a turning point because it looks like an abrupt jump.
 
     Attributes
     ----------
@@ -133,6 +139,11 @@ class FlaggedJumpCandidate:
         Normalized difference residual index (L2 norm and RMSE variants).
     fb_diff : int
         Forward-minus-backward sequential knot index discrepancy.
+    step_pvalue : float
+        Bonferroni-corrected p-value of the step-vs-continuous-hinge test (small values
+        mean a vertical step explains the break better than any continuous bend).
+    step_share : float
+        Fraction of the break's explained variance that only a vertical step captures.
     """
 
     index: int
@@ -144,6 +155,8 @@ class FlaggedJumpCandidate:
     ndri_l2: float
     ndri_rmse: float
     fb_diff: int
+    step_pvalue: float = float("nan")
+    step_share: float = float("nan")
 
 
 @dataclass(frozen=True)
@@ -320,6 +333,7 @@ class StpdResult(BaseResult):
     n_imputations: int = 1
     band_method: str = "conditional"
     robust: str = "none"
+    jump_test: str = "ndri"
 
     @property
     def tp_indices(self) -> IntArray:
@@ -337,10 +351,12 @@ class StpdResult(BaseResult):
         lines = [
             f"STPD Turning Point Result (window_mode={self.window_mode!r}, "
             f"snr_mode={self.snr_mode!r}, ndri_mode={self.ndri_mode!r}, alpha={self.alpha})",
-            f"Thresholds     : SNR > {self.snr_th}, NDRI < {self.ndri_th}, "
-            f"|dir| > {self.dir_th}, min separation >= {self.tp_th}",
+            f"Thresholds     : SNR > {self.snr_th}, "
+            + (f"NDRI < {self.ndri_th}, " if self.jump_test in ("ndri", "both") else "")
+            + ("step-vs-bend test not significant, " if self.jump_test in ("step", "both") else "")
+            + f"|dir| > {self.dir_th}, min separation >= {self.tp_th}",
             f"Turning points : {len(self.turning_points)} accepted "
-            f"({len(self.flagged_jumps)} high-NDRI jump candidate(s) flagged)",
+            f"({len(self.flagged_jumps)} jump candidate(s) flagged, jump_test={self.jump_test!r})",
         ]
         if self.turning_points:
             lines.append(
@@ -386,11 +402,17 @@ class StpdResult(BaseResult):
             for k, tp in enumerate(self.turning_points, start=1):
                 t_str = format_timestamp(tp.time, self.is_datetime)
                 ndri_disp = tp.ndri_rmse if self.ndri_mode == "rmse" else tp.ndri_l2
+                if self.jump_test == "ndri":
+                    shape = f"NDRI={ndri_disp:.2f} — low NDRI is consistent with a smooth bend"
+                else:
+                    shape = (
+                        f"step-vs-bend p={tp.step_pvalue:.2g}, step share {tp.step_share:.2f} — "
+                        "consistent with a smooth bend rather than a vertical step"
+                    )
                 desc = (
                     f"  {k}. Around {t_str} (index {tp.index}): slope changed from "
                     f"{tp.slope_before:+.4g} to {tp.slope_after:+.4g} per unit time "
-                    f"(change {tp.direction:+.4g}, {p_lbl} p={tp.pvalue:.2e}, "
-                    f"NDRI={ndri_disp:.2f} — low NDRI is consistent with a smooth bend)."
+                    f"(change {tp.direction:+.4g}, {p_lbl} p={tp.pvalue:.2e}, {shape})."
                 )
                 if tp.stability_rate is not None:
                     desc += f" Recovered in {tp.stability_rate:.0%} of censoring stability draws."
@@ -402,15 +424,23 @@ class StpdResult(BaseResult):
                 lines.append(desc)
 
         if self.flagged_jumps:
-            t_list = ", ".join(
-                f"{format_timestamp(fj.time, self.is_datetime)} (NDRI={fj.ndri_rmse:.2f})"
-                for fj in self.flagged_jumps[:4]
-            )
+            if self.jump_test == "ndri":
+                t_list = ", ".join(
+                    f"{format_timestamp(fj.time, self.is_datetime)} (NDRI={fj.ndri_rmse:.2f})"
+                    for fj in self.flagged_jumps[:4]
+                )
+                why = "residual balance was strongly asymmetric"
+            else:
+                t_list = ", ".join(
+                    f"{format_timestamp(fj.time, self.is_datetime)} (step p={fj.step_pvalue:.2g}, "
+                    f"share {fj.step_share:.2f})"
+                    for fj in self.flagged_jumps[:4]
+                )
+                why = "a vertical step fits significantly better than any continuous bend"
             lines.append(
-                f"Jump Alarm Bell (high NDRI): {len(self.flagged_jumps)} candidate change(s) "
-                f"were rejected as smooth turning points because residual balance was strongly "
-                f"asymmetric ({t_list}). This usually indicates an abrupt vertical jump — run "
-                "`just_jumps()` or `analyze_series()` to check!"
+                f"Jump Alarm Bell: {len(self.flagged_jumps)} candidate change(s) were rejected "
+                f"as smooth turning points because {why} ({t_list}). This usually indicates an "
+                "abrupt vertical jump — run `just_jumps()` or `analyze_series()` to check!"
             )
 
         if self.turning_points and self.band_method != "bootstrap":
@@ -439,6 +469,8 @@ class StpdResult(BaseResult):
                 "snr_centered": tp.snr_centered,
                 "ndri_l2": tp.ndri_l2,
                 "ndri_rmse": tp.ndri_rmse,
+                "step_pvalue": tp.step_pvalue,
+                "step_share": tp.step_share,
                 "fb_diff": tp.fb_diff,
                 "window_center_distance": tp.window_center_distance,
                 "window_censored_fraction": tp.window_censored_fraction,
@@ -1048,6 +1080,8 @@ class _WindowTpdStats:
     fitted: FloatArray
     n_left: int
     n_right: int
+    step_pval: float = float("nan")
+    step_share: float = float("nan")
 
 
 def _huber_line_2param(
@@ -1240,6 +1274,108 @@ def _fit_two_piece_sequential_huber(
     return best_ind, best_b1, best_a1, best_a2, best_loss, w_huber
 
 
+def _step_vs_hinge_pvalue(
+    t: FloatArray,
+    y: FloatArray,
+    w: FloatArray | None,
+    tp: int,
+    margin: int,
+    *,
+    n_grid: int = 17,
+) -> tuple[float, float]:
+    """p-value that a window's break is a vertical step rather than a continuous bend.
+
+    Compares the best discontinuous two-line model (separate intercepts and slopes, split
+    between samples ``j - 1`` and ``j``) with the best *continuous* hinge whose knot ``c`` may
+    lie anywhere between samples, over the scanned splits. For a split ``j`` the constrained least-squares identity gives
+    ``RSS_hinge(c) = RSS_disc(j) + g(c)^2 / v(c)`` for ``c`` in ``[t[j-1], t[j]]``, where
+    ``g(c)`` is the estimated vertical gap between the two lines at ``c`` and ``v(c)`` its
+    variance factor, so the continuous knot is optimized exactly within each gap (a precise
+    bend whose knot falls between samples is *not* mistaken for a step). The 1-df statistic
+    ``F = (min RSS_hinge - min RSS_disc) / (min RSS_disc / (n - 4))`` is Bonferroni-corrected
+    over the splits scanned (conservative, so genuine bends keep their power). The
+    discontinuous split ranges over ``[margin, n - margin]``; ``tp`` is kept for API
+    symmetry with the slope-change test.
+
+    Returns ``(p_value, step_share)`` where ``step_share = (min RSS_hinge - min RSS_disc) /
+    (RSS_line - min RSS_disc)`` is the fraction of the break's explained variance that only
+    a vertical step can capture (an effect size: about 0.6-0.9 for genuine steps, below
+    about 0.1 for genuine bends). At very high signal-to-noise a tiny misspecification makes
+    the p-value significant for a genuine bend, so callers should require both.
+    """
+    nan2 = (float("nan"), float("nan"))
+    n = int(t.size)
+    if n < 8:
+        return nan2
+    m_lo = max(3, int(margin))
+    lo_all, hi_all = m_lo, n - m_lo  # split j: left = [0, j), right = [j, n)
+    if hi_all <= lo_all:
+        return nan2
+    # The discontinuous alternative may split anywhere in the scan range: a window that
+    # sees a step off-centre often places its best hinge knot many samples away from it.
+    lo, hi = lo_all, hi_all
+    span = float(t[-1] - t[0]) if t[-1] > t[0] else 1.0
+    u = (t - t[0]) / span
+    sd = float(np.std(y))
+    if not np.isfinite(sd) or sd <= 0.0:
+        return 1.0, 0.0
+    yc = (y - float(np.mean(y))) / sd
+    ww = np.ones(n, dtype=np.float64) if w is None else np.asarray(w, dtype=np.float64)
+
+    def _cum(v: FloatArray) -> FloatArray:
+        return np.concatenate(([0.0], np.cumsum(v)))
+
+    c0, c1, c2 = _cum(ww), _cum(ww * u), _cum(ww * u * u)
+    cy, cuy, cyy = _cum(ww * yc), _cum(ww * u * yc), _cum(ww * yc * yc)
+    def _side(a: IntArray, b: IntArray) -> tuple[FloatArray, ...]:
+        s0, s1, s2 = c0[b] - c0[a], c1[b] - c1[a], c2[b] - c2[a]
+        sy, suy, syy = cy[b] - cy[a], cuy[b] - cuy[a], cyy[b] - cyy[a]
+        det = s0 * s2 - s1 * s1
+        det = np.where(det > 0.0, det, np.nan)
+        i00, i01, i11 = s2 / det, -s1 / det, s0 / det  # inverse of [[s0, s1], [s1, s2]]
+        a0 = i00 * sy + i01 * suy
+        a1 = i01 * sy + i11 * suy
+        rss = np.maximum(syy - (a0 * sy + a1 * suy), 0.0)
+        return a0, a1, i00, i01, i11, rss
+
+    # Continuous hinge: knot anywhere between u[1] and u[n-2] (every gap with >= 2 points per
+    # side), so the null model is never handicapped by the scan margin.
+    jh = np.arange(2, n - 1)
+    aL, bL, l00, l01, l11, rL = _side(np.zeros_like(jh), jh)
+    aR, bR, r00, r01, r11, rR = _side(jh, np.full_like(jh, n))
+    rss_disc_all = rL + rR
+    frac = np.linspace(0.0, 1.0, n_grid)
+    cgrid = u[jh - 1][:, None] + (u[jh] - u[jh - 1])[:, None] * frac[None, :]
+    g = (aL - aR)[:, None] + (bL - bR)[:, None] * cgrid
+    v = (l00 + r00)[:, None] + 2.0 * (l01 + r01)[:, None] * cgrid + (l11 + r11)[:, None] * cgrid**2
+    pen = np.where(v > 0.0, g * g / v, np.inf)
+    # A sign change of the gap inside the interval means the lines meet there exactly
+    crosses = (g[:, 0] * g[:, -1]) <= 0.0
+    pen_min = np.where(crosses, 0.0, np.min(pen, axis=1))
+    rss_hinge = rss_disc_all + pen_min
+    # Discontinuous alternative: splits within the scan range [margin, n - margin]
+    in_loc = (jh >= lo) & (jh < hi)
+    ok_h = np.isfinite(rss_hinge)
+    ok_d = in_loc & np.isfinite(rss_disc_all)
+    if not (np.any(ok_h) and np.any(ok_d)):
+        return nan2
+    sst = float(np.sum(ww * yc * yc))
+    rd = float(np.min(rss_disc_all[ok_d]))
+    rh = float(np.min(rss_hinge[ok_h]))
+    num = max(rh - rd, 0.0)
+    rl = float(_side(np.array([0]), np.array([n]))[5][0])
+    share = float(num / (rl - rd)) if (rl - rd) > 1e-300 else 0.0
+    if num <= 1e-12 * max(sst, 1e-300):
+        return 1.0, share
+    dof = n - 4
+    den = max(rd, 1e-28 * max(sst, 1e-300)) / dof
+    f_stat = num / den
+    from scipy.stats import f as f_dist
+
+    p_raw = float(f_dist.sf(f_stat, 1, dof))
+    return float(min(1.0, p_raw * int(np.sum(ok_d)))), share
+
+
 def _tpd_window(
     t: FloatArray,
     y: FloatArray,
@@ -1375,6 +1511,7 @@ def _tpd_window(
 
     ndri_l2 = abs(nr1 - nr2) / (nr1 + nr2) if (nr1 + nr2) > zero_tol else 0.0
     ndri_rmse = abs(rmse1 - rmse2) / (rmse1 + rmse2) if (rmse1 + rmse2) > zero_tol else 0.0
+    step_p, step_share = _step_vs_hinge_pvalue(t, y, w_stat, int(tp), int(margin))
 
     return _WindowTpdStats(
         local_tp=tp,
@@ -1391,6 +1528,8 @@ def _tpd_window(
         fitted=y_fit,
         n_left=n_left,
         n_right=n_right,
+        step_pval=step_p,
+        step_share=step_share,
     )
 
 
@@ -1830,6 +1969,8 @@ def _run_stpd_windows(
     n_mc: int = 999,
     mi_spec: tuple[int, str] | None = None,
     mi_counter: list[int] | None = None,
+    jump_test: str = "ndri",
+    step_alpha: float | None = None,
 ) -> tuple[
     list[tuple[int, float, _WindowTpdStats, int, int]],
     list[tuple[int, _WindowTpdStats]],
@@ -1847,7 +1988,14 @@ def _run_stpd_windows(
     from a censored straight-line regression (the window's null model); the other
     gates use the primary imputation. ``mi_counter`` records
     ``[n_pooled, n_fallback]``.
+
+    ``jump_test`` decides whether a candidate break is a vertical jump (rejected as a
+    turning point and reported as a flagged jump candidate): ``"step"`` uses the nested
+    discontinuous-vs-continuous-hinge test (:func:`_step_vs_hinge_pvalue` below
+    ``step_alpha``, default 0.05), ``"ndri"`` the published NDRI threshold, ``"both"`` flags
+    a jump when either does.
     """
+    eff_step_alpha = 0.05 if step_alpha is None else float(step_alpha)
     accepted_raw: list[tuple[int, float, _WindowTpdStats, int, int]] = []
     flagged_raw: list[tuple[int, _WindowTpdStats]] = []
     density_imbalanced = False
@@ -1885,6 +2033,18 @@ def _run_stpd_windows(
 
         snr_val = stats.snr_centered if snr_mode == "centered" else stats.snr_raw
         ndri_val = stats.ndri_rmse if ndri_mode == "rmse" else stats.ndri_l2
+        ndri_jump = ndri_val >= ndri_th
+        step_jump = bool(
+            np.isfinite(stats.step_pval)
+            and stats.step_pval < eff_step_alpha
+            and stats.step_share >= STEP_SHARE_MIN
+        )
+        if jump_test == "step":
+            is_jump = step_jump
+        elif jump_test == "both":
+            is_jump = step_jump or ndri_jump
+        else:
+            is_jump = ndri_jump
         fb_ok = (
             (stats.fb_time_diff <= max_fb_time_diff)
             if max_fb_time_diff is not None
@@ -1900,7 +2060,7 @@ def _run_stpd_windows(
 
         g_idx = w_start + stats.local_tp
         if tp_calibration == "none":
-            if fb_ok and sig_and_strong and ndri_val < ndri_th:
+            if fb_ok and sig_and_strong and not is_jump:
                 dist_center = abs(stats.local_tp - (n_w - 1) / 2.0)
                 accepted_raw.append((g_idx, dist_center, stats, w_start, w_stop))
         else:
@@ -1908,7 +2068,7 @@ def _run_stpd_windows(
                 fb_ok
                 and (snr_val > snr_th)
                 and (abs(stats.direction) > dir_th)
-                and ndri_val < ndri_th
+                and not is_jump
                 and not np.isnan(stats.pval)
             )
             if gates_ok:
@@ -1967,7 +2127,7 @@ def _run_stpd_windows(
                 accepted_raw.append(
                     (g_idx, dist_center, replace(stats, pval=p_cal), w_start, w_stop)
                 )
-        if sig_and_strong and ndri_val >= ndri_th:
+        if sig_and_strong and is_jump:
             flagged_raw.append((g_idx, stats))
 
     # Group nearby candidates within tp_th and deduplicate (CRT-01):
@@ -2022,18 +2182,38 @@ def _run_stpd_windows(
             else:
                 r += 1
 
-    # Deduplicate nearby flagged jump candidates within tp_th, keeping highest NDRI
+    # Deduplicate nearby flagged jump candidates within tp_th, keeping the strongest
+    # jump evidence (smallest step p-value, or highest NDRI under jump_test="ndri")
+    def _jump_strength(st: _WindowTpdStats) -> float:
+        if jump_test == "ndri":
+            return st.ndri_rmse if ndri_mode == "rmse" else st.ndri_l2
+        return -st.step_pval if np.isfinite(st.step_pval) else -np.inf
+
     flagged_raw.sort(key=lambda item: item[0])
+    # Every window that flagged a step, before de-duplication (used for reconciliation)
+    all_flag_times = [float(t_valid[g]) for g, _ in flagged_raw]
     r = 1
     while r < len(flagged_raw):
         if t_valid[flagged_raw[r][0]] - t_valid[flagged_raw[r - 1][0]] < tp_th:
-            nd_curr = flagged_raw[r][1].ndri_rmse if ndri_mode == "rmse" else flagged_raw[r][1].ndri_l2
-            nd_prev = flagged_raw[r - 1][1].ndri_rmse if ndri_mode == "rmse" else flagged_raw[r - 1][1].ndri_l2
+            nd_curr = _jump_strength(flagged_raw[r][1])
+            nd_prev = _jump_strength(flagged_raw[r - 1][1])
             if nd_curr > nd_prev:
                 flagged_raw[r - 1] = flagged_raw[r]
             del flagged_raw[r]
         else:
             r += 1
+
+    # Cross-window reconciliation (AUD-03): overlapping windows see the same break from
+    # different positions. A window with the break near its edge has little power for the
+    # step test and may accept a hinge, while a better-centred window shows that a vertical
+    # step explains it. Significant step evidence wins: drop turning points within tp_th
+    # of a flagged step.
+    if jump_test != "ndri" and all_flag_times and accepted_raw:
+        accepted_raw = [
+            it
+            for it in accepted_raw
+            if all(abs(float(t_valid[it[0]]) - ft) >= tp_th for ft in all_flag_times)
+        ]
 
     return accepted_raw, flagged_raw, density_imbalanced, window_fallbacks
 
@@ -2053,6 +2233,8 @@ def detect_turning_points(
     snr_mode: SnrMode = "centered",
     ndri_th: float = 0.3,
     ndri_mode: NdriMode = "rmse",
+    jump_test: JumpTest | None = None,
+    step_alpha: float | None = None,
     alpha: float = 0.01,
     dir_th: float = 0.0,
     tp_th: float = 1.0,
@@ -2107,7 +2289,24 @@ def detect_turning_points(
     ndri_th, ndri_mode:
         NDRI threshold (default ``0.3``) and mode: ``'rmse'`` (default,
         unbiased under uneven sampling density) or ``'l2'`` (Ghaderpour 2024).
-        ``parity_mode=True`` forces ``'l2'``.
+        ``parity_mode=True`` forces ``'l2'``. NDRI is always computed and reported; it
+        only gates turning points when ``jump_test`` is ``'ndri'`` or ``'both'``.
+    jump_test:
+        How a significant break is classified as an abrupt vertical jump (rejected as a
+        turning point and reported in ``flagged_jumps``). ``'step'`` (default) applies a
+        nested F-test of a discontinuous two-line fit against the best *continuous*
+        hinge (knot optimized continuously between samples, Bonferroni over the scanned
+        splits) at level ``step_alpha``, and additionally requires the step to capture at
+        least 25% of the break's explained variance (``step_share``), so that tiny model
+        misspecification at high signal-to-noise does not turn a genuine bend into a
+        "jump". ``'ndri'`` uses the published NDRI threshold
+        (forced by ``parity_mode=True``); it fails to recognise most pure steps and
+        rejects very precise bends. ``'both'`` flags a jump if either rule does.
+    step_alpha:
+        Level of the (Bonferroni-corrected, conservative) step-vs-bend test for
+        ``jump_test='step'``/``'both'`` (default ``0.05``). Reporting a step as a smooth
+        turning point is the costlier error, so the default leans towards flagging; in
+        simulation it rejected 0.5–2% of genuine bends.
     alpha:
         Significance level for the slope-change test (default ``0.01``). With a
         calibrated ``tp_calibration`` it bounds the probability of reporting any
@@ -2221,6 +2420,11 @@ def detect_turning_points(
     else:
         eff_tp_cal = "bonferroni" if eff_robust != "none" else "montecarlo"
     eff_ndri_mode: NdriMode = "l2" if parity_mode else ndri_mode
+    if jump_test is not None and jump_test not in ("step", "ndri", "both"):
+        raise ValueError(f"Unknown `jump_test` {jump_test!r}. Options: 'step', 'ndri', 'both'.")
+    if step_alpha is not None and not (0.0 < step_alpha < 1.0):
+        raise ValueError(f"`step_alpha` must lie in (0, 1); got {step_alpha}.")
+    eff_jump_test: str = "ndri" if parity_mode else (jump_test or "step")
 
     prep = prepare_series_with_censoring(t, y, censor_status=censor_status, censoring=censoring)
     series = prep.series
@@ -2382,6 +2586,8 @@ def detect_turning_points(
         n_mc=int(n_mc),
         mi_spec=mi_spec,
         mi_counter=mi_counter,
+        jump_test=eff_jump_test,
+        step_alpha=step_alpha,
     )
     if mi_counter[1] > 0:
         warnings_list.append(
@@ -2485,6 +2691,8 @@ def detect_turning_points(
                 rng=draw_rng,
                 tp_calibration=eff_tp_cal,
                 n_mc=int(n_mc),
+                jump_test=eff_jump_test,
+                step_alpha=step_alpha,
             )
             draw_times = [float(series.times_numeric[it[0]]) for it in acc_d]
             for item in accepted_raw:
@@ -2609,6 +2817,8 @@ def detect_turning_points(
                     int(w_stop),
                     max(2, min(eff_margin, (int(w_stop) - int(w_start) - 3) // 2)),
                 ),
+                step_pvalue=float(st.step_pval),
+                step_share=float(st.step_share),
             )
         )
 
@@ -2623,17 +2833,21 @@ def detect_turning_points(
             ndri_l2=st.ndri_l2,
             ndri_rmse=st.ndri_rmse,
             fb_diff=st.fb_diff,
+            step_pvalue=float(st.step_pval),
+            step_share=float(st.step_share),
         )
         for g_idx, st in flagged_raw
     )
     if flagged_events:
+        by_step = eff_jump_test != "ndri"
         warnings_list.append(
             WarningItem(
-                code="HIGH_NDRI_JUMP_CANDIDATE",
+                code="STEP_JUMP_CANDIDATE" if by_step else "HIGH_NDRI_JUMP_CANDIDATE",
                 severity="caution",
                 message=(
-                    f"STPD flagged {len(flagged_events)} high-NDRI candidate(s) that look more "
-                    "like abrupt vertical jumps than continuous turning points."
+                    f"STPD flagged {len(flagged_events)} candidate(s) that look more like abrupt "
+                    "vertical jumps than continuous turning points "
+                    + ("(significant step-vs-continuous-hinge test)." if by_step else "(high NDRI).")
                 ),
                 suggestion="Run `just_jumps()` or `analyze_series()` to test for datum jumps.",
             )
@@ -2672,6 +2886,7 @@ def detect_turning_points(
         n_imputations=int(mi_spec[0]) if (mi_spec is not None and mi_counter[0] > 0) else 1,
         band_method=band_used,
         robust=eff_robust,
+        jump_test=eff_jump_test,
     )
 
 

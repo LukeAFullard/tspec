@@ -51,23 +51,24 @@ def _to_array(obj: Any) -> np.ndarray[Any, Any]:
     return np.asarray(obj)
 
 
+# Uniform decimal-year scale: 1 "year" = the mean Gregorian year (365.2425 days), anchored so
+# that 2000-01-01T00:00 maps to exactly 2000.0. A *calendar* decimal year (elapsed time divided
+# by each calendar year's own 365 or 366 days) is not a uniform time axis: leap years are
+# compressed by 0.27%, which destroys phase coherence of any non-annual periodicity (tides,
+# diurnal/weekly cycles) and biases slopes. The uniform scale stays within about +/-2 days of
+# the calendar decimal year over 1678-2262; original timestamps remain in ``times_raw``.
+MEAN_GREGORIAN_YEAR_DAYS = 365.2425
+_NS_PER_MEAN_YEAR = MEAN_GREGORIAN_YEAR_DAYS * 86_400_000_000_000.0
+_EPOCH_2000_NS = np.datetime64("2000-01-01T00:00:00", "ns")
+
+
 def _datetime64_to_decimal_year(dt64: np.ndarray[Any, Any]) -> FloatArray:
-    """Convert a 1D numpy datetime64 array to exact continuous decimal years."""
+    """Convert a 1D numpy datetime64 array to uniform decimal years (mean Gregorian year)."""
     dt_ns = dt64.astype("datetime64[ns]")
     if np.any(np.isnat(dt_ns)):
         raise ValueError("Time vector contains NaT (Not-a-Time) values.")
-
-    years = dt_ns.astype("datetime64[Y]")
-    year_int = years.astype(np.int64) + 1970
-    start_of_year = years.astype("datetime64[ns]")
-    # Compute year length in days (avoiding datetime64[ns] overflow in year 2262 -> 2263)
-    days_in_year = (
-        (years + np.timedelta64(1, "Y")).astype("datetime64[D]") - years.astype("datetime64[D]")
-    ).astype(np.float64)
-    year_length = days_in_year * 86_400_000_000_000.0
-
-    elapsed = (dt_ns - start_of_year).astype(np.float64)
-    return np.asarray(year_int.astype(np.float64) + elapsed / year_length, dtype=np.float64)
+    elapsed_ns = (dt_ns - _EPOCH_2000_NS).astype(np.int64).astype(np.float64)
+    return np.asarray(2000.0 + elapsed_ns / _NS_PER_MEAN_YEAR, dtype=np.float64)
 
 
 def _check_datetime_ns_range(dt: np.ndarray[Any, Any]) -> None:

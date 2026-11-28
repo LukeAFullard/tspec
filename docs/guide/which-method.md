@@ -27,9 +27,9 @@ flowchart TD
     Q2 -- "No (minimal seasonality)" --> STPD["Use STPD: detect_turning_points()"]
     Q2 -- "Yes (strong seasonality)" --> Pipe
 
-    STPD --> NDRI{"Check NDRI in .explain(): Any candidates flagged with high NDRI (> 0.30)?"}
+    STPD --> NDRI{"Check .explain(): any candidates in flagged_jumps (step-vs-bend test)?"}
     NDRI -- "Yes — jump alarm bell!" --> Pipe
-    NDRI -- "No — low NDRI (~0)" --> Done["Done! Inspect .explain() & .plot()"]
+    NDRI -- "No" --> Done["Done! Inspect .explain() & .plot()"]
     Q1S --> Done
     NRT --> Done
     Pipe --> Done
@@ -40,7 +40,7 @@ flowchart TD
 | Your Question / Scenario | Best Tool | Why (Zero Jargon) |
 | :--- | :--- | :--- |
 | *"Did a wildfire, flood, spill, or sensor swap cause a sudden drop or jump — even though my series has summer/winter waves and missing months?"* | **`just_jumps()` + `just_decompose()`** | Fits local straight trend lines and seasonal cycles simultaneously **without filling gaps**, so abrupt offsets stand out clearly. |
-| *"Is my landslide, ground subsidence, or groundwater trend gradually accelerating or slowing down — with no sudden cliff and minimal seasonality?"* | **`detect_turning_points()` (`stpd`)** | Fits connected straight lines that bend smoothly at a turning point, and uses **NDRI** to make sure it isn't fooled by a hidden sudden jump. |
+| *"Is my landslide, ground subsidence, or groundwater trend gradually accelerating or slowing down — with no sudden cliff and minimal seasonality?"* | **`detect_turning_points()` (`stpd`)** | Fits connected straight lines that bend smoothly at a turning point, and uses a step-vs-bend test to avoid being fooled by a hidden sudden jump (small steps can still slip through). |
 | *"I have a stable historical baseline and want to raise an alert as soon as new incoming data deviate from normal behavior."* | **`just_monitor()`** | Forecasts the historical trend + seasonal baseline forward and scans incoming forecast residuals sequentially with built-in repeated-testing control. |
 | *"My river or satellite record has seasonal cycles, maybe a sudden disturbance, AND maybe a later change in recovery rate — where should I start?"* | **`analyze_series()`** | Runs the recommended two-stage sequence automatically: JUST extracts seasonality and vertical jumps first, then STPD finds smooth trend bends. |
 | *"My water-quality data has `<0.05` lab non-detects or `>100` upper limits."* | **Any function above + `CensoredConfig`** | Delegates to `ndimpute` for unbiased censored imputation (avoiding `DL/2` bias) and automatically warns if a lab detection-limit upgrade looks like a fake jump. |

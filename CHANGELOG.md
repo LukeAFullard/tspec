@@ -4,6 +4,17 @@
 
 Statistical-calibration and hardening release. Several defaults change results. `parity_mode=True` keeps reproducing the upstream Ghaderpour implementations.
 
+### Fixed (independent audit, 2026-11; see `audit/INDEPENDENT_AUDIT_2026-11.md`)
+- **Datetime inputs use a uniform time axis (AUD-01).** Datetimes were converted to *calendar* decimal years (each year divided by its own 365 or 366 days), compressing leap years by 0.27%. A noiseless M2 tide on hourly datetimes reached a normalized LSS of only 0.25 instead of 1.00. Datetimes now map to `2000 + (t − 2000-01-01) / 365.2425 days` (the mean Gregorian year), which is within about ±2 days of the calendar decimal year. **Decimal-year values of datetime inputs change slightly.**
+- **STPD no longer reports abrupt steps as smooth turning points (AUD-03, AUD-06).** New `jump_test="step"` (default; `"ndri"` in parity mode, `"both"` available) and `step_alpha=0.05`. A significant break is classified as a jump when a discontinuous two-line fit beats the best *continuous* hinge, with the knot optimized between samples (nested F-test, Bonferroni over splits), and the step captures ≥ 25% of the break's explained variance. Turning points within `tp_th` of a flagged step are dropped. New fields `step_pvalue`/`step_share` on `TurningPointEvent` and `FlaggedJumpCandidate`, `StpdResult.jump_test`, and the warning `STEP_JUMP_CANDIDATE`. Effects in simulation:
+  - a 4σ step was reported as a turning point in 29% of series (was 69%); a 6σ step in 18% (was 63%);
+  - through `analyze_series` a 4σ step was reported as a turning point instead of a jump in 38% (seasonal) / 14% (non-seasonal) of series (was 59% / 23%), and a 6σ step in 17% / 1% (was 24% / 2%);
+  - genuine bends keep their recall (46–99%), wrongly flagged as jumps 0.5–1.5% (NDRI: 1.5–58.5%);
+  - noiseless or σ = 10⁻³ bends are detected (NDRI rejected them).
+  - `analyze_series().explain()` warns when STPD flags a step that JUST missed.
+- **Zero-variance series no longer produce "significant" jumps (AUD-09).** On a perfectly straight noiseless line `just_jumps` reported a −6e-17 jump with p = 6.7e-10, and `analyze_series` split the line in two.
+- **`just_monitor` requires an adequate history for numeric time (AUD-10).** With `season != "none"` it now needs about one seasonal cycle of observations, and at least the model size + 5 points, for numeric as well as datetime time axes. A 5-point history was previously accepted and raised false alarms.
+
 ### Changed defaults (results may differ)
 - **`just_jumps`**: jump selection is family-wise calibrated by default.
   - `jump_alpha` now defaults to `"auto"`, which resolves to `0.05` (or `None` with `parity_mode=True`).
