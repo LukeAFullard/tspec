@@ -69,7 +69,7 @@ STPD tests each sliding window separately. Its power depends on how much informa
 ## 5. Near-real-time monitoring trades speed for safety
 
 - The default `just_monitor()` control (Šidák + Pocock spending) is very conservative: about 0.2–0.6% false alarms at $\alpha = 0.05$. Real disturbances are therefore detected later than necessary.
-- `sequential_control="consecutive_k"` with a planned `horizon` is Monte Carlo calibrated and detects faster, but it runs slightly hot. In the independent 2026-11 audit, false alarms at $\alpha = 0.05$ were 7.3% (H = 24), 5.3% (H = 120) and 4.0% (irregular sampling), even after a more conservative calibration. The likely cause is that harmonics selected from the history slightly overfit it, which the simulation does not reproduce. Use `alpha=0.03` if a strict 5% bound matters. The calibration assumes Gaussian errors and future sampling similar to the history. Without a `horizon` it does **not** control the false-alarm rate.
+- `sequential_control="consecutive_k"` with a planned `horizon` is Monte Carlo calibrated and detects faster, but it runs slightly hot. In the independent 2026-11 audit, false alarms at $\alpha = 0.05$ were 7.3% (H = 24), 5.3% (H = 120) and 4.0% (irregular sampling); a more conservative calibration did not change these rates. The likely cause is that harmonics selected from the history slightly overfit it, which the simulation does not reproduce. Use `alpha=0.03` if a strict 5% bound matters. The calibration assumes Gaussian errors and future sampling similar to the history. Without a `horizon` it does **not** control the false-alarm rate.
 
 ## 6. Monte Carlo calibrations assume Gaussian errors
 
